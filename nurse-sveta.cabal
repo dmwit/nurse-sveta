@@ -33,4 +33,5 @@ executable nurse-sveta-demo
   ghc-options:         -O2 -fno-warn-tabs
   build-depends:       base >=4.11 && <4.13,
                        maryodel ^>=0.1,
+                       mwc-random ^>=0.14,
                        nurse-sveta
