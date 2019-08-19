@@ -19,6 +19,11 @@ notParity :: Parity -> Parity
 notParity Checking = Ignoring
 notParity Ignoring = Checking
 
+-- TODO: only do one kind of rotation; for horizontal pills, track where there
+-- was a rotation or not (with the existence of a rotation being "better" than
+-- no rotation); don't need to track anything extra for vertical pills
+--
+-- Beware: rotations might fail in 'advance'! Update things carefully correctly.
 data Move = Move
 	{ direction :: Maybe Direction
 	, rotation :: Maybe Rotation
