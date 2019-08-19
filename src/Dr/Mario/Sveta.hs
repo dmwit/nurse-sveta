@@ -2,6 +2,7 @@
 module Dr.Mario.Sveta where
 
 import Control.Monad.Trans.State.Strict
+import Data.Bits ((.&.))
 import Data.Foldable
 import Data.Maybe
 import Data.Hashable
@@ -14,6 +15,10 @@ import qualified Data.HashMap.Strict as HM
 data Parity = Checking | Ignoring deriving (Bounded, Enum, Eq, Ord, Read, Show)
 instance Hashable Parity where hashWithSalt = hashUsing fromEnum
 
+notParity :: Parity -> Parity
+notParity Checking = Ignoring
+notParity Ignoring = Checking
+
 data Move = Move
 	{ direction :: Maybe Direction
 	, rotation :: Maybe Rotation
@@ -23,15 +28,30 @@ data Move = Move
 -- them.
 data PillControlStateEq = PillControlStateEq
 	{ pill :: !Pill
-	, forcedDrop :: !Int
 	, parity :: !Parity
+	-- | The parity we'll get if we wait for a forced drop.
+	--
+	-- Technically, it's probably more correct to store the actual 'forcedDrop'
+	-- in here! This is an approximation that, very roughly, assumes it's very
+	-- rare to need to wait for a forced drop, and so never does. With this
+	-- approximation, this field rarely matters; only when the pill speed is
+	-- very high (and so forced drops actually happen fast enough that we may
+	-- not be able to move as far to the right or left as we want before it
+	-- comes) will there be two keys with the same 'pill' and 'parity' but
+	-- different 'forcedDropParity's.
+	--
+	-- The approximation is made for efficiency, of course: we can get away
+	-- with a much smaller hashmap if we store just a 'Parity' instead of an
+	-- 'Int' that, on low speeds, might take on all the values from 0 to
+	-- 40ish...
+	, forcedDropParity :: !Parity
 	} deriving (Eq, Ord, Read, Show)
 
 instance Hashable PillControlStateEq where
-	hashWithSalt s (PillControlStateEq pill drop parity) = s
+	hashWithSalt s (PillControlStateEq pill parity dropParity) = s
 		`hashWithSalt` pill
-		`hashWithSalt` drop
 		`hashWithSalt` parity
+		`hashWithSalt` dropParity
 
 -- | The parts of a 'PillControlState' which in some cases could be improved.
 data PillControlStateHysteresis = PillControlStateHysteresis
@@ -39,8 +59,11 @@ data PillControlStateHysteresis = PillControlStateHysteresis
 	-- things, so the extra seq would be a waste
 	{ forbidden :: Move
 	, cost :: !Int
+	, forcedDrop :: !Int
 	} deriving (Eq, Ord, Show)
 
+-- | Invariant: the nested 'forcedDropParity' and 'parity' fields are equal iff
+-- the nested 'forcedDrop' field is even.
 data PillControlState = PillControlState
 	{ pcsEq :: PillControlStateEq
 	, pcsHysteresis :: PillControlStateHysteresis
@@ -87,10 +110,11 @@ instance POrd Move where
 	               <> pcompare (rotation m1) (rotation m2)
 instance POrd PillControlStateEq where pcompare = pcompareEq
 instance POrd PillControlStateHysteresis where
-	pcompare (PillControlStateHysteresis f1 c1)
-	         (PillControlStateHysteresis f2 c2)
+	pcompare (PillControlStateHysteresis f1 c1 d1)
+	         (PillControlStateHysteresis f2 c2 d2)
 		=  pcompare f1 f2
 		<> pcompareOrd c1 c2
+		<> pcompareOrd d2 d1 -- backwards! having more time before you're forced to drop is better
 instance POrd PillControlState where
 	pcompare (PillControlState e1 h1)
 	         (PillControlState e2 h2)
@@ -98,7 +122,9 @@ instance POrd PillControlState where
 		<> pcompare h1 h2
 
 movesAvailable :: Board -> PillControlState -> [Move]
-movesAvailable b (PillControlState e PillControlStateHysteresis { forbidden = m }) =
+movesAvailable b (PillControlState
+	PillControlStateEq { pill = p, parity = par }
+	PillControlStateHysteresis { forbidden = m, forcedDrop = fd }) =
 	[ Move d r
 	| d <- [Just down  | checking && hasSpace down]
 	    ++ [Nothing    | not checking] -- don't have a seizure
@@ -108,8 +134,7 @@ movesAvailable b (PillControlState e PillControlStateHysteresis { forbidden = m 
 	, r <- Nothing : map Just (maybe id delete (rotation m) [Clockwise, Counterclockwise])
 	]
 	where
-	p = pill e
-	checking = parity e == Checking
+	checking = par == Checking
 	canPress dir = direction m /= Just dir
 	hasSpace dir = isJust (move b p dir)
 	-- The conditions under which a left-and-rotate maneuver are sensible to
@@ -118,7 +143,11 @@ movesAvailable b (PillControlState e PillControlStateHysteresis { forbidden = m 
 	-- The conditions under which left or right moves are allowed after a
 	-- natural drop is too complicated to get right. Just make them always
 	-- available if a forced drop is about to happen.
-	mustDown = forcedDrop e == 1
+	mustDown = fd == 1
+
+{-# INLINE even' #-}
+even' :: Int -> Bool
+even' n = 0 == n .&. 1
 
 -- | The 'Int' is the pill speed.
 --
@@ -143,12 +172,17 @@ advance b d (PillControlState e h) m = PillControlState
 		       . try move (direction m)
 		       . try move naturalDrop
 		       $ pill e
-		, forcedDrop = if dropThisFrame then d else forcedDrop e - 1
 		, parity = notParity (parity e)
+		, forcedDropParity = if dropThisFrame
+			then if even' d
+				then notParity (parity e)
+				else parity e
+			else forcedDropParity e
 		}
 	PillControlStateHysteresis
 		{ forbidden = m
 		, cost = cost h + 1
+		, forcedDrop = if dropThisFrame then d else forcedDrop h - 1
 		}
 	where
 	try f x p = fromMaybe p (x >>= f b p)
@@ -163,21 +197,18 @@ advance b d (PillControlState e h) m = PillControlState
 		| otherwise = Nothing
 
 	dropThisFrame = naturalDropThisFrame || requestedDropThisFrame
-	naturalDropThisFrame = forcedDrop e == 1
+	naturalDropThisFrame = forcedDrop h == 1
 	requestedDropThisFrame = direction m == Just down
 
-	notParity Checking = Ignoring
-	notParity Ignoring = Checking
+data KeyComparisonResult = HasGtOrEq | HasLt | OnlyIn deriving (Bounded, Enum, Eq, Ord, Read, Show)
 
-ppartition :: (a -> PartialOrdering) -> [a] -> ([a], [a], [a], [a])
-ppartition f [] = ([], [], [], [])
-ppartition f (a:as) = case f a of
-	Lt -> (a:lts,   eqs,   gts,   ins)
-	Eq -> (  lts, a:eqs,   gts,   ins)
-	Gt -> (  lts,   eqs, a:gts,   ins)
-	In -> (  lts,   eqs,   gts, a:ins)
-	where
-	~(lts, eqs, gts, ins) = ppartition f as
+compareKeys :: (a -> PartialOrdering) -> [a] -> KeyComparisonResult
+compareKeys f [] = OnlyIn
+compareKeys f (a:as) = case f a of
+	Lt -> HasLt
+	Eq -> HasGtOrEq
+	Gt -> HasGtOrEq
+	In -> compareKeys f as
 
 -- | Use of this type synonym implies that any two elements of the list have
 -- their keys 'pcompare' as 'In'comparable.
@@ -190,11 +221,10 @@ type MinMap k v = [(k, v)]
 -- The 'Bool' returned indicates whether the resulting 'MinMap' is different
 -- from the input.
 insertMinMap :: POrd k => k -> v -> MinMap k v -> (Bool, MinMap k v)
-insertMinMap k v m = case ppartition (pcompare k . fst) m of
-	(_, _:_, _, _) -> (False, m)
-	(_, _, _:_, _) -> (False, m)
-	([], _, _, _) -> (True, (k,v):m) -- This line is not strictly needed, but maybe it will decrease pressure on the nursery.
-	(_, _, _, ins) -> (True, (k,v):ins)
+insertMinMap k v m = case compareKeys (pcompare k . fst) m of
+	HasGtOrEq -> (False, m)
+	HasLt -> (True, (k,v):filter ((In==) . pcompare k . fst) m)
+	OnlyIn -> (True, (k,v):m)
 
 type Visited = HashMap PillControlStateEq (MinMap PillControlStateHysteresis [Move])
 
@@ -212,12 +242,13 @@ reachable b dropSpeed initPill initParity = summarize (execState (dfs initPCS []
 	initPCS = PillControlState
 		PillControlStateEq
 			{ pill = initPill
-			, forcedDrop = dropSpeed
 			, parity = initParity
+			, forcedDropParity = if even' dropSpeed then initParity else notParity initParity
 			}
 		PillControlStateHysteresis
 			{ forbidden = Move Nothing Nothing
 			, cost = 0
+			, forcedDrop = dropSpeed
 			}
 
 	dfs s@(PillControlState e h) ms = do
@@ -263,12 +294,12 @@ instance PP Move where
 		]
 instance PP [Move] where pp ms = show (length ms) ++ "/" ++ (ms >>= pp)
 instance PP PillControlStateHysteresis where
-	pp (PillControlStateHysteresis m c) = pp m ++ " " ++ show c
+	pp (PillControlStateHysteresis m c d) = pp m ++ " " ++ show c ++ " " ++ show d
 instance PP Parity where
 	pp Checking = "✓"
 	pp Ignoring = "x"
 instance PP PillControlStateEq where
-	pp (PillControlStateEq pill n p) = unwords [pp pill, show n, pp p]
+	pp (PillControlStateEq pill p fdp) = unwords [pp pill, pp p, pp fdp]
 instance PP PillControlState where
 	pp (PillControlState e h) = pp e ++ " " ++ pp h
 instance (PP a, PP b) => PP (a, b) where pp (a, b) = pp a ++ ": " ++ pp b
