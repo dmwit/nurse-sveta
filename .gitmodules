@@ -1,0 +1,3 @@
+[submodule "maryodel"]
+	path = maryodel
+	url = github:dmwit/maryodel
