@@ -1,9 +1,11 @@
 {-# LANGUAGE FlexibleInstances #-}
 module Dr.Mario.Sveta where
 
+import Control.Monad
 import Control.Monad.Trans.State.Strict
 import Data.Bits ((.&.))
 import Data.Foldable
+import Data.Functor
 import Data.Maybe
 import Data.Hashable
 import Data.HashMap.Strict (HashMap)
@@ -19,10 +21,6 @@ notParity :: Parity -> Parity
 notParity Checking = Ignoring
 notParity Ignoring = Checking
 
--- TODO: only do one kind of rotation; for horizontal pills, track where there
--- was a rotation or not (with the existence of a rotation being "better" than
--- no rotation); don't need to track anything extra for vertical pills
---
 -- Beware: rotations might fail in 'advance'! Update things carefully correctly.
 data Move = Move
 	{ direction :: Maybe Direction
@@ -58,6 +56,17 @@ instance Hashable PillControlStateEq where
 		`hashWithSalt` parity
 		`hashWithSalt` dropParity
 
+-- | Have we seen any runs with an odd number of contiguous rotations, so that
+-- we may swap all the rotations in that run to flip the final pill 180
+-- degrees?
+data RotationFlexibility
+	= Inflexible
+	| Pending
+	| Flexible
+	deriving (Bounded, Enum, Eq, Ord, Read, Show)
+
+instance Hashable RotationFlexibility where hashWithSalt = hashUsing fromEnum
+
 -- | The parts of a 'PillControlState' which in some cases could be improved.
 data PillControlStateHysteresis = PillControlStateHysteresis
 	-- forbidden is not strict: we only build these with already-evaluated
@@ -65,6 +74,7 @@ data PillControlStateHysteresis = PillControlStateHysteresis
 	{ forbidden :: Move
 	, cost :: !Int
 	, forcedDrop :: !Int
+	, flexibility :: !RotationFlexibility
 	} deriving (Eq, Ord, Show)
 
 -- | Invariant: the nested 'forcedDropParity' and 'parity' fields are equal iff
@@ -110,45 +120,42 @@ instance POrd a => POrd (Maybe a) where
 	pcompare Nothing (Just b) = Lt
 	pcompare (Just a) Nothing = Gt
 	pcompare (Just a) (Just b) = pcompare a b
-instance POrd Move where
-	pcompare m1 m2 =  pcompare (direction m1) (direction m2)
-	               <> pcompare (rotation m1) (rotation m2)
+instance POrd RotationFlexibility where
+	pcompare x y | x == y = Eq
+	pcompare Flexible _ = Lt
+	pcompare _ Flexible = Gt
+	pcompare _ _ = In
 instance POrd PillControlStateEq where pcompare = pcompareEq
 instance POrd PillControlStateHysteresis where
-	pcompare (PillControlStateHysteresis f1 c1 d1)
-	         (PillControlStateHysteresis f2 c2 d2)
-		=  pcompare f1 f2
+	pcompare (PillControlStateHysteresis f1 c1 d1 x1)
+	         (PillControlStateHysteresis f2 c2 d2 x2)
+		=  pcompare (direction f1) (direction f2) -- don't pcompare rotations: we allow rotation every frame, and fix things up in a postprocessing step to make sure adjacent ones are opposite directions
 		<> pcompareOrd c1 c2
 		<> pcompareOrd d2 d1 -- backwards! having more time before you're forced to drop is better
+		<> pcompare x1 x2
 instance POrd PillControlState where
 	pcompare (PillControlState e1 h1)
 	         (PillControlState e2 h2)
 		=  pcompare e1 e2
 		<> pcompare h1 h2
 
-movesAvailable :: Board -> PillControlState -> [Move]
-movesAvailable b (PillControlState
-	PillControlStateEq { pill = p, parity = par }
-	PillControlStateHysteresis { forbidden = m, forcedDrop = fd }) =
+movesAvailable :: PillControlState -> [Move]
+movesAvailable (PillControlState
+	PillControlStateEq { parity = par }
+	PillControlStateHysteresis { forbidden = m, flexibility = x }) =
 	[ Move d r
-	| d <- [Just down  | checking && hasSpace down]
+	| d <- [Just down  | checking]
 	    ++ [Nothing    | not checking] -- don't have a seizure
-	    ++ [Just left  | mustDown || (canPress left && (complicatedLeft || hasSpace left))]
-	    ++ [Just right | mustDown || (canPress right && hasSpace right)]
+	    ++ [Just left  | direction m /= Just left ]
+	    ++ [Just right | direction m /= Just right]
 	    ++ [Nothing    | checking]
-	, r <- Nothing : map Just (maybe id delete (rotation m) [Clockwise, Counterclockwise])
+	, r <- [Nothing | not inflexible]
+	    ++ [Just Clockwise]
+	    ++ [Nothing | inflexible]
 	]
 	where
 	checking = par == Checking
-	canPress dir = direction m /= Just dir
-	hasSpace dir = isJust (move b p dir)
-	-- The conditions under which a left-and-rotate maneuver are sensible to
-	-- try are too complicated to get right. Just always make it available.
-	complicatedLeft = Vertical == orientation (content p)
-	-- The conditions under which left or right moves are allowed after a
-	-- natural drop is too complicated to get right. Just make them always
-	-- available if a forced drop is about to happen.
-	mustDown = fd == 1
+	inflexible = x == Inflexible
 
 {-# INLINE even' #-}
 even' :: Int -> Bool
@@ -160,23 +167,15 @@ even' n = 0 == n .&. 1
 -- check whether:
 --
 -- * the given 'Move' conflicts with the 'forbidden' field of the
---   'PillControlState',
+--   'PillControlState' or
 -- * the 'direction' of the 'Move' conflicts with the 'parity' of the
---   'PillControlState', or
--- * whether 'down' moves would cause the pill to lock instead of move.
+--   'PillControlState'.
 --
 -- ...but see also 'movesAvailable', which does do these checks.
-advance :: Board -> Int -> PillControlState -> Move -> PillControlState
-advance b d (PillControlState e h) m = PillControlState
+advance :: Board -> Int -> PillControlState -> Move -> Maybe PillControlState
+advance b d (PillControlState e h) m = guard success $> PillControlState
 	PillControlStateEq
-		{ pill = id
-		       -- The order of operations here was determined experimentally (i.e.
-		       -- not by reading the assembly).
-		       . try move bonusMove
-		       . try rotate (rotation m)
-		       . try move (direction m)
-		       . try move naturalDrop
-		       $ pill e
+		{ pill = pill4
 		, parity = notParity (parity e)
 		, forcedDropParity = if dropThisFrame
 			then if even' d
@@ -188,15 +187,32 @@ advance b d (PillControlState e h) m = PillControlState
 		{ forbidden = m
 		, cost = cost h + 1
 		, forcedDrop = if dropThisFrame then d else forcedDrop h - 1
+		, flexibility = case (flexibility h, rotation m) of
+			(Flexible, _) -> Flexible
+			(Pending, Nothing) -> Flexible
+			(Inflexible, Just _) -> Pending
+			_ -> Inflexible
 		}
 	where
-	try f x p = fromMaybe p (x >>= f b p)
-
+	-- The order of operations here was determined experimentally (i.e. not by
+	-- reading the assembly).
+	pill0 = pill e
+	(motion1, pill1) = try move naturalDrop pill0
+	(motion2, pill2) = try move (direction m) pill1
+	(motion3, pill3) = try rotate (rotation m) pill2
 	-- Famous-ish bug: pressing rotate and left on the same frame when the pill
 	-- is vertical gets you a bonus left move.
-	bonusMove = case (orientation (content (pill e)), m) of
-		(Vertical, Move (Just dir) (Just _)) | dir == left -> Just left
-		_ -> Nothing
+	(motion4, pill4) = case (orientation (content (pill e)), m, move b pill3 left) of
+		(Vertical, Move (Just dir) (Just _), Just p') | dir == left -> (True, p')
+		_ -> (False, pill3)
+
+	success = and [motion1, motion2 || motion4, motion3]
+	try f mx p = case mx of
+		Nothing -> (True, p)
+		Just x -> case f b p x of
+			Nothing -> (False, p )
+			Just p' -> (True , p')
+
 	naturalDrop
 		| naturalDropThisFrame && not requestedDropThisFrame = Just down
 		| otherwise = Nothing
@@ -220,33 +236,30 @@ compareKeys f (a:as) = case f a of
 type MinMap k v = [(k, v)]
 
 -- | Insert a key-value pair into a 'MinMap', deleting any existing key-value
--- pairs whose key is greater than the one currently being inserted. Does
--- nothing if an equal or lesser key is already in the map.
---
--- The 'Bool' returned indicates whether the resulting 'MinMap' is different
--- from the input.
-insertMinMap :: POrd k => k -> v -> MinMap k v -> (Bool, MinMap k v)
+-- pairs whose key is greater than the one currently being inserted. Returns
+-- 'Nothing' if an equal or lesser key is already in the map.
+insertMinMap :: POrd k => k -> v -> MinMap k v -> Maybe (MinMap k v)
 insertMinMap k v m = case compareKeys (pcompare k . fst) m of
-	HasGtOrEq -> (False, m)
-	HasLt -> (True, (k,v):filter ((In==) . pcompare k . fst) m)
-	OnlyIn -> (True, (k,v):m)
+	HasGtOrEq -> Nothing
+	HasLt -> Just $ (k,v):filter ((In==) . pcompare k . fst) m
+	OnlyIn -> Just $ (k,v):m
 
 type Visited = HashMap PillControlStateEq (MinMap PillControlStateHysteresis [Move])
 
--- | Mark a particular 'PillControlState' as visited. The 'Bool' indicates
--- whether we should consider this a first visit.
-insertVisited :: PillControlStateEq -> PillControlStateHysteresis -> [Move] -> Visited -> (Bool, Visited)
+-- | Mark a particular 'PillControlState' as visited. Returns 'Nothing' if it
+-- was already so marked.
+insertVisited :: PillControlStateEq -> PillControlStateHysteresis -> [Move] -> Visited -> Maybe Visited
 -- TODO: use alterF instead maybe
 insertVisited e h ms v = case HM.lookup e v of
-	Just mm -> let (first, mm') = insertMinMap h ms mm in (first, HM.insert e mm' v)
-	Nothing -> (True, HM.insert e [(h,ms)] v)
+	Just mm -> (\mm' -> HM.insert e mm' v) <$> insertMinMap h ms mm
+	Nothing -> Just (HM.insert e [(h,ms)] v)
 
 -- TODO: provide a way to cache results across pill drops
 reachable :: Board -> Int -> Pill -> Parity -> HashMap Pill [Move]
-reachable b dropSpeed initPill initParity = summarize (execState (dfs initPCS []) HM.empty) where
+reachable b dropSpeed initPill initParity = summarize (execState (dfs [] initPCS) HM.empty) where
 	initPCS = PillControlState
 		PillControlStateEq
-			{ pill = initPill
+			{ pill = initPill { content = (content initPill) { bottomLeftColor = Yellow, otherColor = Yellow } }
 			, parity = initParity
 			, forcedDropParity = if even' dropSpeed then initParity else notParity initParity
 			}
@@ -254,23 +267,73 @@ reachable b dropSpeed initPill initParity = summarize (execState (dfs initPCS []
 			{ forbidden = Move Nothing Nothing
 			, cost = 0
 			, forcedDrop = dropSpeed
+			, flexibility = Inflexible
 			}
 
-	dfs s@(PillControlState e h) ms = do
-		(continue, visited) <- gets (insertVisited e h ms)
-		if continue
-		then put visited >> for_ (movesAvailable b s) (\m -> dfs (advance b dropSpeed s m) (m:ms))
-		else return ()
+	dfs ms s@(PillControlState e h) = do
+		mvisited <- gets (insertVisited e h ms)
+		for_ mvisited $ \visited -> do
+			put visited
+			for_ (movesAvailable s) $ \m -> do
+				for_ (advance b dropSpeed s m) (dfs (m:ms))
 
 	summarize = id
 		. fmap (reverse . snd)
 		. HM.foldlWithKey' summarize' HM.empty
 
 	summarize' summary e mm = case move b (pill e) down of
-		Nothing -> foldl' (\summary' (h, ms) -> HM.insertWith keepMinCost (pill e) (cost h, ms) summary') summary mm
+		Nothing -> foldl' (summarize'' (pill e)) summary mm
 		Just _ -> summary
 
+	summarize'' p summary (h, ms) = foldl'
+		(\summary' (p', ms') -> HM.insertWith keepMinCost p' (cost h, ms') summary')
+		summary
+		(expandMoves initPill p ms)
+
 	keepMinCost v1@(c1, _) v2@(c2, _) = if c1 < c2 then v1 else v2
+
+notRotation :: Rotation -> Rotation
+notRotation Clockwise = Counterclockwise
+notRotation Counterclockwise = Clockwise
+
+-- | Internal only. Alternate rotations, starting with 'Clockwise', so that
+-- even if there are rotations on consecutive frames, it can be mapped to a
+-- valid sequence of button presses.
+alternateRotations :: [Move] -> [Move]
+alternateRotations = go Clockwise where
+	go rot (Move dir Just{}:ms) = Move dir (Just rot) : go (notRotation rot) ms
+	go rot (m:ms) = m : go rot ms
+	go rot [] = []
+
+-- | Internal only. Take a move sequence from 'alternateRotations' and, if
+-- possible, produce a modified one that has 180-degree different total
+-- rotation. Returns a list of length 1 if that is possible; an empty list
+-- otherwise.
+aboutFace :: [Move] -> [[Move]]
+aboutFace = goInflexible id id where
+	goInflexible same swapped (m@(Move dir (Just rot)):ms) = goPending (same.(m:)) (swapped.(Move dir (Just (notRotation rot)):)) ms
+	goInflexible same swapped (m:ms) = goInflexible (same.(m:)) (same.(m:)) ms
+	goInflexible same swapped [] = []
+
+	goPending same swapped (m@(Move dir (Just rot)):ms) = goInflexible (same.(m:)) (swapped.(Move dir (Just (notRotation rot)):)) ms
+	goPending same swapped ms = [swapped ms]
+
+-- | Internal only. Given an original pill and the result of a reachability
+-- search, fix up the rotations in the result move sequence and the colors in
+-- the result pill.
+expandMoves :: Pill -> Pill -> [Move] -> [(Pill, [Move])]
+expandMoves original colorless ms = zip [final, finalSwapped] mss where
+	mss = fixedMoves : aboutFace fixedMoves
+	fixedMoves = alternateRotations ms
+
+	final = colorless { content = finalContent }
+	finalSwapped = final { content = (content final)
+		{ bottomLeftColor = otherColor (content final)
+		, otherColor = bottomLeftColor (content final)
+		}}
+	finalContent = if orientation (content colorless) == orientation (content original)
+		then content original
+		else rotateContent (content original) Clockwise
 
 class PP a where pp :: a -> String
 instance PP Position where pp (Position x y) = "(" ++ show x ++ "," ++ show y ++ ")"
@@ -291,15 +354,14 @@ instance PP Color where
 instance PP PillContent where pp (PillContent o c c') = pp o ++ pp c ++ pp c'
 instance PP Pill where pp (Pill c pos) = pp c ++ "@" ++ pp pos
 instance PP Move where
-	pp (Move dir rot) = concat
-		[ if isJust dir == isJust rot then "(" else ""
-		, foldMap pp dir
-		, foldMap pp rot
-		, if isJust dir == isJust rot then ")" else ""
-		]
+	pp (Move dir rot) = maybe "·" pp dir ++ maybe " " pp rot
 instance PP [Move] where pp ms = show (length ms) ++ "/" ++ (ms >>= pp)
+instance PP RotationFlexibility where
+	pp Inflexible = "·"
+	pp Pending = "?"
+	pp Flexible = "⤡"
 instance PP PillControlStateHysteresis where
-	pp (PillControlStateHysteresis m c d) = pp m ++ " " ++ show c ++ " " ++ show d
+	pp (PillControlStateHysteresis m c d x) = unwords [pp m, show c, show d, pp x]
 instance PP Parity where
 	pp Checking = "✓"
 	pp Ignoring = "x"
