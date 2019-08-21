@@ -5,7 +5,8 @@ import qualified Dr.Mario.Sveta as S
 main :: IO ()
 main = do
 	gen <- createSystemRandom
-	board <- flip M.randomBoard 4 <$> uniformR (1, maxBound) gen
+	level <- uniformR (0,20) gen
+	board <- flip M.randomBoard level <$> uniformR (1, maxBound) gen
 	c1 <- M.decodeColor <$> uniformR (1, maxBound) gen
 	c2 <- M.decodeColor <$> uniformR (1, maxBound) gen
 	putStr . M.pp $ board
