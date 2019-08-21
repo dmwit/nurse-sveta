@@ -9,9 +9,11 @@ import Data.Functor
 import Data.Maybe
 import Data.Hashable
 import Data.HashMap.Strict (HashMap)
+import Data.HashSet (HashSet)
 import Data.List
 import Dr.Mario.Model hiding (pp)
 import qualified Data.HashMap.Strict as HM
+import qualified Data.HashSet as HS
 
 -- | Is the game checking whether the down button is pressed this frame?
 data Parity = Checking | Ignoring deriving (Bounded, Enum, Eq, Ord, Read, Show)
@@ -322,18 +324,62 @@ aboutFace = goInflexible id id where
 -- search, fix up the rotations in the result move sequence and the colors in
 -- the result pill.
 expandMoves :: Pill -> Pill -> [Move] -> [(Pill, [Move])]
-expandMoves original colorless ms = zip [final, finalSwapped] mss where
+expandMoves original colorless ms = zip (withAboutFacePill final) mss where
 	mss = fixedMoves : aboutFace fixedMoves
 	fixedMoves = alternateRotations ms
 
 	final = colorless { content = finalContent }
-	finalSwapped = final { content = (content final)
-		{ bottomLeftColor = otherColor (content final)
-		, otherColor = bottomLeftColor (content final)
-		}}
 	finalContent = if orientation (content colorless) == orientation (content original)
 		then content original
 		else rotateContent (content original) Clockwise
+
+aboutFaceContents :: PillContent -> PillContent
+aboutFaceContents c = c { bottomLeftColor = otherColor c, otherColor = bottomLeftColor c }
+
+aboutFacePill :: Pill -> Pill
+aboutFacePill p = p { content = aboutFaceContents (content p) }
+
+withAboutFacePill :: Pill -> [Pill]
+withAboutFacePill p = [p, aboutFacePill p]
+
+-- | Approximate the reachable pill locations. This may return both false
+-- positives (it may return locations that can't actually be reached because
+-- the drop speed doesn't let you move far enough to the side quick enough) and
+-- false negatives (it may not return locations that can actually be reached by
+-- careful shenanigans).
+--
+-- It is unsafe because it assumes the bottom left corner of the provided pill
+-- is an in-bounds board position, and that the board is empty there.
+--
+-- ...but it's much faster than getting the exact right answer.
+unsafeApproxReachable :: Board -> Pill -> HashSet Pill
+unsafeApproxReachable b p = HS.fromList $ concatMap dropColumn [lox .. hix] where
+	pos@(Position initx inity) = bottomLeftPosition p
+	lox = last . takeWhile (\x' -> unsafeGet b pos { x = x' } == Empty) $ [initx, initx-1 .. 0]
+	hix = last . takeWhile (\x' -> unsafeGet b pos { x = x' } == Empty) $ [initx .. width b-1]
+
+	horizPills = withAboutFacePill . Pill ((content p) { orientation = Horizontal })
+	vertPills  = withAboutFacePill . Pill ((content p) { orientation = Vertical   })
+
+	unsafeIsEmpty x y = unsafeGet b (Position x y) == Empty
+
+	dropColumn x = go inity (emptyL inity) (emptyR inity) where
+		emptyL | x <= 0 = const False
+		       | otherwise = unsafeIsEmpty (x-1)
+		emptyR | x+1 >= width b = const False
+		       | otherwise = unsafeIsEmpty (x+1)
+
+		go y el er =
+			(if er
+			 then if       not (ed && edr) then horizPills (Position  x    y) else []
+			 else if el && not (ed && edl) then horizPills (Position (x-1) y) else []
+			) ++
+			(if ed then go y' edl edr else vertPills (Position x y))
+			where
+			y' = y-1
+			(edl, ed, edr) = if y > 0
+				then (emptyL y', unsafeIsEmpty x y', emptyR y')
+				else (False, False, False)
 
 class PP a where pp :: a -> String
 instance PP Position where pp (Position x y) = "(" ++ show x ++ "," ++ show y ++ ")"
@@ -376,3 +422,5 @@ instance PP (MinMap PillControlStateHysteresis [Move]) where
 	pp mm = "[" ++ intercalate "," (map pp mm) ++ "]"
 instance PP [(PillControlStateEq, MinMap PillControlStateHysteresis [Move])] where pp = unlines . map pp
 instance PP Visited where pp = pp . sort . HM.toList
+instance PP [Pill] where pp = unlines . map pp . sort
+instance PP (HashSet Pill) where pp = pp . HS.toList

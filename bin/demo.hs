@@ -10,8 +10,6 @@ main = do
 	c1 <- M.decodeColor <$> uniformR (2, maxBound) gen
 	c2 <- M.decodeColor <$> uniformR (2, maxBound) gen
 	putStr . M.pp $ board
-	putStr . S.pp $ S.reachable
+	putStr . S.pp $ S.unsafeApproxReachable
 		board
-		14
 		(M.Pill (M.PillContent M.Horizontal c1 c2) (M.Position 3 15))
-		S.Checking
