@@ -6,9 +6,9 @@ main :: IO ()
 main = do
 	gen <- createSystemRandom
 	level <- uniformR (0,20) gen
-	board <- flip M.randomBoard level <$> uniformR (1, maxBound) gen
-	c1 <- M.decodeColor <$> uniformR (1, maxBound) gen
-	c2 <- M.decodeColor <$> uniformR (1, maxBound) gen
+	board <- flip M.randomBoard level <$> uniformR (2, maxBound) gen
+	c1 <- M.decodeColor <$> uniformR (2, maxBound) gen
+	c2 <- M.decodeColor <$> uniformR (2, maxBound) gen
 	putStr . M.pp $ board
 	putStr . S.pp $ S.reachable
 		board
