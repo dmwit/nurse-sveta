@@ -1,6 +1,6 @@
 import System.Random.MWC
 import qualified Dr.Mario.Model as M
-import qualified Dr.Mario.Sveta as S
+import qualified Dr.Mario.Sveta.Pathfinding as S
 
 main :: IO ()
 main = do

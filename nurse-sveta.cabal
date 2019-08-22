@@ -16,10 +16,13 @@ extra-source-files:  ChangeLog.md
 cabal-version:       >=2.0
 
 library
-  exposed-modules:     Dr.Mario.Sveta
+  exposed-modules:     Dr.Mario.Sveta,
+                       Dr.Mario.Sveta.MCTS,
+                       Dr.Mario.Sveta.Pathfinding
   build-depends:       base >=4.11 && <4.13,
                        hashable ^>=1.3,
                        maryodel ^>=0.1,
+                       psqueues ^>=0.2,
                        transformers ^>=0.5,
                        unordered-containers ^>=0.2
   hs-source-dirs:      src
