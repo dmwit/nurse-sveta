@@ -18,11 +18,14 @@ cabal-version:       >=2.0
 library
   exposed-modules:     Dr.Mario.Sveta,
                        Dr.Mario.Sveta.MCTS,
-                       Dr.Mario.Sveta.Pathfinding
+                       Dr.Mario.Sveta.Pathfinding,
+                       Dr.Mario.Sveta.PP
   build-depends:       base >=4.11 && <4.13,
                        hashable ^>=1.3,
                        maryodel ^>=0.1,
+                       monad-loops ^>=0.4,
                        mwc-random ^>=0.14,
+                       primitive ^>=0.7,
                        psqueues ^>=0.2,
                        transformers ^>=0.5,
                        unordered-containers ^>=0.2,

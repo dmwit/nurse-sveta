@@ -1,15 +1,18 @@
 module Dr.Mario.Sveta where
 
+import Control.Applicative
+import Data.Foldable
+import Data.Hashable
 import Data.IORef
 import Data.List
 import Data.Ord
 import Data.Vector (Vector)
-import Dr.Mario.Model
+import Dr.Mario.Model hiding (pp)
 import Dr.Mario.Sveta.MCTS
 import Dr.Mario.Sveta.Pathfinding
+import Dr.Mario.Sveta.PP
 import Dr.Mario.Util
 import System.Random.MWC
-import System.Random.MWC.CondensedTable
 import qualified Dr.Mario.Model as M
 import qualified Dr.Mario.Sveta.Pathfinding as S
 import qualified Data.Vector as V
@@ -19,12 +22,30 @@ data MCStats = MCStats
 	, cumulativeUtility :: !Double
 	} deriving (Eq, Ord, Read, Show)
 
+instance Monoid MCStats where mempty = MCStats 0 0
+instance Semigroup MCStats where
+	s1 <> s2 = MCStats
+		{ visitCount = visitCount s1 + visitCount s2
+		, cumulativeUtility = cumulativeUtility s1 + cumulativeUtility s2
+		}
+
+instance PP MCStats where
+	pp (MCStats n q) = pp q ++ "/" ++ pp n ++ "=" ++ pp (q / n)
+
 type MCScore = Down Double
 
 data MCMove
 	= AIMove Pill
 	| ChanceMove Color Color
 	deriving (Eq, Ord, Read, Show)
+
+instance Hashable MCMove where
+	hashWithSalt s (AIMove p) = s `hashWithSalt` (1 :: Int) `hashWithSalt` p
+	hashWithSalt s (ChanceMove l r) = s `hashWithSalt` (2 :: Int) `hashWithSalt` l `hashWithSalt` r
+
+instance PP MCMove where
+	pp (AIMove p) = pp p
+	pp (ChanceMove l r) = pp l ++ pp r
 
 type MCM = IO
 
@@ -71,7 +92,7 @@ mwon mcpos = won mcpos <$> readIORef (auxState mcpos)
 
 dmScore :: MCPlayer -> MCStats -> MCStats -> MCScore
 dmScore AI statsParent statsCurrent = ucb1 (visitCount statsParent) (visitCount statsCurrent) (cumulativeUtility statsCurrent)
-dmScore Chance _ statsCurrent = Down (visitCount statsCurrent)
+dmScore Chance _ statsCurrent = Down (-visitCount statsCurrent)
 
 dmEvaluate :: MCPosition -> MCM MCStats
 dmEvaluate mcpos = do
@@ -88,11 +109,11 @@ dmEvaluate mcpos = do
 		, cumulativeUtility = (clearUtility &&& usageUtility) / maxUtility
 		}
 
-allChanceMoves :: Vector Move
-allChanceMoves = V.fromListN 6
+allChanceMoves :: Vector MCMove
+allChanceMoves = V.fromListN 9
 	[ ChanceMove l r
-	| l:rest <- tails [minBound .. maxBound]
-	, r <- rest
+	| l <- [minBound .. maxBound]
+	, r <- [minBound .. maxBound]
 	]
 
 dmExpand :: MCPosition -> MCM (Vector MCMove)
@@ -109,7 +130,8 @@ dmExpand mcpos = do
 		-- paths to update when we're processing an MCTree node n levels deep?
 		-- but then what to do about moves that can't be rotated 180? hmmm...
 		Nothing -> pure allChanceMoves
-		Just (l, r) -> munsafeApproxReachable (mboard mcpos) (launchPill l r)
+		Just (l, r) -> V.fromList . map AIMove . toList
+		           <$> munsafeApproxReachable (mboard mcpos) (launchPill l r)
 
 dmRoot :: Board -> MCM MCPosition
 dmRoot b = do
@@ -151,20 +173,11 @@ dmPlay mcpos (AIMove p) = do
 			b <- mfreeze (mboard mcpos)
 			error
 				$ "The impossible happened: the AI chose an illegal pill placement of "
-				++ S.pp p ++ " on this board:\n"
-				++ M.pp b
-
-chanceMovesTable :: CondensedTableV MCMove
-chanceMovesTable = tableFromProbabilities . V.fromListN 6 $
-	[ (ChanceMove l r, if l == r then 1/9 else 2/9)
-	| l:rest <- tails [minBound .. maxBound]
-	, r <- rest
-	]
+				++ pp p ++ " on this board:\n"
+				++ pp b
 
 dmSelect :: GenIO -> MCPosition -> Vector MCMove -> MCM MCMove
-dmSelect gen _ ms = case V.head ms of
-	ChanceMove _ _ -> genFromTable chanceMovesTable gen
-	_ -> (ms `V.unsafeIndex`) <$> uniformR (0, V.length ms-1) gen
+dmSelect gen _ ms = (ms `V.unsafeIndex`) <$> uniformR (0, V.length ms-1) gen
 
 dmParameters :: GenIO -> Board -> DrMarioParameters
 dmParameters gen b = MCTSParameters
@@ -176,5 +189,3 @@ dmParameters gen b = MCTSParameters
 	, play = dmPlay
 	, select = dmSelect gen
 	}
-
-munsafeApproxReachable = undefined

@@ -1,17 +1,22 @@
 {-# LANGUAGE FlexibleInstances #-}
 module Dr.Mario.Sveta.Pathfinding where
 
+import Control.Applicative
 import Control.Monad
+-- TODO: replace andM/orM everywhere
+import Control.Monad.Loops
+import Control.Monad.Primitive
 import Control.Monad.Trans.State.Strict
 import Data.Bits ((.&.))
 import Data.Foldable
 import Data.Functor
+import Data.List
 import Data.Maybe
 import Data.Hashable
 import Data.HashMap.Strict (HashMap)
 import Data.HashSet (HashSet)
-import Data.List
 import Dr.Mario.Model hiding (pp)
+import Dr.Mario.Sveta.PP
 import qualified Data.HashMap.Strict as HM
 import qualified Data.HashSet as HS
 
@@ -381,24 +386,41 @@ unsafeApproxReachable b p = HS.fromList $ concatMap dropColumn [lox .. hix] wher
 				then (emptyL y', unsafeIsEmpty x y', emptyR y')
 				else (False, False, False)
 
-class PP a where pp :: a -> String
-instance PP Position where pp (Position x y) = "(" ++ show x ++ "," ++ show y ++ ")"
-instance PP Direction where
-	pp d | d == left = "←"
-	     | d == right = "→"
-	     | d == down = "↓"
-instance PP Rotation where
-	pp Clockwise = "↻"
-	pp Counterclockwise = "↺"
-instance PP Orientation where
-	pp Vertical = "↕"
-	pp Horizontal = "↔"
-instance PP Color where
-	pp Blue = "b"
-	pp Red = "r"
-	pp Yellow = "y"
-instance PP PillContent where pp (PillContent o c c') = pp o ++ pp c ++ pp c'
-instance PP Pill where pp (Pill c pos) = pp c ++ "@" ++ pp pos
+munsafeApproxReachable :: PrimMonad m => MBoard (PrimState m) -> Pill -> m (HashSet Pill)
+munsafeApproxReachable mb p = do
+	lox <- fmap last . takeWhileM (\x' -> munsafeIsEmpty pos { x = x' }) $ [initx, initx-1 .. 0]
+	hix <- fmap last . takeWhileM (\x' -> munsafeIsEmpty pos { x = x' }) $ [initx .. mwidth mb-1]
+	HS.fromList . concat <$> traverse dropColumn [lox .. hix]
+	where
+	pos@(Position initx inity) = bottomLeftPosition p
+	horizPills = withAboutFacePill . Pill ((content p) { orientation = Horizontal })
+	vertPills  = withAboutFacePill . Pill ((content p) { orientation = Vertical   })
+
+	{-# INLINE munsafeIsEmpty #-}
+	munsafeIsEmpty p = (Empty==) <$> munsafeGet mb p
+
+	dropColumn x = join $ liftA2 (go inity) (memptyL inity) (memptyR inity) where
+		memptyL | x <= 0 = const (pure False)
+		        | otherwise = munsafeIsEmpty . Position (x-1)
+		memptyR | x+1 >= mwidth mb = const (pure False)
+		        | otherwise = munsafeIsEmpty . Position (x+1)
+
+		go y el er = let y' = y-1 in do
+			-- This might be slightly wasteful (reading more cells than
+			-- strictly necessary to compute the answer), but the fully-lazy
+			-- version is so painful to write that I gave up on it. Wish I had
+			-- simph here...
+			(edl, ed, edr) <- if y > 0
+				then liftA3 (,,) (memptyL y') (munsafeIsEmpty (Position x y')) (memptyR y')
+				else pure (False, False, False)
+			rest <- if ed then go y' edl edr else pure (vertPills (Position x y))
+			pure
+				$ (if er
+				   then if       not (ed && edr) then horizPills (Position  x    y) else []
+				   else if el && not (ed && edl) then horizPills (Position (x-1) y) else []
+				  )
+				++ rest
+
 instance PP Move where
 	pp (Move dir rot) = maybe "·" pp dir ++ maybe " " pp rot
 instance PP [Move] where pp ms = show (length ms) ++ "/" ++ (ms >>= pp)
@@ -415,12 +437,9 @@ instance PP PillControlStateEq where
 	pp (PillControlStateEq pill p fdp) = unwords [pp pill, pp p, pp fdp]
 instance PP PillControlState where
 	pp (PillControlState e h) = pp e ++ " " ++ pp h
-instance (PP a, PP b) => PP (a, b) where pp (a, b) = pp a ++ ": " ++ pp b
 instance PP [(Pill, [Move])] where pp = unlines . map pp
 instance PP (HashMap Pill [Move]) where pp = pp . sort . HM.toList
 instance PP (MinMap PillControlStateHysteresis [Move]) where
 	pp mm = "[" ++ intercalate "," (map pp mm) ++ "]"
 instance PP [(PillControlStateEq, MinMap PillControlStateHysteresis [Move])] where pp = unlines . map pp
 instance PP Visited where pp = pp . sort . HM.toList
-instance PP [Pill] where pp = unlines . map pp . sort
-instance PP (HashSet Pill) where pp = pp . HS.toList
