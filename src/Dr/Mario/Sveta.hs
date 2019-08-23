@@ -189,3 +189,19 @@ dmParameters gen b = MCTSParameters
 	, play = dmPlay
 	, select = dmSelect gen
 	}
+
+-- | Produce a new set of parameters suitable for use with searching a
+-- particular move's subtree. Resets the 'pillsUsedSinceVirusClear' to 0 and
+-- deep-copies the board and auxiliary state.
+dmReroot :: DrMarioParameters -> MCMove -> MCM DrMarioParameters
+dmReroot params m = do
+	mcpos <- root params
+	play params mcpos m
+	b <- mfreeze (mboard mcpos)
+	aux_ <- readIORef (auxState mcpos)
+	let aux = aux_ { pillsUsedSinceVirusClear = 0 }
+	pure params { root = liftA2
+		(\mb auxRef -> mcpos { mboard = mb, auxState = auxRef })
+		(thaw b)
+		(newIORef aux)
+		}
