@@ -26,7 +26,6 @@ library
                        monad-loops ^>=0.4,
                        mwc-random ^>=0.14,
                        primitive ^>=0.7,
-                       psqueues ^>=0.2,
                        transformers ^>=0.5,
                        unordered-containers ^>=0.2,
                        vector ^>=0.12

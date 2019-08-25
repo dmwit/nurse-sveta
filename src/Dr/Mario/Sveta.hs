@@ -64,7 +64,7 @@ data AuxiliaryState = AuxiliaryState
 
 data MCPlayer = AI | Chance deriving (Bounded, Enum, Eq, Ord, Read, Show)
 
-type DrMarioTree = MCTree MCStats MCScore MCMove
+type DrMarioTree = MCTree MCStats MCMove
 type DrMarioParameters = MCTSParameters MCM MCStats MCScore MCMove MCPosition MCPlayer
 
 stallThreshold :: Double

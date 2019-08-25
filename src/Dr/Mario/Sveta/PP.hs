@@ -4,11 +4,11 @@ module Dr.Mario.Sveta.PP where
 import Data.List
 import Data.Hashable
 import Data.Ord
-import Data.HashPSQ (HashPSQ)
+import Data.HashMap.Strict (HashMap)
 import Data.HashSet (HashSet)
 import Dr.Mario.Model hiding (pp)
 import Text.Printf
-import qualified Data.HashPSQ as Q
+import qualified Data.HashMap.Strict as HM
 import qualified Data.HashSet as HS
 import qualified Dr.Mario.Model as M
 
@@ -42,7 +42,4 @@ instance (PP a, PP b) => PP (a, b) where pp (a, b) = pp a ++ ": " ++ pp b
 instance PP [Pill] where pp = unlines . map pp . sort
 instance PP (HashSet Pill) where pp = pp . HS.toList
 instance PP a => PP (Down a) where pp (Down a) = pp a
-instance (Hashable k, Ord k, Ord p, PP k, PP p, PP v) => PP (HashPSQ k p v) where
-	pp q = case Q.minView q of
-		Nothing -> ""
-		Just (k, p, v, q') -> "(" ++ pp p ++ ") " ++ pp k ++ " => " ++ pp v ++ "\n" ++ pp q'
+instance (PP k, PP v) => PP (HashMap k v) where pp = unlines . map pp . HM.toList

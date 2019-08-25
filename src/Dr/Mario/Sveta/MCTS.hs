@@ -10,18 +10,18 @@ module Dr.Mario.Sveta.MCTS (
 	) where
 
 import Data.Hashable
-import Data.HashPSQ (HashPSQ)
+import Data.HashMap.Strict (HashMap)
 import Data.List.NonEmpty (NonEmpty((:|)))
 import Data.Ord
 import Data.Vector (Vector)
-import qualified Data.HashPSQ as Q
 import qualified Data.List.NonEmpty as NE
+import qualified Data.HashMap.Strict as HM
 import qualified Data.Vector as V
 
 -- | A representation of the current state of a run of Monte Carlo tree search.
-data MCTree stats score move = MCTree
+data MCTree stats move = MCTree
 	{ statistics :: stats
-	, children :: HashPSQ move score (MCTree stats score move)
+	, children :: HashMap move (MCTree stats move)
 	, unexplored :: [move]
 	} deriving (Eq, Show)
 
@@ -65,13 +65,13 @@ data MCTSParameters m stats score move position player = MCTSParameters
 emptyTree ::
 	(Monad m, Monoid stats) =>
 	MCTSParameters m stats score move position player ->
-	m (MCTree stats score move)
+	m (MCTree stats move)
 emptyTree params = do
 	pos <- root params
 	ms <- expand params pos
 	pure MCTree
 		{ statistics = mempty
-		, children = Q.empty
+		, children = HM.empty
 		, unexplored = V.toList ms
 		}
 
@@ -79,47 +79,57 @@ emptyTree params = do
 -- literature). You should iterate this until you run out of computational
 -- budget.
 mcts ::
-	(Monad m, Semigroup stats, Hashable move, Ord move, Ord score) =>
+	(Monad m, Semigroup stats, Hashable move, Eq move, Ord score) =>
 	MCTSParameters m stats score move position player ->
-	MCTree stats score move ->
-	m (MCTree stats score move)
+	MCTree stats move ->
+	m (MCTree stats move)
 mcts params t = do
 	pos <- root params
 	(_, t') <- mcts_ params pos t
 	pure t'
 
+minimumOn :: Ord a => (v -> a) -> HashMap k v -> Maybe (k, v)
+-- checking for emptiness once at the beginning is cheaper than re-checking on
+-- every iteration, as you would have to do if you folded with a Maybe
+minimumOn f m = case HM.toList m of
+	[] -> Nothing
+	((k,v):_) -> Just . (\(k,v,a) -> (k,v)) $ HM.foldlWithKey'
+		(\old@(k,v,a) k' v' -> let a' = f v' in if a' < a then (k',v',a') else old)
+		(k,v,f v)
+		m
+
 mcts_ ::
-	(Monad m, Semigroup stats, Hashable move, Ord move, Ord score) =>
+	(Monad m, Semigroup stats, Hashable move, Eq move, Ord score) =>
 	MCTSParameters m stats score move position player ->
 	position ->
-	MCTree stats score move ->
-	m (stats, MCTree stats score move)
+	MCTree stats move ->
+	m (stats, MCTree stats move)
 mcts_ params pos = go where
-	go t = case unexplored t of
-		[] -> case Q.minView (children t) of
-			Just (m, _, t', q) -> do
-				player <- turn params pos
+	go t = do
+		player <- turn params pos
+		case unexplored t of
+			[] -> case minimumOn (\t' -> score params player (statistics t) (statistics t')) (children t) of
+				Just (m, t') -> do
+					play params pos m
+					(stats, t'') <- go t'
+					let stats' = statistics t <> stats
+					pure $ (stats, t
+						{ statistics = stats'
+						, children = HM.insert m t'' (children t)
+						})
+				Nothing -> do
+					stats <- evaluate params pos
+					pure $ (stats, t { statistics = statistics t <> stats })
+			m:ms -> do
 				play params pos m
-				(stats, t'') <- go t'
+				ms' <- expand params pos
+				stats <- rollout ms'
 				let stats' = statistics t <> stats
-				pure $ (stats, t
+				pure (stats, t
 					{ statistics = stats'
-					, children = Q.insert m (score params player stats' (statistics t'')) t'' q
+					, children = HM.insert m (MCTree stats HM.empty (V.toList ms')) (children t)
+					, unexplored = ms
 					})
-			Nothing -> do
-				stats <- evaluate params pos
-				pure $ (stats, t { statistics = statistics t <> stats })
-		m:ms -> do
-			player <- turn params pos
-			play params pos m
-			ms' <- expand params pos
-			stats <- rollout ms'
-			let stats' = statistics t <> stats
-			pure (stats, t
-				{ statistics = stats'
-				, children = Q.insert m (score params player stats' stats) (MCTree stats Q.empty (V.toList ms')) (children t)
-				, unexplored = ms
-				})
 
 	rollout ms | V.null ms = evaluate params pos
 	rollout ms = do

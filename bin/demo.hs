@@ -5,9 +5,6 @@ import System.Random.MWC
 import System.IO
 import qualified Dr.Mario.Model as M
 
-countNodes :: MCTree stats score move -> Int
-countNodes = succ . sum . fmap countNodes . children
-
 main :: IO ()
 main = do
 	gen <- createSystemRandom
@@ -23,9 +20,8 @@ main = do
 	    go t = do
 	    	putStr "\ESC[;H"
 	    	putPP board
+	    	putStr "Total rollouts: "
+	    	putPPLn . visitCount . statistics $ t
 	    	putPP (statistics <$> children t)
-	    	putStr "Total nodes: "
-	    	print (countNodes t)
-	    	getChar
 	    	mctsNTimes 10000 t >>= go
 	emptyTree params >>= go
