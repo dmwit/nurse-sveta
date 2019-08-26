@@ -4,17 +4,11 @@ module Dr.Mario.Sveta.MCTS (
 	emptyTree,
 	mcts,
 	ucb1,
-	-- * Convenience re-exports
-	Down(..),
-	NonEmpty(..)
 	) where
 
 import Data.Hashable
 import Data.HashMap.Strict (HashMap)
-import Data.List.NonEmpty (NonEmpty((:|)))
-import Data.Ord
 import Data.Vector (Vector)
-import qualified Data.List.NonEmpty as NE
 import qualified Data.HashMap.Strict as HM
 import qualified Data.Vector as V
 
@@ -88,13 +82,13 @@ mcts params t = do
 	(_, t') <- mcts_ params pos t
 	pure t'
 
-minimumOn :: Ord a => (v -> a) -> HashMap k v -> Maybe (k, v)
+maximumOn :: Ord a => (v -> a) -> HashMap k v -> Maybe (k, v)
 -- checking for emptiness once at the beginning is cheaper than re-checking on
 -- every iteration, as you would have to do if you folded with a Maybe
-minimumOn f m = case HM.toList m of
+maximumOn f m = case HM.toList m of
 	[] -> Nothing
 	((k,v):_) -> Just . (\(k,v,a) -> (k,v)) $ HM.foldlWithKey'
-		(\old@(k,v,a) k' v' -> let a' = f v' in if a' < a then (k',v',a') else old)
+		(\old@(k,v,a) k' v' -> let a' = f v' in if a' > a then (k',v',a') else old)
 		(k,v,f v)
 		m
 
@@ -108,7 +102,7 @@ mcts_ params pos = go where
 	go t = do
 		player <- turn params pos
 		case unexplored t of
-			[] -> case minimumOn (\t' -> score params player (statistics t) (statistics t')) (children t) of
+			[] -> case maximumOn (\t' -> score params player (statistics t) (statistics t')) (children t) of
 				Just (m, t') -> do
 					play params pos m
 					(stats, t'') <- go t'
@@ -143,5 +137,5 @@ mcts_ params pos = go where
 -- utility achieved by children of the current node (Q_i in the literature).
 -- The utility of individual leaves should be in the range [0, 1] (so that 0 <=
 -- Q_i <= n_i).
-ucb1 :: Double -> Double -> Double -> Down Double
-ucb1 n n_i q_i = Down $ q_i/n_i + sqrt (2 * log n / n_i)
+ucb1 :: Double -> Double -> Double -> Double
+ucb1 n n_i q_i = q_i/n_i + sqrt (2 * log n / n_i)

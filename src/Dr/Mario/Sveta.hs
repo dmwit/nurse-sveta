@@ -5,7 +5,6 @@ import Data.Foldable
 import Data.Hashable
 import Data.IORef
 import Data.List
-import Data.Ord
 import Data.Vector (Vector)
 import Dr.Mario.Model hiding (pp)
 import Dr.Mario.Sveta.MCTS
@@ -32,7 +31,7 @@ instance Semigroup MCStats where
 instance PP MCStats where
 	pp (MCStats n q) = pp q ++ "/" ++ pp n ++ "=" ++ pp (q / n)
 
-type MCScore = Down Double
+type MCScore = Double
 
 data MCMove
 	= AIMove Pill
@@ -92,7 +91,7 @@ mwon mcpos = won mcpos <$> readIORef (auxState mcpos)
 
 dmScore :: MCPlayer -> MCStats -> MCStats -> MCScore
 dmScore AI statsParent statsCurrent = ucb1 (visitCount statsParent) (visitCount statsCurrent) (cumulativeUtility statsCurrent)
-dmScore Chance _ statsCurrent = Down (-visitCount statsCurrent)
+dmScore Chance _ statsCurrent = -visitCount statsCurrent
 
 dmEvaluate :: MCPosition -> MCM MCStats
 dmEvaluate mcpos = do
