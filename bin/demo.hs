@@ -23,10 +23,10 @@ main :: IO ()
 main = do
 	gen <- createSystemRandom
 	level <- uniformR (0,20) gen
-	board <- flip M.randomBoard level <$> uniformR (2, maxBound) gen
+	b <- flip M.randomBoard level <$> uniformR (2, maxBound) gen
 	c1 <- M.decodeColor <$> uniformR (2, maxBound) gen
 	c2 <- M.decodeColor <$> uniformR (2, maxBound) gen
-	params <- dmReroot (dmParameters gen board) (ChanceMove c1 c2)
+	params <- dmReroot (dmParameters gen b) (ChanceMove c1 c2)
 	initialTree <- emptyTree params
 
 	let c = Comms
@@ -43,17 +43,9 @@ main = do
 	customMain (mkVty defaultConfig) (Just timerChan) app UIState
 		{ comms = commsRef
 		, commsCache = c
-		, tab = BestMoves
-		, bestMovesState = BestMovesState
-			{ bmsBoard = board
-			}
+		, board = b
 		}
 	pure ()
-
-data Tab = BestMoves deriving (Bounded, Enum, Eq, Ord, Read, Show)
-
-describeTab :: Tab -> String
-describeTab BestMoves = "Best Moves"
 
 data Repetitions = Finite Int | Infinity deriving (Eq, Ord, Read, Show)
 
@@ -76,15 +68,10 @@ data Comms = Comms
 	, sequenceNumber :: Int
 	}
 
-data BestMovesState = BestMovesState
-	{ bmsBoard :: M.Board
-	} deriving (Eq, Ord, Read, Show)
-
 data UIState = UIState
 	{ comms :: TVar Comms
 	, commsCache :: Comms
-	, tab :: Tab
-	, bestMovesState :: BestMovesState
+	, board :: M.Board
 	}
 
 mctsThread :: TVar Comms -> IO ()
@@ -145,20 +132,9 @@ modifyComms s f = do
 
 renderUIState :: UIState -> [Widget ()]
 renderUIState s = pure . joinBorders $ vBox
-	[ renderTabs (tab s)
-	, renderStats (statistics (tree (commsCache s)))
-	, renderTab s
+	[ renderStats (statistics (tree (commsCache s)))
+	, renderBestMoves (board s) (tree (commsCache s))
 	]
-
-renderTabs :: Tab -> Widget n
-renderTabs t = id
-	. hBox
-	. intersperse (vLimit 3 vBorder)
-	. map renderTabLabel
-	$ [minBound .. maxBound]
-	where
-	renderTabLabel = vBox . sequence [highlight, hCenter . str . describeTab, highlight]
-	highlight t' = if t == t' then hBorder else str " "
 
 renderStats :: MCStats -> Widget n
 renderStats stats = vBox
@@ -169,19 +145,15 @@ renderStats stats = vBox
 	show5Float v = showFFloat (Just 5) v ""
 	averageValue = cumulativeUtility stats / visitCount stats
 
-renderTab :: UIState -> Widget n
-renderTab s = case tab s of
-	BestMoves -> renderBestMoves (bestMovesState s) (tree (commsCache s))
-
-renderBestMoves :: BestMovesState -> DrMarioTree -> Widget n
-renderBestMoves bms t = vBox
+renderBestMoves :: M.Board -> DrMarioTree -> Widget n
+renderBestMoves b t = vBox
 	$  [ hCenter (str "(There are unexplored placements from this position.)") | _ <- take 1 (unexplored t) ]
 	++ [ go ]
 	where
 	go = id
 		. hBox
 		. take 3
-		. map (renderMoveAndStats (bmsBoard bms))
+		. map (renderMoveAndStats b)
 		. sortOn (negate . cumulativeUtility . statistics . snd)
 		. HM.toList
 		. children
