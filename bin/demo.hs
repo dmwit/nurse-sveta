@@ -10,6 +10,7 @@ import Control.Monad.IO.Class
 import Data.HashMap.Strict (HashMap)
 import Data.Maybe
 import Data.List
+import Data.Time
 import Dr.Mario.Sveta
 import Dr.Mario.Sveta.MCTS
 import Graphics.Vty
@@ -40,10 +41,14 @@ main = do
 	forkIO (mctsThread commsRef)
 	forkIO (timerThread timerChan)
 
+	now <- getCurrentTime
 	customMain (mkVty defaultConfig) (Just timerChan) app UIState
 		{ comms = commsRef
 		, commsCache = c
 		, board = b
+		, nowTime = now
+		, toggleTime = now
+		, toggleVisitCount = 0
 		}
 	pure ()
 
@@ -72,6 +77,9 @@ data UIState = UIState
 	{ comms :: TVar Comms
 	, commsCache :: Comms
 	, board :: M.Board
+	, nowTime :: UTCTime
+	, toggleTime :: UTCTime
+	, toggleVisitCount :: Double
 	}
 
 mctsThread :: TVar Comms -> IO ()
@@ -107,13 +115,21 @@ theAttrMap = attrMap defAttr []
 
 handleEvent :: UIState -> BrickEvent () () -> EventM () (Next UIState)
 handleEvent s e = case e of
-	AppEvent () -> modifyComms s id
+	AppEvent () -> do
+		now <- liftIO getCurrentTime
+		modifyComms s { nowTime = now } id
 	VtyEvent e' -> case e' of
 		EvKey (KChar 'c') [MCtrl] -> halt s
-		EvKey (KChar ' ') [] -> modifyComms s $ \c -> c
-			{ repetitions = toggleFiniteness (repetitions c)
-			, sequenceNumber = 1 + sequenceNumber c
-			}
+		EvKey (KChar ' ') [] -> do
+			now <- liftIO getCurrentTime
+			modifyComms s
+				{ nowTime = now
+				, toggleTime = now
+				, toggleVisitCount = (visitCount . statistics . tree . commsCache) s
+				} $ \c -> c
+				{ repetitions = toggleFiniteness (repetitions c)
+				, sequenceNumber = 1 + sequenceNumber c
+				}
 		EvKey (KChar 's') [] -> modifyComms s $ \c -> c
 			{ repetitions = increment (repetitions c)
 			, sequenceNumber = 1 + sequenceNumber c
@@ -133,6 +149,10 @@ modifyComms s f = do
 renderUIState :: UIState -> [Widget ()]
 renderUIState s = pure . joinBorders $ vBox
 	[ renderStats (statistics (tree (commsCache s)))
+	, hCenter $ renderRate
+		(repetitions (commsCache s))
+		(diffUTCTime (nowTime s) (toggleTime s))
+		((visitCount . statistics . tree . commsCache) s - toggleVisitCount s)
 	, renderBestMoves (board s) (tree (commsCache s))
 	]
 
@@ -144,6 +164,18 @@ renderStats stats = vBox
 	where
 	show5Float v = showFFloat (Just 5) v ""
 	averageValue = cumulativeUtility stats / visitCount stats
+
+renderRate :: Repetitions -> NominalDiffTime -> Double -> Widget n
+renderRate (Finite _) _ _ = str "Currently in single-stepping mode."
+renderRate Infinity t_ c = str
+	. showFFloat (Just 0) c
+	. (" rollouts in "++)
+	. showFFloat (Just 2) t
+	. (" seconds = "++)
+	. showFFloat (Just 2) (c/t)
+	$ " rps"
+	where
+	t = realToFrac t_
 
 renderBestMoves :: M.Board -> DrMarioTree -> Widget n
 renderBestMoves b t = vBox

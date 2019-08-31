@@ -40,5 +40,6 @@ executable nurse-sveta-demo
   ghc-options:         -threaded
   build-depends:       brick ^>=0.41,
                        stm ^>=2.5,
+                       time ^>=1.8,
                        vty ^>=5.24,
                        nurse-sveta
