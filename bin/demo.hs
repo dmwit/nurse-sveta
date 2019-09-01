@@ -30,7 +30,7 @@ main = do
 	b <- flip M.randomBoard level <$> uniformR (2, maxBound) gen
 	c1 <- M.decodeColor <$> uniformR (2, maxBound) gen
 	c2 <- M.decodeColor <$> uniformR (2, maxBound) gen
-	params <- dmReroot (dmParameters gen b) (ChanceMove c1 c2)
+	params <- dmReroot (dmParameters gen b) [ChanceMove c1 c2]
 	initialTree <- emptyTree params
 
 	let c = Comms
@@ -38,6 +38,7 @@ main = do
 	    	, params = params
 	    	, repetitions = Finite 0
 	    	, sequenceNumber = minBound
+	    	, iterations = 0
 	    	}
 	commsRef <- newTVarIO c
 	timerChan <- newBChan 1
@@ -53,7 +54,7 @@ main = do
 		, selectedMoves = []
 		, nowTime = now
 		, toggleTime = now
-		, toggleVisitCount = 0
+		, toggleIterations = 0
 		}
 	pure ()
 
@@ -76,6 +77,7 @@ data Comms = Comms
 	, params :: DrMarioParameters
 	, repetitions :: Repetitions
 	, sequenceNumber :: Int
+	, iterations :: Double
 	}
 
 data UIState = UIState
@@ -86,7 +88,7 @@ data UIState = UIState
 	, selectedMoves :: [MCMove]
 	, nowTime :: UTCTime
 	, toggleTime :: UTCTime
-	, toggleVisitCount :: Double
+	, toggleIterations :: Double
 	}
 
 mctsThread :: TVar Comms -> IO ()
@@ -102,6 +104,7 @@ mctsThread commsRef = forever $ do
 		then writeTVar commsRef c
 			{ tree = t
 			, repetitions = decrement (repetitions c)
+			, iterations = iterations c + 1
 			}
 		else pure ()
 
@@ -132,7 +135,7 @@ handleEvent s e = case e of
 			modifyComms s
 				{ nowTime = now
 				, toggleTime = now
-				, toggleVisitCount = (visitCount . statistics . tree . commsCache) s
+				, toggleIterations = iterations (commsCache s)
 				} $ \c -> c
 				{ repetitions = toggleFiniteness (repetitions c)
 				, sequenceNumber = 1 + sequenceNumber c
@@ -145,10 +148,11 @@ handleEvent s e = case e of
 		EvKey KRight [] -> changeFocus KRight s
 		EvKey KDown [] -> changeFocus KDown s
 		EvKey KUp [] -> changeFocus KUp s
+		EvKey (KChar 'r') [] -> reroot s
 		_ -> continue s
 	_ -> continue s
 
-modifyComms :: UIState -> (Comms -> Comms) -> EventM () (Next UIState)
+modifyComms :: UIState -> (Comms -> Comms) -> EventM n (Next UIState)
 modifyComms s f = do
 	c <- liftIO . atomically $ do
 		c <- readTVar (comms s)
@@ -199,6 +203,27 @@ changeFocus key s = continue $ case (key, focusTree (selectedMoves s) (tree (com
 		_ -> s
 	_ -> s
 
+reroot :: UIState -> EventM n (Next UIState)
+reroot s = case focusTree ms (tree c) of
+	Just (TreeFocus ts (Just i)) | visitCount (statistics tree') > 0 -> do
+		params' <- liftIO $ dmReroot (params c) ms
+		modifyComms s
+			{ board = board'
+			, rootBoard = board'
+			, selectedMoves = []
+			} $ \c -> c
+			{ tree = tree'
+			, params = params'
+			, sequenceNumber = sequenceNumber c + 1
+			}
+		where
+		(m, tree') = ts !! i
+		board' = makeMove (board s) m
+	_ -> continue s
+	where
+	c = commsCache s
+	ms = selectedMoves s
+
 safeInit :: [a] -> [a]
 safeInit xs = zipWith const xs (drop 1 xs)
 
@@ -231,21 +256,24 @@ makeMove b m = case m of
 
 renderUIState :: UIState -> [Widget ()]
 renderUIState s = pure . joinBorders $ vBox
-	[ renderStats (statistics (tree (commsCache s)))
+	[ renderRollouts . iterations . commsCache $ s
 	, hCenter $ renderRate
 		(repetitions (commsCache s))
 		(diffUTCTime (nowTime s) (toggleTime s))
-		((visitCount . statistics . tree . commsCache) s - toggleVisitCount s)
+		(iterations (commsCache s) - toggleIterations s)
 	, renderBestMoves (board s) (focusStats (selectedMoves s) (tree (commsCache s)))
 	]
 
 renderStats :: MCStats -> Widget n
 renderStats stats = vBox
-	[ hCenter . str $ (show . floor . visitCount) stats ++ " rollouts"
+	[ renderRollouts . visitCount $ stats
 	, hCenter . str $ "value: " ++ (show5Float . meanUtility) stats
 	]
 	where
 	show5Float v = showFFloat (Just 5) v ""
+
+renderRollouts :: Double -> Widget n
+renderRollouts n = hCenter . str $ (show . floor) n ++ " rollouts"
 
 renderRate :: Repetitions -> NominalDiffTime -> Double -> Widget n
 renderRate (Finite _) _ _ = str "Currently in single-stepping mode."
