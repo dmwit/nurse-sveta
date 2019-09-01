@@ -21,6 +21,9 @@ data MCStats = MCStats
 	, cumulativeUtility :: !Double
 	} deriving (Eq, Ord, Read, Show)
 
+meanUtility :: MCStats -> Double
+meanUtility s = cumulativeUtility s / visitCount s
+
 instance Monoid MCStats where mempty = MCStats 0 0
 instance Semigroup MCStats where
 	s1 <> s2 = MCStats

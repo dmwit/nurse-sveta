@@ -1,6 +1,9 @@
+{-# LANGUAGE DeriveFunctor #-}
+
 import Brick
 import Brick.BChan
 import Brick.Widgets.Border
+import Brick.Widgets.Border.Style
 import Brick.Widgets.Center
 import Control.Concurrent
 import Control.Concurrent.STM
@@ -45,7 +48,9 @@ main = do
 	customMain (mkVty defaultConfig) (Just timerChan) app UIState
 		{ comms = commsRef
 		, commsCache = c
+		, rootBoard = b
 		, board = b
+		, selectedMoves = []
 		, nowTime = now
 		, toggleTime = now
 		, toggleVisitCount = 0
@@ -76,7 +81,9 @@ data Comms = Comms
 data UIState = UIState
 	{ comms :: TVar Comms
 	, commsCache :: Comms
+	, rootBoard :: M.Board
 	, board :: M.Board
+	, selectedMoves :: [MCMove]
 	, nowTime :: UTCTime
 	, toggleTime :: UTCTime
 	, toggleVisitCount :: Double
@@ -134,6 +141,10 @@ handleEvent s e = case e of
 			{ repetitions = increment (repetitions c)
 			, sequenceNumber = 1 + sequenceNumber c
 			}
+		EvKey KLeft [] -> changeFocus KLeft s
+		EvKey KRight [] -> changeFocus KRight s
+		EvKey KDown [] -> changeFocus KDown s
+		EvKey KUp [] -> changeFocus KUp s
 		_ -> continue s
 	_ -> continue s
 
@@ -146,6 +157,78 @@ modifyComms s f = do
 		pure c'
 	continue s { commsCache = c }
 
+data TreeFocus a = TreeFocus
+	{ bestMoves :: [(MCMove, a)]
+	, selectedMoveIndex :: Maybe Int
+	} deriving (Eq, Ord, Read, Show, Functor)
+
+bestMovesFor :: DrMarioTree -> [(MCMove, DrMarioTree)]
+bestMovesFor t = exploredMoves ++ unexploredMoves where
+	exploredMoves = sortOn (negate . meanUtility . statistics . snd) (HM.toList (children t))
+	unexploredMoves = [(m, MCTree mempty mempty mempty) | m <- unexplored t]
+
+focusTree :: [MCMove] -> DrMarioTree -> Maybe (TreeFocus DrMarioTree)
+focusTree [] t = Just TreeFocus
+	{ bestMoves = bestMovesFor t
+	, selectedMoveIndex = Nothing
+	}
+focusTree [m] t = Just TreeFocus
+	{ bestMoves = ms
+	, selectedMoveIndex = findIndex ((m==) . fst) ms
+	} where ms = bestMovesFor t
+focusTree (m:ms) t = HM.lookup m (children t) >>= focusTree ms
+
+focusStats :: [MCMove] -> DrMarioTree -> Maybe (TreeFocus MCStats)
+focusStats ms t = fmap (fmap statistics) (focusTree ms t)
+
+changeFocus :: Key -> UIState -> EventM n (Next UIState)
+changeFocus key s = continue $ case (key, focusTree (selectedMoves s) (tree (commsCache s))) of
+	(KUp, Nothing) -> findValidMovePrefix s
+	(KUp, Just ft) -> refreshBoard s { selectedMoves = safeInit (selectedMoves s) }
+	(_, Just (TreeFocus ((m,_):_) Nothing)) -> replaceLastMove s m
+	(_, Just (TreeFocus ms (Just i))) -> case key of
+		KLeft  -> replaceLastMove s $ fst (ms !! max (i-1) 0)
+		KRight -> replaceLastMove s $ fst (ms !! min (i+1) (length ms-1))
+		KDown  -> case bestMovesFor t of
+			(m',_):_ -> s
+				{ selectedMoves = selectedMoves s ++ [m']
+				, board = makeMove (board s) m
+				}
+			_ -> s
+			where (m, t) = ms !! i
+		_ -> s
+	_ -> s
+
+safeInit :: [a] -> [a]
+safeInit xs = zipWith const xs (drop 1 xs)
+
+replaceLastMove :: UIState -> MCMove -> UIState
+replaceLastMove s m = s { selectedMoves = safeInit (selectedMoves s) ++ [m] }
+
+findValidMovePrefix :: UIState -> UIState
+findValidMovePrefix s = refreshBoard s { selectedMoves = go (selectedMoves s) (tree (commsCache s)) } where
+	go [] _ = []
+	go (m:ms) t = case HM.lookup m (children t) of
+		Nothing -> []
+		Just t' -> m : go ms t'
+
+refreshBoard :: UIState -> UIState
+refreshBoard s = s { board = go (rootBoard s) (selectedMoves s) } where
+	go b [] = b
+	go b [m] = b
+	go b (m:ms) = go (makeMove b m) ms
+
+makeMove :: M.Board -> MCMove -> M.Board
+makeMove b m = case m of
+	ChanceMove _ _ -> b
+	AIMove p -> case M.place b p of
+		Just (_, b') -> b'
+		Nothing -> error
+			$ "The impossible happened: the AI chose the illegal move "
+			++ show p
+			++ " on this board:\n"
+			++ M.pp b
+
 renderUIState :: UIState -> [Widget ()]
 renderUIState s = pure . joinBorders $ vBox
 	[ renderStats (statistics (tree (commsCache s)))
@@ -153,17 +236,16 @@ renderUIState s = pure . joinBorders $ vBox
 		(repetitions (commsCache s))
 		(diffUTCTime (nowTime s) (toggleTime s))
 		((visitCount . statistics . tree . commsCache) s - toggleVisitCount s)
-	, renderBestMoves (board s) (tree (commsCache s))
+	, renderBestMoves (board s) (focusStats (selectedMoves s) (tree (commsCache s)))
 	]
 
 renderStats :: MCStats -> Widget n
 renderStats stats = vBox
 	[ hCenter . str $ (show . floor . visitCount) stats ++ " rollouts"
-	, hCenter . str $ "value: " ++ show5Float averageValue
+	, hCenter . str $ "value: " ++ (show5Float . meanUtility) stats
 	]
 	where
 	show5Float v = showFFloat (Just 5) v ""
-	averageValue = cumulativeUtility stats / visitCount stats
 
 renderRate :: Repetitions -> NominalDiffTime -> Double -> Widget n
 renderRate (Finite _) _ _ = str "Currently in single-stepping mode."
@@ -177,32 +259,47 @@ renderRate Infinity t_ c = str
 	where
 	t = realToFrac t_
 
-renderBestMoves :: M.Board -> DrMarioTree -> Widget n
-renderBestMoves b t = vBox
-	$  [ hCenter (str "(There are unexplored placements from this position.)") | _ <- take 1 (unexplored t) ]
-	++ [ go ]
+renderBestMoves :: M.Board -> Maybe (TreeFocus MCStats) -> Widget n
+renderBestMoves b Nothing = hCenter (str "The path you were looking at has been invalidated.")
+renderBestMoves b (Just (TreeFocus ms mi)) = id
+	. hBox
+	. take movesToShow
+	. zipWith3 (renderMoveAndStats b) ranks focuses
+	. drop startingIndex
+	$ ms
 	where
-	go = id
-		. hBox
-		. take 3
-		. map (renderMoveAndStats b)
-		. sortOn (negate . cumulativeUtility . statistics . snd)
-		. HM.toList
-		. children
-		$ t
+	len = length ms
+	startingIndex = case mi of
+		Nothing -> 0
+		Just i -> max 0 (min (len-movesToShow) (i - movesToShow`div`2))
+	focuses = case mi of
+		Nothing -> repeat False
+		Just i -> replicate (i-startingIndex) False ++ [True] ++ repeat False
+	ranks = [startingIndex+1 ..]
 
-renderMoveAndStats :: M.Board -> (MCMove, MCTree MCStats MCMove) -> Widget n
-renderMoveAndStats b (m, t) = vBox
+movesToShow :: Int
+movesToShow = 5
+
+renderMoveAndStats :: M.Board -> Int -> Bool -> (MCMove, MCStats) -> Widget n
+renderMoveAndStats b rank focused (m, stats) = withBorderStyle style . border $ vBox
 	[ hCenter (renderMove b m)
-	, renderStats (statistics t)
-	]
+	, renderStats stats
+	, hCenter (str ("rank " ++ show rank))
+	] where
+	style = if focused then unicode else borderStyleFromChar ' '
 
 renderMove :: M.Board -> MCMove -> Widget n
 renderMove b (ChanceMove l r) = raw
-	$   (string defAttr padding <|> renderCell (M.Occupied l M.West) <|> renderCell (M.Occupied r M.East))
+	$   (string defAttr padding <|> renderCell (M.Occupied l M.West) <|> char defAttr ' ' <|> renderCell (M.Occupied r M.East))
 	<-> renderBoard b (const Nothing)
-	where padding = replicate (M.width b `div` 2 - 1) ' '
-renderMove b (AIMove p) = raw (renderBoard b pillOverlay) where
+	where padding = replicate (2*(M.width b `div` 2 - 1)) ' '
+renderMove b (AIMove p) = raw
+	-- if we put a blank line here, where the pill lookahead would go in the
+	-- other case, the display doesn't appear to jump around vertically when
+	-- navigating up and down the move tree
+	$   char defAttr ' '
+	<-> renderBoard b pillOverlay
+	where
 	pillOverlay pos
 		| pos == M.bottomLeftPosition p = Just (M.bottomLeftCell (M.content p))
 		| pos == M.otherPosition p = Just (M.otherCell (M.content p))
