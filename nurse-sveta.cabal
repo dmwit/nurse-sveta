@@ -20,6 +20,15 @@ common common
                        mwc-random ^>=0.14,
                        unordered-containers ^>=0.2.10
 
+common executable
+  hs-source-dirs:      bin
+  other-modules:       Util
+  ghc-options:         -threaded
+  build-depends:       brick ^>=0.41,
+                       stm ^>=2.5,
+                       time ^>=1.8,
+                       nurse-sveta
+
 library
   import:              common
   exposed-modules:     Dr.Mario.Sveta,
@@ -34,12 +43,13 @@ library
   hs-source-dirs:      src
 
 executable nurse-sveta-demo
-  import:              common
+  import:              common, executable
   main-is:             demo.hs
-  hs-source-dirs:      bin
-  ghc-options:         -threaded
-  build-depends:       brick ^>=0.41,
-                       stm ^>=2.5,
-                       time ^>=1.8,
-                       vty ^>=5.24,
-                       nurse-sveta
+  build-depends:       vty ^>=5.24
+
+executable nurse-sveta-play
+  import:              common, executable
+  main-is:             play.hs
+  build-depends:       optparse-applicative ^>=0.15,
+                       unbounded-delays ^>=0.1,
+                       vector ^>=0.12

@@ -7,7 +7,6 @@ import Brick.Widgets.Border.Style
 import Brick.Widgets.Center
 import Control.Concurrent
 import Control.Concurrent.STM
-import Control.Concurrent.STM.TVar
 import Control.Monad
 import Control.Monad.IO.Class
 import Data.HashMap.Strict (HashMap)
@@ -20,16 +19,15 @@ import Graphics.Vty
 import Numeric
 import System.Random.MWC
 import System.IO
+import Util
 import qualified Data.HashMap.Strict as HM
 import qualified Dr.Mario.Model as M
 
 main :: IO ()
 main = do
 	gen <- createSystemRandom
-	level <- uniformR (0,20) gen
-	b <- flip M.randomBoard level <$> uniformR (2, maxBound) gen
-	c1 <- M.decodeColor <$> uniformR (2, maxBound) gen
-	c2 <- M.decodeColor <$> uniformR (2, maxBound) gen
+	b <- randomBoard gen
+	(c1, c2) <- randomPill gen
 	params <- dmReroot (dmParameters gen b) [ChanceMove c1 c2]
 	initialTree <- emptyTree params
 
@@ -58,28 +56,6 @@ main = do
 		}
 	pure ()
 
-data Repetitions = Finite Int | Infinity deriving (Eq, Ord, Read, Show)
-
-toggleFiniteness :: Repetitions -> Repetitions
-toggleFiniteness (Finite _) = Infinity
-toggleFiniteness Infinity = Finite 0
-
-increment :: Repetitions -> Repetitions
-increment (Finite n) = Finite (n+1)
-increment Infinity = Infinity
-
-decrement :: Repetitions -> Repetitions
-decrement (Finite n) = Finite (n-1)
-decrement Infinity = Infinity
-
-data Comms = Comms
-	{ tree :: DrMarioTree
-	, params :: DrMarioParameters
-	, repetitions :: Repetitions
-	, sequenceNumber :: Int
-	, iterations :: Double
-	}
-
 data UIState = UIState
 	{ comms :: TVar Comms
 	, commsCache :: Comms
@@ -90,23 +66,6 @@ data UIState = UIState
 	, toggleTime :: UTCTime
 	, toggleIterations :: Double
 	}
-
-mctsThread :: TVar Comms -> IO ()
-mctsThread commsRef = forever $ do
-	c <- atomically $ do
-		c <- readTVar commsRef
-		guard (repetitions c > Finite 0)
-		pure c
-	t <- mcts (params c) (tree c)
-	atomically $ do
-		c' <- readTVar commsRef
-		if sequenceNumber c == sequenceNumber c'
-		then writeTVar commsRef c
-			{ tree = t
-			, repetitions = decrement (repetitions c)
-			, iterations = iterations c + 1
-			}
-		else pure ()
 
 timerThread :: BChan () -> IO ()
 timerThread chan = forever $ threadDelay 100000 >> writeBChan chan ()
