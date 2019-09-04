@@ -27,6 +27,7 @@ common executable
   build-depends:       brick ^>=0.41,
                        stm ^>=2.5,
                        time ^>=1.8,
+                       vty ^>=5.24,
                        nurse-sveta
 
 library
@@ -45,7 +46,6 @@ library
 executable nurse-sveta-demo
   import:              common, executable
   main-is:             demo.hs
-  build-depends:       vty ^>=5.24
 
 executable nurse-sveta-play
   import:              common, executable

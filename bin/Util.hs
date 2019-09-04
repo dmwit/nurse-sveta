@@ -4,8 +4,11 @@ import Control.Monad
 import Control.Concurrent.STM
 import Control.Concurrent.STM.TVar
 import Control.Applicative
+import Data.List
+import Data.Maybe
 import Dr.Mario.Sveta
 import Dr.Mario.Sveta.MCTS
+import Graphics.Vty
 import System.Random.MWC
 import qualified Dr.Mario.Model as M
 
@@ -56,3 +59,45 @@ mctsThread commsRef = forever $ do
 			, iterations = iterations c + 1
 			}
 		else pure ()
+
+renderLookaheadFor :: M.Board -> M.Color -> M.Color -> Image
+renderLookaheadFor b l r = horizCat
+	[ string defAttr padding
+	, renderCell (M.Occupied l M.West)
+	, char defAttr ' '
+	, renderCell (M.Occupied r M.East)
+	] where padding = replicate (2*(M.width b `div` 2 - 1)) ' '
+
+renderBoard :: M.Board -> (M.Position -> Maybe M.Cell) -> Image
+renderBoard b overlay = vertCat
+	[ horizCat . intersperse (char defAttr ' ') $
+		[ renderCell (fromMaybe (M.unsafeGet b pos) (overlay pos))
+		| x <- [0 .. M.width b-1]
+		, let pos = M.Position x y
+		]
+	| y <- [M.height b-1, M.height b-2 .. 0]
+	]
+
+pillOverlay :: M.Pill -> M.Position -> Maybe M.Cell
+pillOverlay p pos
+	| pos == M.bottomLeftPosition p = Just (M.bottomLeftCell (M.content p))
+	| pos == M.otherPosition p = Just (M.otherCell (M.content p))
+	| otherwise = Nothing
+
+renderCell :: M.Cell -> Image
+renderCell M.Empty = char defAttr ' '
+renderCell (M.Occupied c s) = char (colorAttr c) (shapeChar s)
+
+colorAttr :: M.Color -> Attr
+colorAttr c = defAttr `withForeColor` case c of
+	M.Red    -> red
+	M.Blue   -> cyan
+	M.Yellow -> yellow
+
+shapeChar :: M.Shape -> Char
+shapeChar M.Virus        = '☻'
+shapeChar M.Disconnected = 'o'
+shapeChar M.North        = '^'
+shapeChar M.South        = 'v'
+shapeChar M.East         = '>'
+shapeChar M.West         = '<'

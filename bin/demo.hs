@@ -76,11 +76,8 @@ app = App
 	, appChooseCursor = neverShowCursor
 	, appHandleEvent = handleEvent
 	, appStartEvent = pure
-	, appAttrMap = const theAttrMap
+	, appAttrMap = const (attrMap defAttr [])
 	}
-
-theAttrMap :: AttrMap
-theAttrMap = attrMap defAttr []
 
 handleEvent :: UIState -> BrickEvent () () -> EventM () (Next UIState)
 handleEvent s e = case e of
@@ -277,45 +274,11 @@ renderMoveAndStats b rank focused (m, stats) = withBorderStyle style . border $ 
 
 renderMove :: M.Board -> MCMove -> Widget n
 renderMove b (ChanceMove l r) = raw
-	$   (string defAttr padding <|> renderCell (M.Occupied l M.West) <|> char defAttr ' ' <|> renderCell (M.Occupied r M.East))
+	$   renderLookaheadFor b l r
 	<-> renderBoard b (const Nothing)
-	where padding = replicate (2*(M.width b `div` 2 - 1)) ' '
 renderMove b (AIMove p) = raw
 	-- if we put a blank line here, where the pill lookahead would go in the
 	-- other case, the display doesn't appear to jump around vertically when
 	-- navigating up and down the move tree
 	$   char defAttr ' '
-	<-> renderBoard b pillOverlay
-	where
-	pillOverlay pos
-		| pos == M.bottomLeftPosition p = Just (M.bottomLeftCell (M.content p))
-		| pos == M.otherPosition p = Just (M.otherCell (M.content p))
-		| otherwise = Nothing
-
-renderBoard :: M.Board -> (M.Position -> Maybe M.Cell) -> Image
-renderBoard b overlay = vertCat
-	[ horizCat . intersperse (char defAttr ' ') $
-		[ renderCell (fromMaybe (M.unsafeGet b pos) (overlay pos))
-		| x <- [0 .. M.width b-1]
-		, let pos = M.Position x y
-		]
-	| y <- [M.height b-1, M.height b-2 .. 0]
-	]
-
-renderCell :: M.Cell -> Image
-renderCell M.Empty = char defAttr ' '
-renderCell (M.Occupied c s) = char (colorAttr c) (shapeChar s)
-
-colorAttr :: M.Color -> Attr
-colorAttr c = defAttr `withForeColor` case c of
-	M.Red    -> red
-	M.Blue   -> cyan
-	M.Yellow -> yellow
-
-shapeChar :: M.Shape -> Char
-shapeChar M.Virus        = '☻'
-shapeChar M.Disconnected = 'o'
-shapeChar M.North        = '^'
-shapeChar M.South        = 'v'
-shapeChar M.East         = '>'
-shapeChar M.West         = '<'
+	<-> renderBoard b (pillOverlay p)
