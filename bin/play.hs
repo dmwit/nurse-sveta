@@ -4,8 +4,9 @@
 {-# LANGUAGE DeriveTraversable #-}
 {-# LANGUAGE LambdaCase #-}
 
-import Brick
+import Brick as B
 import Brick.BChan
+import Brick.Widgets.Center
 import Control.Concurrent
 import Control.Concurrent.STM
 import Control.Concurrent.STM.TVar
@@ -21,6 +22,7 @@ import Data.Word
 import Dr.Mario.Model
 import Dr.Mario.Sveta
 import Dr.Mario.Sveta.MCTS
+import Numeric
 import Options.Applicative
 import System.IO
 import System.Random.MWC
@@ -55,7 +57,7 @@ main = do
 	(outputUpdate, closeOutput) <- openOutput (logFile opts)
 
 	case ui opts of
-		Visual -> visual  timerChan outputUpdate board
+		Visual -> visual  timerChan outputUpdate board c1 c2
 		Log    -> textual timerChan (\u -> outputUpdate u >> putStr (showUpdate u))
 		None   -> textual timerChan outputUpdate
 
@@ -148,7 +150,7 @@ evalStartingConditions randomSource = do
 	pure (b, U.randomPill gen)
 
 data GameUpdate
-	= Ended
+	= Ended Pill
 	| Timeout -- no rollouts had been completed within the time allotted for making a move
 	| Stall -- too many pills went by without clearing any viruses
 	| Continue Pill Color Color
@@ -162,12 +164,16 @@ maximumOn f (a:as) = go a (f a) as where
 
 bestMove :: Color -> Color -> DrMarioTree -> (GameUpdate, DrMarioTree)
 bestMove c1 c2 t = case maximumOn (meanUtility . statistics . snd) (HM.toList (children t)) of
-	Nothing -> (if null (unexplored t) then Ended else Timeout, t)
-	Just (AIMove p, t') -> case HM.lookup (ChanceMove c1 c2) (children t') of
-		-- We could expand the node here instead of timing out, but this
-		-- probably will never happen anyway, so...?
-		Nothing -> (Timeout, t)
-		Just t'' -> (Continue p c1 c2, t'')
+	Nothing
+		| null (unexplored t) -> error "The impossible happened! The game was not yet won or lost, but there were no valid moves."
+		| otherwise -> (Timeout, t)
+	Just (AIMove p, t')
+		| null (children t') && null (unexplored t') -> (Ended p, t')
+		| otherwise -> case HM.lookup (ChanceMove c1 c2) (children t') of
+			-- We could expand the node here instead of timing out, but this
+			-- probably will never happen anyway, so...?
+			Nothing -> (Timeout, t)
+			Just t'' -> (Continue p c1 c2, t'')
 	Just (m, _) -> error
 		$  "The impossible happened! It was the AI's turn, but the best available move was"
 		++ show m
@@ -207,10 +213,13 @@ timerThread (MkFixed micros) timerChan commsRef genPill = go stallThreshold wher
 		writeBChan timerChan (iterations comms, ending)
 
 showUpdate :: GameUpdate -> String
-showUpdate Ended = "end\n"
+showUpdate (Ended p) = showPill p ++ "end\n"
 showUpdate Timeout = "timeout\n"
 showUpdate Stall = "stall\n"
-showUpdate (Continue p _ _) = id
+showUpdate (Continue p _ _) = showPill p
+
+showPill :: Pill -> String
+showPill p = id
 	. shows (x (bottomLeftPosition p))
 	. (' ':)
 	. shows (y (bottomLeftPosition p))
@@ -245,18 +254,20 @@ data Progress = Progress
 
 data UIState = UIState
 	{ board :: Board
+	, nextPill :: Maybe (Color, Color)
 	, startProgress :: Progress
 	, lastProgress :: Progress
 	, queuedUpdate :: Maybe GameUpdate
 	, queuedProgress :: Maybe Progress
 	} deriving (Eq, Ord, Read, Show)
 
-visual :: BChan (Double, GameUpdate) -> (GameUpdate -> IO ()) -> Board -> IO ()
-visual timerChan outputUpdate b = do
+visual :: BChan (Double, GameUpdate) -> (GameUpdate -> IO ()) -> Board -> Color -> Color -> IO ()
+visual timerChan outputUpdate b c1 c2 = do
 	now <- getCurrentTime
 	let p = Progress { pIterations = 0, pTime = now }
-	customMain (Vty.mkVty Vty.defaultConfig) (Just timerChan) app UIState
+	customMain (Vty.mkVty Vty.defaultConfig) (Just timerChan) (app outputUpdate) UIState
 		{ board = b
+		, nextPill = Just (c1, c2)
 		, startProgress = p
 		, lastProgress = p
 		, queuedUpdate = Nothing
@@ -264,21 +275,23 @@ visual timerChan outputUpdate b = do
 		}
 	pure ()
 
-app :: App UIState (Double, GameUpdate) ()
-app = App
+app :: (GameUpdate -> IO ()) -> App UIState (Double, GameUpdate) ()
+app outputUpdate = App
 	{ appDraw = renderUIState
 	, appChooseCursor = neverShowCursor
-	, appHandleEvent = handleEvent
+	, appHandleEvent = handleEvent outputUpdate
 	, appStartEvent = pure
 	, appAttrMap = const (attrMap Vty.defAttr [])
 	}
 
-handleEvent :: UIState -> BrickEvent () (Double, GameUpdate) -> EventM () (Next UIState)
-handleEvent s = \case
+handleEvent :: (GameUpdate -> IO ()) -> UIState -> BrickEvent () (Double, GameUpdate) -> EventM () (Next UIState)
+handleEvent outputUpdate s = \case
 	AppEvent (iterationsNow, update) -> do
 		timeNow <- liftIO getCurrentTime
+		liftIO (outputUpdate update)
 		continue s
-			{ board = maybe id applyGameUpdate (queuedUpdate s) (board s)
+			{ board = maybe id placeGameUpdate (queuedUpdate s) (board s)
+			, nextPill = lookaheadFromGameUpdate update
 			, lastProgress = fromMaybe (lastProgress s) (queuedProgress s)
 			, queuedUpdate = Just update
 			, queuedProgress = Just Progress
@@ -291,21 +304,60 @@ handleEvent s = \case
 		_ -> continue s
 	_ -> continue s
 
-applyGameUpdate :: GameUpdate -> Board -> Board
-applyGameUpdate (Continue p _ _) b = case place b p of
+pillFromGameUpdate :: GameUpdate -> Maybe Pill
+pillFromGameUpdate (Ended p) = Just p
+pillFromGameUpdate (Continue p _ _) = Just p
+pillFromGameUpdate _ = Nothing
+
+lookaheadFromGameUpdate :: GameUpdate -> Maybe (Color, Color)
+lookaheadFromGameUpdate (Continue _ l r) = Just (l, r)
+lookaheadFromGameUpdate _ = Nothing
+
+placeGameUpdate :: GameUpdate -> Board -> Board
+placeGameUpdate update b = case pillFromGameUpdate update of
 	Nothing -> error
-		$  "The impossible happened in applyGameUpdate!\n"
-		++ "The AI chose the invalid move " ++ show p
-	Just (_, b) -> b
-applyGameUpdate update _ = error
-	$ "The impossible happened! Received more game updates after the game ostensible ended by a "
-	++ showUpdate update
-	++ "."
+		$ "The impossible happened! Received more game updates after the game ostensible ended by a "
+		++ showUpdate update
+		++ "."
+	Just p -> case place b p of
+		Nothing -> error
+			$  "The impossible happened in placeGameUpdate!\n"
+			++ "The AI chose the invalid move " ++ show p
+		Just (_, b') -> b'
 
 renderUIState :: UIState -> [Widget ()]
 renderUIState s = pure . joinBorders . vBox $
-	[ raw boardImage
+	[ hCenter (raw (lookaheadImage Vty.<-> boardImage))
+	, B.str " "
+	, status
+	, B.str " "
+	, maybe (B.str " ") (renderProgress "Move" (lastProgress s)) (queuedProgress s)
+	, maybe (B.str " ") (renderProgress "Game" (startProgress s)) (queuedProgress s)
 	] where
-	boardImage = case queuedUpdate s of
-		Just (Continue p l r) -> renderLookaheadFor (board s) l r Vty.<-> renderBoard (board s) (pillOverlay p)
-		_                     -> Vty.char Vty.defAttr ' '         Vty.<-> renderBoard (board s) (const Nothing)
+	lookaheadImage = case nextPill s of
+		Nothing -> Vty.char Vty.defAttr ' '
+		Just (l,r) -> renderLookaheadFor (board s) l r
+	boardImage = renderBoard (board s) $ case queuedUpdate s >>= pillFromGameUpdate of
+		Nothing -> const Nothing
+		Just p -> pillOverlay p
+	status = hCenter . B.str $ case queuedUpdate s of
+		Nothing -> "Running..."
+		Just Continue{} -> "Running..."
+		Just Ended{} -> "The game has concluded normally."
+		Just Timeout -> "Failed to complete one rollout in the timeout allotted."
+		Just Stall -> "Stalemate: " ++ show (floor stallThreshold) ++ " pills have been placed without clearing any viruses."
+
+renderProgress :: String -> Progress -> Progress -> Widget n
+renderProgress durationDescription old new = hCenter . B.str
+	$  durationDescription
+	++ ": "
+	++ pad 8 (show (floor dIterations))
+	++ " rollouts /"
+	++ pad 8 (showFFloat (Just 2) dTime "")
+	++ "s = "
+	++ pad 6 (show (round (dIterations / dTime)))
+	++ "rps"
+	where
+	dIterations = pIterations new - pIterations old
+	dTime = realToFrac (diffUTCTime (pTime new) (pTime old)) :: Double
+	pad n s = replicate (n - length s) ' ' ++ s
