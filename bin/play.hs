@@ -11,24 +11,33 @@ import Control.Concurrent
 import Control.Concurrent.STM
 import Control.Concurrent.STM.TVar
 import Control.Concurrent.Thread.Delay
+import Control.Monad
 import Control.Monad.IO.Class
+import Data.ByteString.Builder (Builder)
 import Data.Char
 import Data.Fixed
+import Data.Foldable
 import Data.IORef
 import Data.Maybe
 import Data.Time
 import Data.Vector.Unboxed (Vector)
 import Data.Word
-import Dr.Mario.Model
+import Dr.Mario.Model as M
 import Dr.Mario.Sveta
 import Dr.Mario.Sveta.MCTS
 import Numeric
 import Options.Applicative
+import System.Exit
 import System.IO
 import System.Random.MWC
 import Util as U
+import qualified Data.Attoparsec.ByteString.Lazy as A
+import qualified Data.ByteString.Builder as B
+import qualified Data.ByteString.Char8 as C8
+import qualified Data.ByteString.Lazy.Char8 as LC8
 import qualified Data.HashMap.Strict as HM
 import qualified Data.Vector.Unboxed as V
+import qualified Dr.Mario.Protocol.Raw as Proto
 import qualified Graphics.Vty as Vty
 import qualified Options.Applicative.Help.Pretty as D
 import qualified Options.Applicative.Help.Chunk as D
@@ -36,7 +45,7 @@ import qualified Options.Applicative.Help.Chunk as D
 main :: IO ()
 main = do
 	opts <- execParser evaluationOptions
-	(board, genPill) <- readStartingConditions (startingConditions opts) >>= evalStartingConditions
+	(board, genPill) <- readBoardSelection (boardSelection opts) >>= evalBoardSelection
 	(c1, c2) <- genPill
 
 	gen <- createSystemRandom -- we want this to be independent of the randomness, if any, used in genPill
@@ -54,28 +63,30 @@ main = do
 	forkIO (mctsThread commsRef)
 	forkIO (timerThread (moveTime opts) timerChan commsRef genPill)
 
-	(outputUpdate, closeOutput) <- openOutput (logFile opts)
+	mh <- traverse (\fp -> openFile fp WriteMode) (logFile opts)
+	let hs = [stdout | ui opts == Log] ++ toList mh
+	traverse_ (\h -> B.hPutBuilder h (ppLn board)) hs
 
 	case ui opts of
-		Visual -> visual  timerChan outputUpdate board c1 c2
-		Log    -> textual timerChan (\u -> outputUpdate u >> putStr (showUpdate u))
-		None   -> textual timerChan outputUpdate
+		Visual -> visual  timerChan hs board c1 c2
+		_      -> textual timerChan hs
 
-	closeOutput
+	traverse_ hClose mh
 
 data EvaluationOptions = EvaluationOptions
 	{ moveTime :: Micro
 	, ui :: UIFormat
 	, logFile :: Maybe FilePath
-	, startingConditions :: Maybe FilePath
+	, boardSelection :: Maybe FilePath
 	} deriving (Eq, Ord, Read, Show)
 
 data UIFormat = Visual | Log | None deriving (Bounded, Enum, Eq, Ord, Read, Show)
 
-data StartingConditions
-	= MWC (Vector Word32)
-	| Exact Board [(Color, Color)]
-	| SystemRandom
+data LevelSelection = ExactLevel Int | RandomLevel deriving (Eq, Ord, Read, Show)
+data SeedSelection = ExactSeed (Vector Word32) | RandomSeed deriving (Eq, Ord, Read, Show)
+data BoardSelection
+	= ExactBoard Board [(Color, Color)]
+	| RandomBoard LevelSelection SeedSelection
 	deriving (Eq, Ord, Read, Show)
 
 type Q a = ([a], [a])
@@ -131,22 +142,80 @@ evaluationOptions = info (helper <*> parser)
 	helpChunk = helpDoc . D.unChunk
 	(<<$$>>) = D.chunked (D.<$$>)
 
-readStartingConditions :: Maybe FilePath -> IO StartingConditions
-readStartingConditions Nothing = pure SystemRandom
-readStartingConditions (Just fp) = pure SystemRandom -- TODO
+readBoardSelection :: Maybe FilePath -> IO BoardSelection
+readBoardSelection Nothing = pure (RandomBoard RandomLevel RandomSeed)
+readBoardSelection (Just fp) = do
+	bs <- LC8.readFile fp
+	case A.parse parseBoardSelection bs of
+		A.Done bs' selection
+			| LC8.null bs' -> pure selection
+			| otherwise -> die
+				$  "Extra junk at end of file " ++ fp ++ ".\n"
+				++ "The first little bit looks like this:\n"
+				++ show (LC8.take 40 bs')
+		A.Fail bs' ctxts err -> die
+			$  "Parsing of " ++ fp ++ " failed:\n"
+			++ err ++ "\n"
+			++ "Context stack:\n"
+			++ unlines ctxts
 
-evalStartingConditions :: StartingConditions -> IO (Board, IO (Color, Color))
-evalStartingConditions (Exact b ps) = do
+parseBoardSelection :: A.Parser BoardSelection
+parseBoardSelection = parseExactBoard <|> parseRandomBoard where
+	parseExactBoard = liftA2 ExactBoard
+		(parseAndWarn <* newline)
+		(some (liftA2 (,) parseColor parseColor <* newline))
+	parseColor = asum
+		[ Blue   <$ A.word8 98
+		, Red    <$ A.word8 114
+		, Yellow <$ A.word8 121
+		]
+	parseRandomBoard = liftA2 RandomBoard parseLevelSelection parseSeedSelection
+	parseLevelSelection = (parseExactLevel <|> parseRandomLevel) <* newline
+	parseExactLevel = do
+		d1 <- A.satisfy isDigit
+		md2 <- optional (A.satisfy isDigit)
+		let level = case md2 of
+		    	Just d2 -> fromDigits d1 d2
+		    	Nothing -> fromDigit d1
+		unless (level <= 20) (fail "expected a level in the 0-20 range")
+		pure (ExactLevel level)
+	parseRandomLevel = RandomLevel <$ random
+	parseSeedSelection = (parseExactSeed <|> parseRandomSeed) <* newline
+	parseExactSeed = do
+		ws <- A.sepBy1 parseAndWarn space
+		let len = length ws
+		unless (len == 258 || len <= 256) . fail
+			$ "expected either 258 or at most 256 words; saw "
+			++ show len
+			++ " instead"
+		pure (ExactSeed (V.fromList ws))
+	parseRandomSeed = RandomSeed <$ random
+	parseAndWarn :: Proto.Protocol a => A.Parser a
+	parseAndWarn = do
+		(v, warnings) <- Proto.parse
+		unless (null warnings) ((fail . unlines . map show) warnings)
+		pure v
+	random = A.string (C8.pack "random")
+	newline = A.word8 10
+	space = A.word8 32
+	fromDigit = subtract 48 . fromEnum
+	fromDigits a b = 10 * fromDigit a + fromDigit b
+	isDigit w = 48 <= w && w <= 57
+
+evalBoardSelection :: BoardSelection -> IO (Board, IO (Color, Color))
+evalBoardSelection (ExactBoard b ps) = do
 	qRef <- newIORef (ps, [])
 	pure . (,) b $ do
 		(p, q) <- pop <$> readIORef qRef
 		writeIORef qRef (push p q)
 		pure p
-evalStartingConditions randomSource = do
-	gen <- case randomSource of
-		SystemRandom -> createSystemRandom
-		MWC seed -> initialize seed
-	b <- U.randomBoard gen
+evalBoardSelection (RandomBoard levelSelection seedSelection) = do
+	gen <- case seedSelection of
+		ExactSeed seed -> initialize seed
+		RandomSeed -> createSystemRandom
+	b <- case levelSelection of
+		ExactLevel level -> liftA2 M.randomBoard (uniformR (2, maxBound) gen) (pure level)
+		RandomLevel -> U.randomBoard gen
 	pure (b, U.randomPill gen)
 
 data GameUpdate
@@ -212,39 +281,29 @@ timerThread (MkFixed micros) timerChan commsRef genPill = go stallThreshold wher
 			}
 		writeBChan timerChan (iterations comms, ending)
 
-showUpdate :: GameUpdate -> String
-showUpdate (Ended p) = showPill p ++ "end\n"
-showUpdate Timeout = "timeout\n"
-showUpdate Stall = "stall\n"
-showUpdate (Continue p _ _) = showPill p
-
-showPill :: Pill -> String
-showPill p = id
-	. shows (x (bottomLeftPosition p))
-	. (' ':)
-	. shows (y (bottomLeftPosition p))
-	. (' ':)
-	. (firstChar (bottomLeftColor (content p)):)
-	. (firstChar (     otherColor (content p)):)
-	. (' ':)
-	. (firstChar (orientation     (content p)):)
-	$ "\n"
+showUpdate :: GameUpdate -> Builder
+showUpdate = \case
+	Ended p -> ppLn p <> endBuilder
+	Timeout -> timeoutBuilder
+	Stall -> stallBuilder
+	Continue p _ _ -> ppLn p
 	where
-	firstChar :: Show a => a -> Char
-	firstChar = toLower . head . show
+	[endBuilder, timeoutBuilder, stallBuilder]
+		= map B.string8 ["end\n","timeout\n","stall\n"]
 
-openOutput :: Maybe FilePath -> IO (GameUpdate -> IO (), IO ())
-openOutput Nothing = pure (\_ -> pure (), pure ())
-openOutput (Just fp) = do
-	h <- openFile fp WriteMode
-	pure (hPutStr h . showUpdate, hClose h)
+ppLn :: Proto.Protocol a => a -> Builder
+ppLn a = snd (Proto.pp a) <> B.char8 '\n'
 
-textual :: BChan (Double, GameUpdate) -> (GameUpdate -> IO ()) -> IO ()
-textual timerChan outputUpdate = do
+outputUpdate :: [Handle] -> GameUpdate -> IO ()
+outputUpdate hs update = traverse_ (\h -> B.hPutBuilder h b) hs where
+	b = showUpdate update
+
+textual :: BChan (Double, GameUpdate) -> [Handle] -> IO ()
+textual timerChan hs = do
 	(_, update) <- readBChan timerChan
-	outputUpdate update
+	outputUpdate hs update
 	case update of
-		Continue{} -> textual timerChan outputUpdate
+		Continue{} -> textual timerChan hs
 		_ -> pure ()
 
 data Progress = Progress
@@ -261,11 +320,11 @@ data UIState = UIState
 	, queuedProgress :: Maybe Progress
 	} deriving (Eq, Ord, Read, Show)
 
-visual :: BChan (Double, GameUpdate) -> (GameUpdate -> IO ()) -> Board -> Color -> Color -> IO ()
-visual timerChan outputUpdate b c1 c2 = do
+visual :: BChan (Double, GameUpdate) -> [Handle] -> Board -> Color -> Color -> IO ()
+visual timerChan hs b c1 c2 = do
 	now <- getCurrentTime
 	let p = Progress { pIterations = 0, pTime = now }
-	customMain (Vty.mkVty Vty.defaultConfig) (Just timerChan) (app outputUpdate) UIState
+	customMain (Vty.mkVty Vty.defaultConfig) (Just timerChan) (app hs) UIState
 		{ board = b
 		, nextPill = Just (c1, c2)
 		, startProgress = p
@@ -275,20 +334,20 @@ visual timerChan outputUpdate b c1 c2 = do
 		}
 	pure ()
 
-app :: (GameUpdate -> IO ()) -> App UIState (Double, GameUpdate) ()
-app outputUpdate = App
+app :: [Handle] -> App UIState (Double, GameUpdate) ()
+app hs = App
 	{ appDraw = renderUIState
 	, appChooseCursor = neverShowCursor
-	, appHandleEvent = handleEvent outputUpdate
+	, appHandleEvent = handleEvent hs
 	, appStartEvent = pure
 	, appAttrMap = const (attrMap Vty.defAttr [])
 	}
 
-handleEvent :: (GameUpdate -> IO ()) -> UIState -> BrickEvent () (Double, GameUpdate) -> EventM () (Next UIState)
-handleEvent outputUpdate s = \case
+handleEvent :: [Handle] -> UIState -> BrickEvent () (Double, GameUpdate) -> EventM () (Next UIState)
+handleEvent hs s = \case
 	AppEvent (iterationsNow, update) -> do
 		timeNow <- liftIO getCurrentTime
-		liftIO (outputUpdate update)
+		liftIO (outputUpdate hs update)
 		continue s
 			{ board = maybe id placeGameUpdate (queuedUpdate s) (board s)
 			, nextPill = lookaheadFromGameUpdate update
@@ -317,7 +376,7 @@ placeGameUpdate :: GameUpdate -> Board -> Board
 placeGameUpdate update b = case pillFromGameUpdate update of
 	Nothing -> error
 		$ "The impossible happened! Received more game updates after the game ostensible ended by a "
-		++ showUpdate update
+		++ (LC8.unpack . B.toLazyByteString . showUpdate) update
 		++ "."
 	Just p -> case place b p of
 		Nothing -> error

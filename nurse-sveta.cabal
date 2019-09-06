@@ -50,6 +50,8 @@ executable nurse-sveta-demo
 executable nurse-sveta-play
   import:              common, executable
   main-is:             play.hs
-  build-depends:       optparse-applicative ^>=0.15,
+  build-depends:       attoparsec ^>=0.13,
+                       bytestring ^>=0.10,
+                       optparse-applicative ^>=0.15,
                        unbounded-delays ^>=0.1,
                        vector ^>=0.12
