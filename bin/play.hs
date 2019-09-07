@@ -98,12 +98,11 @@ pop :: Q a -> (a, Q a)
 pop (a:old, new) = (a, (old, new))
 pop ([], new) = pop (reverse new, [])
 
-evaluationOptions :: ParserInfo (EvaluationOptions)
+evaluationOptions :: ParserInfo EvaluationOptions
 evaluationOptions = info (helper <*> parser)
 	(  fullDesc
 	<> progDesc "Use a Monte-Carlo tree search-based AI to play a game of Dr. Mario"
-	)
-	where
+	) where
 	parser = pure EvaluationOptions
 		<*> option auto
 			(  short 't'
