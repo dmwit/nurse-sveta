@@ -96,8 +96,8 @@ colorAttr c = defAttr `withForeColor` case c of
 
 shapeChar :: M.Shape -> Char
 shapeChar M.Virus        = '☻'
-shapeChar M.Disconnected = 'o'
-shapeChar M.North        = '^'
-shapeChar M.South        = 'v'
-shapeChar M.East         = '>'
-shapeChar M.West         = '<'
+shapeChar M.Disconnected = '○'
+shapeChar M.North        = '∩'
+shapeChar M.South        = '∪'
+shapeChar M.East         = '⊃'
+shapeChar M.West         = '⊂'
