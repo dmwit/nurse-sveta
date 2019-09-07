@@ -21,11 +21,12 @@ main :: IO ()
 main = do
 	[dir, n_] <- getArgs
 	n <- readIO n_
+	let ilen = show (length (show n))
 	gen <- createSystemRandom
 	let word16 = uniformR (2, maxBound) gen
 	    color = decodeColor <$> word16
 	forM_ [0..20] $ \level -> forM_ [1..n :: Int] $ \i -> do
 		seed <- word16
 		ps <- replicateM 256 (liftA2 (,) color color)
-		withFile (printf "%s/lev-%d-no-%d.in" dir level i) WriteMode $ \h ->
+		withFile (printf ("%s/lev-%02d-no-%0" ++ ilen ++ "d.in") dir level i) WriteMode $ \h ->
 			B.hPutBuilder h (render (randomBoard seed level) ps)

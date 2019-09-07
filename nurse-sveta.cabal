@@ -20,7 +20,7 @@ common common
                        mwc-random ^>=0.14,
                        unordered-containers ^>=0.2.10
 
-common executable
+common gui
   hs-source-dirs:      bin
   other-modules:       Util
   ghc-options:         -threaded
@@ -44,11 +44,11 @@ library
   hs-source-dirs:      src
 
 executable nurse-sveta-demo
-  import:              common, executable
+  import:              common, gui
   main-is:             demo.hs
 
 executable nurse-sveta-play
-  import:              common, executable
+  import:              common, gui
   main-is:             play.hs
   build-depends:       attoparsec ^>=0.13,
                        bytestring ^>=0.10,
@@ -61,3 +61,14 @@ executable nurse-sveta-create-inputs
   main-is:             create-inputs.hs
   build-depends:       bytestring ^>=0.10
   hs-source-dirs:      bin
+
+executable nurse-sveta-multi-play
+  import:              common, gui
+  main-is:             multi-play.hs
+  build-depends:       containers ^>=0.5,
+                       directory ^>=1.3,
+                       filepath ^>=1.4,
+                       microlens ^>=0.4,
+                       optparse-applicative ^>=0.15,
+                       process ^>=1.6,
+                       transformers ^>=0.5
