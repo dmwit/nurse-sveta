@@ -61,7 +61,7 @@ options caps = info (helper <*> parser)
 			(  short 't'
 			<> long "timeout"
 			<> help "A time limit to spend thinking about each move (can be specified many times)"
-			<> metavar "NUMBER"
+			<> metavar "SECONDS"
 			))
 		<*> some (argument OA.str
 			(  help "A description of a board and pills to present to the AI (can be specified many times)"

@@ -84,6 +84,11 @@ pillOverlay p pos
 	| pos == M.otherPosition p = Just (M.otherCell (M.content p))
 	| otherwise = Nothing
 
+renderBoardWithPill :: M.Board -> Maybe M.Pill -> Image
+renderBoardWithPill b mp = renderBoard b $ case mp of
+	Nothing -> const Nothing
+	Just p -> pillOverlay p
+
 renderCell :: M.Cell -> Image
 renderCell M.Empty = char defAttr ' '
 renderCell (M.Occupied c s) = char (colorAttr c) (shapeChar s)

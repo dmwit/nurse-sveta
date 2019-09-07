@@ -106,10 +106,10 @@ evaluationOptions = info (helper <*> parser)
 	parser = pure EvaluationOptions
 		<*> option auto
 			(  short 't'
-			<> help "How long (in seconds) to spend thinking about each move"
+			<> help "How long to spend thinking about each move"
 			<> value 0.5
 			<> showDefault
-			<> metavar "NUMBER"
+			<> metavar "SECONDS"
 			)
 		<*> option uiFormat
 			(  long "ui"
@@ -395,9 +395,7 @@ renderUIState s = pure . joinBorders . vBox $
 	lookaheadImage = case nextPill s of
 		Nothing -> Vty.char Vty.defAttr ' '
 		Just (l,r) -> renderLookaheadFor (board s) l r
-	boardImage = renderBoard (board s) $ case queuedUpdate s >>= pillFromGameUpdate of
-		Nothing -> const Nothing
-		Just p -> pillOverlay p
+	boardImage = renderBoardWithPill (board s) (queuedUpdate s >>= pillFromGameUpdate)
 	status = hCenter . B.str $ case queuedUpdate s of
 		Nothing -> "Running..."
 		Just Continue{} -> "Running..."
