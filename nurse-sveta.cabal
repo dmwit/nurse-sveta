@@ -55,3 +55,9 @@ executable nurse-sveta-play
                        optparse-applicative ^>=0.15,
                        unbounded-delays ^>=0.1,
                        vector ^>=0.12
+
+executable nurse-sveta-create-inputs
+  import:              common
+  main-is:             create-inputs.hs
+  build-depends:       bytestring ^>=0.10
+  hs-source-dirs:      bin
