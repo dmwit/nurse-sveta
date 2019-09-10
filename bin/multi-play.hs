@@ -1,6 +1,7 @@
 {-# LANGUAGE LambdaCase #-}
 import Brick
 import Brick.BChan
+import Brick.Widgets.Border
 import Brick.Widgets.Center
 import Control.Concurrent.Chan
 import Control.Exception
@@ -49,6 +50,7 @@ main = do
 			| statusList <- statusLists
 			, (fp, t, s) <- statusList
 			]
+		, requestingExit = False
 		}
 
 	pure ()
@@ -139,6 +141,7 @@ data UIState = UIState
 	{ statuses :: Map FilePath (Map Micro Status)
 	, topFile :: FilePath
 	, numRunners :: Int
+	, requestingExit :: Bool
 	} deriving (Eq, Ord, Read, Show)
 
 app :: [ThreadId] -> App UIState Reply ()
@@ -156,8 +159,12 @@ handleEvent runnerThreads s = \case
 	-- TODO: try to scroll so that this is in view
 	AppEvent (StatusUpdate t fp status) -> continue s
 		{ statuses = M.insertWith M.union fp (M.singleton t status) (statuses s) }
-	VtyEvent (EvKey (KChar 'c') [MCtrl]) -> halt s
+	VtyEvent (EvKey (KChar 'c') [MCtrl]) -> if numRunners s == 0 || requestingExit s
+		then halt s
+		else continue s { requestingExit = True }
 	VtyEvent (EvKey k []) -> case k of
+		KChar 'y' | requestingExit s -> halt s
+		_ | requestingExit s -> continue s { requestingExit = False }
 		KUp   -> continue s { topFile = reTop (M.lookupMax . fst) }
 		KDown -> continue s { topFile = reTop (M.lookupMin . snd) }
 		KChar 'k' -> liftIO (forM_ runnerThreads (`throwTo` DieEarly)) >> continue s
@@ -171,19 +178,29 @@ handleEvent runnerThreads s = \case
 		$ statuses s
 
 renderUIState :: UIState -> [Widget ()]
-renderUIState s = pure . joinBorders . Widget Greedy Greedy $ do
-	h <- asks (^.availWidthL)
-	id
-		. render
-		. vBox
-		. (renderRunners (numRunners s):)
-		. (renderHeader s:)
-		. map renderFilePathStatuses
-		. M.toAscList
-		. M.take (h-2)
-		. splitGE (topFile s)
-		. statuses
-		$ s
+renderUIState s = map joinBorders
+	$  [centerLayer . border . vBox . map str $
+	   	[ "   Some worker processes are still running."
+	   	, "(You can kill gracefully them by pressing 'k'.)"
+	   	, "                 Really quit?"
+	   	, " (Press 'y' to quit; any other key to cancel.)"
+	   	]
+	   | requestingExit s
+	   ]
+	++ [Widget Greedy Greedy $ do
+	   	h <- asks (^.availWidthL)
+	   	id
+	   		. render
+	   		. vBox
+	   		. (renderRunners (numRunners s):)
+	   		. (renderHeader s:)
+	   		. map renderFilePathStatuses
+	   		. M.toAscList
+	   		. M.take (h-2)
+	   		. splitGE (topFile s)
+	   		. statuses
+	   		$ s
+	   ]
 
 splitGE :: Ord k => k -> Map k v -> Map k v
 splitGE k m = maybe id (M.insert k) mv gt where
