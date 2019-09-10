@@ -3,7 +3,9 @@ import Brick
 import Brick.BChan
 import Brick.Widgets.Center
 import Control.Concurrent.Chan
+import Control.Exception
 import Control.Monad
+import Control.Monad.IO.Class
 import Control.Monad.Trans.Reader
 import Data.Fixed
 import Data.List
@@ -15,6 +17,7 @@ import Options.Applicative hiding (str)
 import System.Directory
 import System.Exit
 import System.FilePath
+import System.IO.Error
 import System.Process
 import qualified Data.Map.Strict as M
 import qualified Options.Applicative as OA
@@ -29,17 +32,23 @@ main = do
 
 	replyChan <- newBChan 1
 	instructionChan <- newChan
-	forM_ ((reverse . sort . timeouts) opts) $ \t ->
-		forM_ (inputFiles opts) $ \fp ->
-			writeChan instructionChan (Play t fp)
-	replicateM_ (numJobs opts) $ do
+	statusLists <- forM ((reverse . sort . timeouts) opts) $ \t ->
+		forM (inputFiles opts) $ \fp -> do
+			skip <- doesFileExist (outFileName (outputDirectory opts) t fp)
+			unless skip (writeChan instructionChan (Play t fp))
+			pure (fp, t, if skip then Skipped else Pending)
+	runnerThreads <- replicateM (numJobs opts) $ do
 		writeChan instructionChan Die
 		forkIO (jobRunner instructionChan replyChan (outputDirectory opts))
 
-	customMain (mkVty defaultConfig) (Just replyChan) app UIState
+	customMain (mkVty defaultConfig) (Just replyChan) (app runnerThreads) UIState
 		{ topFile = head (inputFiles opts) -- safe because the parser uses some
 		, numRunners = numJobs opts
-		, statuses = allPending (inputFiles opts) (timeouts opts)
+		, statuses = M.fromListWith M.union
+			[ (fp, M.singleton t s)
+			| statusList <- statusLists
+			, (fp, t, s) <- statusList
+			]
 		}
 
 	pure ()
@@ -84,8 +93,15 @@ options caps = info (helper <*> parser)
 data Instruction = Play Micro FilePath | Die
 	deriving (Eq, Ord, Read, Show)
 
-data Status = Pending | Executing | Succeeded | Failed deriving (Bounded, Enum, Eq, Ord, Read, Show)
+data Status = Skipped | Pending | Executing | Succeeded | Failed | Killed
+	deriving (Bounded, Enum, Eq, Ord, Read, Show)
 data Reply = StatusUpdate Micro FilePath Status | Dead deriving (Eq, Ord, Read, Show)
+
+data DieEarlyException = DieEarly deriving (Bounded, Enum, Eq, Ord, Read, Show)
+instance Exception DieEarlyException
+
+outFileName :: FilePath -> Micro -> FilePath -> FilePath
+outFileName outDir t fp = replaceDirectory fp (outDir </> show t) -<.> "out"
 
 jobRunner :: Chan Instruction -> BChan Reply -> FilePath -> IO ()
 jobRunner instructionChan replyChan outDir = go where
@@ -95,17 +111,29 @@ jobRunner instructionChan replyChan outDir = go where
 			Die -> writeBChan replyChan Dead
 			Play t fp -> do
 				writeBChan replyChan (StatusUpdate t fp Executing)
-				(code, out, err) <- readProcessWithExitCode "nurse-sveta-play"
-					[ "-t", show t
-					, "-i", fp
-					, "-o", replaceDirectory fp (outDir </> show t) -<.> "out"
-					, "--ui", "quiet"
-					]
-					""
-				writeBChan replyChan . StatusUpdate t fp $ case code of
-					ExitSuccess -> Succeeded
-					_ -> Failed
-				go
+				let outFile = outFileName outDir t fp
+				continue <- catch (launch t fp outFile) (cleanup t fp outFile)
+				when continue go
+
+	launch t fp outFile = do
+		(code, _out, _err) <- readProcessWithExitCode "nurse-sveta-play"
+			[ "-t", show t
+			, "-i", fp
+			, "-o", outFile
+			, "--ui", "quiet"
+			]
+			""
+		writeBChan replyChan . StatusUpdate t fp $ case code of
+			ExitSuccess -> Succeeded
+			_ -> Failed
+		return True
+
+	cleanup t fp outFile DieEarly = do
+		catch (removeFile outFile)
+			(\e -> if isDoesNotExistError e then return () else throwIO e)
+		writeBChan replyChan (StatusUpdate t fp Killed)
+		writeBChan replyChan Dead
+		return False
 
 data UIState = UIState
 	{ statuses :: Map FilePath (Map Micro Status)
@@ -113,21 +141,17 @@ data UIState = UIState
 	, numRunners :: Int
 	} deriving (Eq, Ord, Read, Show)
 
-allPending :: [FilePath] -> [Micro] -> Map FilePath (Map Micro Status)
-allPending fps ts = M.fromList [(fp, tMap) | fp <- fps] where
-	tMap = M.fromList [(t, Pending) | t <- ts]
-
-app :: App UIState Reply ()
-app = App
+app :: [ThreadId] -> App UIState Reply ()
+app runnerThreads = App
 	{ appDraw = renderUIState
 	, appChooseCursor = neverShowCursor
-	, appHandleEvent = handleEvent
+	, appHandleEvent = handleEvent runnerThreads
 	, appStartEvent = pure
 	, appAttrMap = const (attrMap defAttr [])
 	}
 
-handleEvent :: UIState -> BrickEvent () Reply -> EventM () (Next UIState)
-handleEvent s = \case
+handleEvent :: [ThreadId] -> UIState -> BrickEvent () Reply -> EventM () (Next UIState)
+handleEvent runnerThreads s = \case
 	AppEvent Dead -> continue s { numRunners = numRunners s - 1 }
 	-- TODO: try to scroll so that this is in view
 	AppEvent (StatusUpdate t fp status) -> continue s
@@ -136,6 +160,7 @@ handleEvent s = \case
 	VtyEvent (EvKey k []) -> case k of
 		KUp   -> continue s { topFile = reTop (M.lookupMax . fst) }
 		KDown -> continue s { topFile = reTop (M.lookupMin . snd) }
+		KChar 'k' -> liftIO (forM_ runnerThreads (`throwTo` DieEarly)) >> continue s
 		_ -> continue s
 	_ -> continue s
 	where
@@ -180,9 +205,11 @@ renderFilePathStatuses (fp, m) = hBox
 
 renderStatus :: (Micro, Status) -> Widget n
 renderStatus (t, status) = str . padTo (length (show t)) $ case status of
+	Skipped -> '–'
 	Pending -> ' '
 	Executing -> '▶'
 	Succeeded -> '✓'
 	Failed -> 'x'
+	Killed -> '☠'
 	where
 	padTo n c = replicate (n`div`2) ' ' ++ [c] ++ replicate (n - n`div`2 - 1) ' '
