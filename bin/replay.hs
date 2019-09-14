@@ -48,7 +48,7 @@ data Options = Options
 options :: ParserInfo Options
 options = info (helper <*> parser)
 	(  fullDesc
-	<> progDesc "Take a record of a game played by Nurse Sveta and display it"
+	<> progDesc "Display the record of a game played by Nurse Sveta"
 	) where
 	parser = pure Options
 		<*> option auto
@@ -58,12 +58,7 @@ options = info (helper <*> parser)
 			<> showDefault
 			<> metavar "SECONDS"
 			)
-		<*> strOption
-			(  short 'i'
-			<> long "input"
-			<> help "The game record to display"
-			<> metavar "FILE"
-			)
+		<*> argument OA.str (metavar "FILE")
 
 readGameRecord :: FilePath -> IO (Board, [Pill], Ending)
 readGameRecord fp = do
