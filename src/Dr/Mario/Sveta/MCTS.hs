@@ -30,7 +30,7 @@ data MCTSParameters m stats score move position player = MCTSParameters
 	-- ^ Given a leaf position, compute some statistics. These statistics
 	-- typically include the utilities for each player and a count of times
 	-- visited (which this function should initialize to 1). The statistics
-	-- will be backpropogated up the tree to the root using their 'Semigroup'
+	-- will be backpropagated up the tree to the root using their 'Semigroup'
 	-- instance.
 	--
 	-- You may assume this function is only invoked in a state in which
