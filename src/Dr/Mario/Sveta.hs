@@ -3,6 +3,7 @@ module Dr.Mario.Sveta where
 import Control.Applicative
 import Data.Foldable
 import Data.Hashable
+import Data.HashMap.Strict (HashMap)
 import Data.IORef
 import Data.List
 import Data.Vector (Vector)
@@ -12,6 +13,7 @@ import Dr.Mario.Sveta.Pathfinding
 import Dr.Mario.Sveta.PP
 import Dr.Mario.Util
 import System.Random.MWC
+import qualified Data.HashMap.Strict as HM
 import qualified Dr.Mario.Model as M
 import qualified Dr.Mario.Sveta.Pathfinding as S
 import qualified Data.Vector as V
@@ -181,6 +183,37 @@ dmPlay mcpos (AIMove p) = do
 dmSelect :: GenIO -> MCPosition -> Vector MCMove -> MCM MCMove
 dmSelect gen _ ms = (ms `V.unsafeIndex`) <$> uniformR (0, V.length ms-1) gen
 
+accuratePathfindingThreshold :: Double
+accuratePathfindingThreshold = 512
+
+mapKey :: (Hashable k', Eq k') => (k -> k') -> HashMap k v -> HashMap k' v
+mapKey f m = HM.fromList [(f k, v) | (k, v) <- HM.toList m]
+
+dmPreprocess :: MCPosition -> DrMarioTree -> IO (MCStats, DrMarioTree)
+dmPreprocess mcpos t
+	| vc /= accuratePathfindingThreshold = nop
+	| HM.null (children t) && null (unexplored t) = nop
+	| otherwise = do
+		aux <- readIORef (auxState mcpos)
+		case lookahead aux of
+			Nothing -> nop
+			Just (l, r) -> do
+				b <- mfreeze (mboard mcpos)
+				-- TODO: track drop speed and parity
+				-- TODO: create (and use) mreachable
+				let placements = mapKey AIMove $ reachable b 13 (launchPill l r) Checking
+				    children' = HM.intersection (children t) placements
+				    unexplored' = HM.keys (HM.difference placements (children t))
+				    stats' = foldMap statistics children'
+				    dstats = MCStats
+				    	{ visitCount = visitCount stats' - vc
+				    	, cumulativeUtility = cumulativeUtility stats' - cu
+				    	}
+				pure (dstats, t { children = children', unexplored = unexplored' })
+	where
+	MCStats { visitCount = vc, cumulativeUtility = cu } = statistics t
+	nop = pure (mempty, t)
+
 dmParameters :: GenIO -> Board -> DrMarioParameters
 dmParameters gen b = MCTSParameters
 	{ score = dmScore
@@ -190,6 +223,7 @@ dmParameters gen b = MCTSParameters
 	, turn = dmTurn
 	, play = dmPlay
 	, select = dmSelect gen
+	, preprocess = dmPreprocess
 	}
 
 -- | Produce a new set of parameters suitable for use with searching a

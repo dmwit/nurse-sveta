@@ -230,18 +230,25 @@ maximumOn f (a:as) = go a (f a) as where
 	go a b [] = Just a
 	go a b (a':as) = let b' = f a' in if b' > b then go a' b' as else go a b as
 
-bestMove :: Color -> Color -> DrMarioTree -> (GameUpdate, DrMarioTree)
-bestMove c1 c2 t = case maximumOn (meanUtility . statistics . snd) (HM.toList (children t)) of
+bestMove :: Color -> Color -> DrMarioTree -> DrMarioParameters -> IO (GameUpdate, DrMarioTree)
+bestMove c1 c2 t params = case maximumOn (meanUtility . statistics . snd) (HM.toList (children t)) of
 	Nothing
 		| null (unexplored t) -> error "The impossible happened! The game was not yet won or lost, but there were no valid moves."
-		| otherwise -> (Timeout, t)
+		| otherwise -> pure (Timeout, t)
 	Just (AIMove p, t')
-		| null (children t') && null (unexplored t') -> (Ended p, t')
+		| null (children t') && null (unexplored t') -> pure (Ended p, t')
 		| otherwise -> case HM.lookup (ChanceMove c1 c2) (children t') of
-			-- We could expand the node here instead of timing out, but this
-			-- probably will never happen anyway, so...?
-			Nothing -> (Timeout, t)
-			Just t'' -> (Continue p c1 c2, t'')
+			Just t'' -> pure (Continue p c1 c2, t'')
+			Nothing -> do
+				mcpos <- root params
+				play params mcpos (AIMove p)
+				play params mcpos (ChanceMove c1 c2)
+				ms <- expand params mcpos
+				pure (Continue p c1 c2, MCTree
+					{ statistics = mempty
+					, children = HM.empty
+					, unexplored = toList ms
+					})
 	Just (m, _) -> error
 		$  "The impossible happened! It was the AI's turn, but the best available move was"
 		++ show m
@@ -253,7 +260,8 @@ timerThread (MkFixed micros) timerChan commsRef genPill = go stallThreshold wher
 		delay micros
 		(c1, c2) <- genPill
 		comms <- atomically (readTVar commsRef)
-		case bestMove c1 c2 (tree comms) of
+		next <- bestMove c1 c2 (tree comms) (params comms)
+		case next of
 			(u@(Continue p l r), tree') -> do
 				params' <- dmReroot (params comms) [AIMove p, ChanceMove l r]
 				atomically $ writeTVar commsRef comms

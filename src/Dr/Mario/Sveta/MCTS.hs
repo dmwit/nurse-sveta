@@ -4,6 +4,7 @@ module Dr.Mario.Sveta.MCTS (
 	emptyTree,
 	mcts,
 	ucb1,
+	emptyPreprocessor,
 	) where
 
 import Data.Hashable
@@ -53,6 +54,15 @@ data MCTSParameters m stats score move position player = MCTSParameters
 	--
 	-- You may assume this function is only invoked with non-empty vectors
 	-- returned from 'expand'.
+	, preprocess :: position -> MCTree stats move -> m (stats, MCTree stats move)
+	-- ^ Make adjustments to a game tree before doing a rollout for it. Under
+	-- normal circumstances this should be 'emptyPreprocessor'.
+	--
+	-- While descending into a game tree to begin a rollout, you may make
+	-- arbitrary adjustments to the tree. You should not modify the position
+	-- you are given. Any statistics you produce here will be 'mappend'ed to
+	-- the statistics produced by the rollout; the result will be used to
+	-- update both the current node and backpropagated to its ancestors.
 	}
 
 -- | Create an essentially empty tree, suitable for providing to 'mcts'.
@@ -68,6 +78,12 @@ emptyTree params = do
 		, children = HM.empty
 		, unexplored = V.toList ms
 		}
+
+-- | Do no 'preprocess'ing at all.
+emptyPreprocessor ::
+	(Applicative m, Monoid stats) =>
+	position -> tree -> m (stats, tree)
+emptyPreprocessor _ t = pure (mempty, t)
 
 -- | Perform one iteration of Monte Carlo tree search (called a rollout in the
 -- literature). You should iterate this until you run out of computational
@@ -99,29 +115,30 @@ mcts_ ::
 	MCTree stats move ->
 	m (stats, MCTree stats move)
 mcts_ params pos = go where
-	go t = do
+	go t_ = do
 		player <- turn params pos
+		(stats, t) <- preprocess params pos t_
 		case unexplored t of
 			[] -> case maximumOn (\t' -> score params player (statistics t) (statistics t')) (children t) of
 				Just (m, t') -> do
 					play params pos m
-					(stats, t'') <- go t'
-					let stats' = statistics t <> stats
-					pure $ (stats, t
-						{ statistics = stats'
+					(stats', t'') <- go t'
+					let stats'' = stats <> stats'
+					pure (stats'', t
+						{ statistics = statistics t <> stats''
 						, children = HM.insert m t'' (children t)
 						})
 				Nothing -> do
-					stats <- evaluate params pos
-					pure $ (stats, t { statistics = statistics t <> stats })
+					stats' <- (stats<>) <$> evaluate params pos
+					pure (stats', t { statistics = statistics t <> stats' })
 			m:ms -> do
 				play params pos m
 				ms' <- expand params pos
-				stats <- rollout ms'
-				let stats' = statistics t <> stats
-				pure (stats, t
-					{ statistics = stats'
-					, children = HM.insert m (MCTree stats HM.empty (V.toList ms')) (children t)
+				stats' <- rollout ms'
+				let bothStats = stats <> stats'
+				pure (bothStats, t
+					{ statistics = statistics t <> bothStats
+					, children = HM.insert m (MCTree stats' HM.empty (V.toList ms')) (children t)
 					, unexplored = ms
 					})
 
