@@ -97,7 +97,11 @@ handleEvent s e = case e of
 				, sequenceNumber = 1 + sequenceNumber c
 				}
 		EvKey (KChar 's') [] -> modifyComms s $ \c -> c
-			{ repetitions = increment (repetitions c)
+			{ repetitions = increment 1 (repetitions c)
+			, sequenceNumber = 1 + sequenceNumber c
+			}
+		EvKey (KChar 'S') [] -> modifyComms s $ \c -> c
+			{ repetitions = increment 1024 (repetitions c)
 			, sequenceNumber = 1 + sequenceNumber c
 			}
 		EvKey KLeft [] -> changeFocus KLeft s
@@ -105,6 +109,9 @@ handleEvent s e = case e of
 		EvKey KDown [] -> changeFocus KDown s
 		EvKey KUp [] -> changeFocus KUp s
 		EvKey (KChar 'r') [] -> reroot s
+		EvKey (KChar 'd') [] -> do
+			liftIO . writeFile "nurse-sveta-demo-tree-dump" . show . tree . commsCache $ s
+			continue s
 		_ -> continue s
 	_ -> continue s
 

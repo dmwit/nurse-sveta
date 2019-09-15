@@ -27,9 +27,9 @@ toggleFiniteness :: Repetitions -> Repetitions
 toggleFiniteness (Finite _) = Infinity
 toggleFiniteness Infinity = Finite 0
 
-increment :: Repetitions -> Repetitions
-increment (Finite n) = Finite (n+1)
-increment Infinity = Infinity
+increment :: Int -> Repetitions -> Repetitions
+increment m (Finite n) = Finite (n+m)
+increment m Infinity = Infinity
 
 decrement :: Repetitions -> Repetitions
 decrement (Finite n) = Finite (n-1)
