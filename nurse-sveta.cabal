@@ -34,6 +34,7 @@ common gui
 library
   import:              common
   exposed-modules:     Dr.Mario.Sveta,
+                       Dr.Mario.Sveta.BoardSummary,
                        Dr.Mario.Sveta.MCTS,
                        Dr.Mario.Sveta.Pathfinding,
                        Dr.Mario.Sveta.PP
