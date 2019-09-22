@@ -14,10 +14,10 @@ empty = Cache HM.empty
 share :: (Hashable id, Eq id) => id -> a -> Cache id a -> Cache id a
 share id a (Cache cache) = Cache (HM.insert id a cache)
 
-deref :: (Hashable id, Eq id) => Shared id a -> Cache id a -> Maybe a
-deref (Unshared a) _ = Just a
-deref (Shared id) (Cache cache) = HM.lookup id cache
+deref :: (Hashable id, Eq id) => Cache id a -> Shared id a -> Maybe a
+deref _ (Unshared a) = Just a
+deref (Cache cache) (Shared id) = HM.lookup id cache
 
 (!) :: (Hashable id, Eq id, HasCallStack) => Cache id a -> Shared id a -> a
-c ! s = case deref s c of
+c ! s = case deref c s of
 	Just a -> a

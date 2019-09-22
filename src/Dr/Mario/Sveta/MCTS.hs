@@ -7,6 +7,7 @@ module Dr.Mario.Sveta.MCTS (
 	emptyTree,
 	mcts,
 	ucb1,
+	uct2,
 	emptyPreprocessor,
 	neverSummarize,
 	) where
@@ -56,12 +57,17 @@ tChildren :: (Eq summary, Hashable summary) => MCTree stats move summary -> Hash
 tChildren MCTree { tCache = cache, tRoot = n } = (cache Cache.!) . eTarget <$> nChildren n
 
 data MCTSParameters m stats score move position summary player = MCTSParameters
-	{ score :: player -> stats -> stats -> score
-	-- ^ Given which player is currently choosing a move and the statistics for
-	-- a position's node and a move's edge out of that node, compute a priority
-	-- score for searching this node. Larger scores are searched first.
+	{ score :: player -> stats -> stats -> stats -> score
+	-- ^ Given which player is currently choosing a move and the statistics for:
 	--
-	-- See also 'ucb1'.
+	-- 1. the current position,
+	-- 2. the move being considered, and
+	-- 3. the position that results from that move,
+	--
+	-- compute a priority score for selecting this move. Larger scores are
+	-- searched first.
+	--
+	-- See also 'ucb1' and 'uct2'.
 	, evaluate :: position -> m stats
 	-- ^ Given a leaf position, compute some statistics. These statistics
 	-- typically include the utilities for each player and a count of times
@@ -186,12 +192,13 @@ mcts_ params pos = go where
 	go n_ = do
 		player <- lift (turn params pos)
 		(stats, n) <- lift (preprocess params pos n_)
+		deref <- gets (\c -> Cache.deref c . eTarget)
+		let scoreN e = score params player (nStatistics n) (eStatistics e) (maybe mempty nStatistics (deref e))
 		case nUnexplored n of
-			[] -> case maximumOn (\e -> score params player (nStatistics n) (eStatistics e)) (nChildren n) of
+			[] -> case maximumOn scoreN (nChildren n) of
 				Just (m, e) -> do
 					lift (play params pos m)
-					mn' <- gets (Cache.deref (eTarget e))
-					n' <- case mn' of
+					n' <- case deref e of
 						Just n' -> pure n'
 						Nothing -> do -- should never happen
 							ms <- lift (expand params pos)
@@ -249,6 +256,13 @@ mcts_ params pos = go where
 -- Q_i <= n_i).
 ucb1 :: Double -> Double -> Double -> Double
 ucb1 n n_i q_i = q_i/n_i + sqrt (2 * log n / n_i)
+
+-- | Given a way to extract a cumulative value and a node count from
+-- statistics, compute the UCT2 score described in \"Transpositions and Move
+-- Groups in Monte Carlo Tree Search\". The first argument extracts the value;
+-- the second the node count.
+uct2 :: (stats -> Double) -> (stats -> Double) -> stats -> stats -> stats -> Double
+uct2 value count sn se sn' = value sn' / count sn' + sqrt (2 * log (count sn) / count se)
 
 type CacheT stats move summary = StateT (Cache summary (MCNode stats move summary))
 

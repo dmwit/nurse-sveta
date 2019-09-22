@@ -8,6 +8,7 @@ import Data.IORef
 import Data.List
 import Data.Vector (Vector)
 import Dr.Mario.Model hiding (pp)
+import Dr.Mario.Sveta.BoardSummary
 import Dr.Mario.Sveta.MCTS
 import Dr.Mario.Sveta.Pathfinding
 import Dr.Mario.Sveta.PP
@@ -17,8 +18,6 @@ import qualified Data.HashMap.Strict as HM
 import qualified Dr.Mario.Model as M
 import qualified Dr.Mario.Sveta.Pathfinding as S
 import qualified Data.Vector as V
-
-import Data.Void -- TODO: delete
 
 data MCStats = MCStats
 	{ visitCount :: !Double
@@ -70,7 +69,7 @@ data AuxiliaryState = AuxiliaryState
 
 data MCPlayer = AI | Chance deriving (Bounded, Enum, Eq, Ord, Read, Show)
 
-type MCSummary = Void
+type MCSummary = BoardSummary
 
 type DrMarioTree = MCTree MCStats MCMove MCSummary
 type DrMarioNode = MCNode MCStats MCMove MCSummary
@@ -100,9 +99,9 @@ won mcpos aux = originalVirusCount mcpos == fromIntegral (virusesCleared aux)
 mwon :: MCPosition -> IO Bool
 mwon mcpos = won mcpos <$> readIORef (auxState mcpos)
 
-dmScore :: MCPlayer -> MCStats -> MCStats -> MCScore
-dmScore AI statsParent statsCurrent = ucb1 (visitCount statsParent) (visitCount statsCurrent) (cumulativeUtility statsCurrent)
-dmScore Chance _ statsCurrent = -visitCount statsCurrent
+dmScore :: MCPlayer -> MCStats -> MCStats -> MCStats -> MCScore
+dmScore AI = uct2 cumulativeUtility visitCount
+dmScore Chance = \_ stats _ -> -visitCount stats
 
 dmEvaluate :: MCPosition -> MCM MCStats
 dmEvaluate mcpos = do
@@ -214,6 +213,13 @@ dmPreprocess mcpos n
 	MCStats { visitCount = vc, cumulativeUtility = cu } = nStatistics n
 	nop = pure (mempty, n)
 
+dmSummarize :: MCPosition -> MCM (Maybe MCSummary)
+dmSummarize mcpos = do
+	aux <- readIORef (auxState mcpos)
+	case lookahead aux of
+		Nothing -> Just <$> munsafeSummarizeBoard (mboard mcpos)
+		_ -> pure Nothing
+
 dmParameters :: GenIO -> Board -> DrMarioParameters
 dmParameters gen b = MCTSParameters
 	{ score = dmScore
@@ -224,7 +230,7 @@ dmParameters gen b = MCTSParameters
 	, play = dmPlay
 	, select = dmSelect gen
 	, preprocess = dmPreprocess
-	, summarize = neverSummarize
+	, summarize = dmSummarize
 	}
 
 -- | Produce a new set of parameters suitable for use with searching a

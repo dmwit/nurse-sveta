@@ -144,10 +144,10 @@ focusTree [m] t = Just TreeFocus
 	{ bestMoves = ms
 	, selectedMoveIndex = findIndex ((m==) . fst) ms
 	} where ms = bestMovesFor t
-focusTree (m:ms) (MCTree cache n) = do
-	e <- HM.lookup m (nChildren n)
-	n' <- Cache.deref (eTarget e) cache
-	focusTree ms (MCTree cache n')
+focusTree (m:ms) (MCTree cache n)
+	=   focusTree ms . MCTree cache
+	=<< Cache.deref cache . eTarget
+	=<< HM.lookup m (nChildren n)
 
 focusStats :: [MCMove] -> DrMarioTree -> Maybe (TreeFocus MCStats)
 focusStats ms t = fmap (fmap nStatistics) (focusTree ms t)
@@ -201,7 +201,7 @@ replaceLastMove s m = s { selectedMoves = safeInit (selectedMoves s) ++ [m] }
 findValidMovePrefix :: UIState -> UIState
 findValidMovePrefix s = refreshBoard s { selectedMoves = go (selectedMoves s) (tree (commsCache s)) } where
 	go [] _ = []
-	go (m:ms) t = case HM.lookup m (nChildren (tRoot t)) >>= flip Cache.deref (tCache t) . eTarget of
+	go (m:ms) t = case HM.lookup m (nChildren (tRoot t)) >>= Cache.deref (tCache t) . eTarget of
 		Nothing -> []
 		Just n -> m : go ms t { tRoot = n }
 
