@@ -18,6 +18,8 @@ import qualified Dr.Mario.Model as M
 import qualified Dr.Mario.Sveta.Pathfinding as S
 import qualified Data.Vector as V
 
+import Data.Void -- TODO: delete
+
 data MCStats = MCStats
 	{ visitCount :: !Double
 	, cumulativeUtility :: !Double
@@ -68,8 +70,12 @@ data AuxiliaryState = AuxiliaryState
 
 data MCPlayer = AI | Chance deriving (Bounded, Enum, Eq, Ord, Read, Show)
 
-type DrMarioTree = MCTree MCStats MCMove
-type DrMarioParameters = MCTSParameters MCM MCStats MCScore MCMove MCPosition MCPlayer
+type MCSummary = Void
+
+type DrMarioTree = MCTree MCStats MCMove MCSummary
+type DrMarioNode = MCNode MCStats MCMove MCSummary
+type DrMarioEdge = MCEdge MCStats MCMove MCSummary
+type DrMarioParameters = MCTSParameters MCM MCStats MCScore MCMove MCPosition MCSummary MCPlayer
 
 stallThreshold :: Double
 stallThreshold = 20
@@ -127,12 +133,6 @@ dmExpand mcpos = do
 		(return (timedOut aux || won mcpos aux))
 		(mtoppedOut mcpos)
 	if done then pure V.empty else case lookahead aux of
-		-- TODO: return all pills, but share rollouts between neighboring
-		-- flipped moves when they both exist
-		--
-		-- ...or maybe that would get too expensive, because then there's 2^n
-		-- paths to update when we're processing an MCTree node n levels deep?
-		-- but then what to do about moves that can't be rotated 180? hmmm...
 		Nothing -> pure allChanceMoves
 		Just (l, r) -> V.fromList . map AIMove . toList
 		           <$> munsafeApproxReachable (mboard mcpos) (launchPill l r)
@@ -189,10 +189,10 @@ accuratePathfindingThreshold = 512
 mapKey :: (Hashable k', Eq k') => (k -> k') -> HashMap k v -> HashMap k' v
 mapKey f m = HM.fromList [(f k, v) | (k, v) <- HM.toList m]
 
-dmPreprocess :: MCPosition -> DrMarioTree -> IO (MCStats, DrMarioTree)
-dmPreprocess mcpos t
+dmPreprocess :: MCPosition -> DrMarioNode -> MCM (MCStats, DrMarioNode)
+dmPreprocess mcpos n
 	| vc /= accuratePathfindingThreshold = nop
-	| HM.null (children t) && null (unexplored t) = nop
+	| HM.null (nChildren n) && null (nUnexplored n) = nop
 	| otherwise = do
 		aux <- readIORef (auxState mcpos)
 		case lookahead aux of
@@ -202,17 +202,17 @@ dmPreprocess mcpos t
 				-- TODO: track drop speed and parity
 				-- TODO: create (and use) mreachable
 				let placements = mapKey AIMove $ reachable b 13 (launchPill l r) Checking
-				    children' = HM.intersection (children t) placements
-				    unexplored' = HM.keys (HM.difference placements (children t))
-				    stats' = foldMap statistics children'
+				    children = HM.intersection (nChildren n) placements
+				    unexplored = HM.keys (HM.difference placements (nChildren n))
+				    stats = foldMap eStatistics children
 				    dstats = MCStats
-				    	{ visitCount = visitCount stats' - vc
-				    	, cumulativeUtility = cumulativeUtility stats' - cu
+				    	{ visitCount = visitCount stats - vc
+				    	, cumulativeUtility = cumulativeUtility stats - cu
 				    	}
-				pure (dstats, t { children = children', unexplored = unexplored' })
+				pure (dstats, n { nChildren = children, nUnexplored = unexplored })
 	where
-	MCStats { visitCount = vc, cumulativeUtility = cu } = statistics t
-	nop = pure (mempty, t)
+	MCStats { visitCount = vc, cumulativeUtility = cu } = nStatistics n
+	nop = pure (mempty, n)
 
 dmParameters :: GenIO -> Board -> DrMarioParameters
 dmParameters gen b = MCTSParameters
@@ -224,6 +224,7 @@ dmParameters gen b = MCTSParameters
 	, play = dmPlay
 	, select = dmSelect gen
 	, preprocess = dmPreprocess
+	, summarize = neverSummarize
 	}
 
 -- | Produce a new set of parameters suitable for use with searching a

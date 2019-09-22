@@ -38,6 +38,7 @@ import qualified Data.ByteString.Lazy.Char8 as LC8
 import qualified Data.HashMap.Strict as HM
 import qualified Data.Vector.Unboxed as V
 import qualified Dr.Mario.Protocol.Raw as Proto
+import qualified Dr.Mario.Sveta.Cache as Cache
 import qualified Graphics.Vty as Vty
 import qualified Options.Applicative.Help.Pretty as D
 import qualified Options.Applicative.Help.Chunk as D
@@ -231,27 +232,31 @@ maximumOn f (a:as) = go a (f a) as where
 	go a b (a':as) = let b' = f a' in if b' > b then go a' b' as else go a b as
 
 bestMove :: Color -> Color -> DrMarioTree -> DrMarioParameters -> IO (GameUpdate, DrMarioTree)
-bestMove c1 c2 t params = case maximumOn (meanUtility . statistics . snd) (HM.toList (children t)) of
+bestMove c1 c2 t@(MCTree cache n) params = (fmap . fmap) (MCTree cache) $
+	case maximumOn (meanUtility . nStatistics . snd) (HM.toList (tChildren t)) of
 	Nothing
-		| null (unexplored t) -> error "The impossible happened! The game was not yet won or lost, but there were no valid moves."
-		| otherwise -> pure (Timeout, t)
-	Just (AIMove p, t')
-		| null (children t') && null (unexplored t') -> pure (Ended p, t')
-		| otherwise -> case HM.lookup (ChanceMove c1 c2) (children t') of
-			Just t'' -> pure (Continue p c1 c2, t'')
+		| null (nUnexplored n) -> error "The impossible happened! The game was not yet won or lost, but there were no valid moves."
+		| otherwise -> pure (Timeout, n)
+	Just (AIMove p, n')
+		| null (nChildren n') && null (nUnexplored n') -> pure (Ended p, n')
+		| otherwise -> case HM.lookup (ChanceMove c1 c2) (nChildren n') of
+			Just e -> pure (Continue p c1 c2, target e)
 			Nothing -> do
 				mcpos <- root params
 				play params mcpos (AIMove p)
 				play params mcpos (ChanceMove c1 c2)
 				ms <- expand params mcpos
-				pure (Continue p c1 c2, MCTree
-					{ statistics = mempty
-					, children = HM.empty
-					, unexplored = toList ms
+				pure (Continue p c1 c2, MCNode
+					{ nStatistics = mempty
+					, nChildren = HM.empty
+					, nUnexplored = toList ms
 					})
 	Just (m, _) -> error
 		$  "The impossible happened! It was the AI's turn, but the best available move was"
 		++ show m
+	where
+	listChildren = map (fmap target) . HM.toList . nChildren
+	target e = cache Cache.! eTarget e
 
 timerThread :: Micro -> BChan (Double, GameUpdate) -> TVar Comms -> IO (Color, Color) -> IO ()
 timerThread (MkFixed micros) timerChan commsRef genPill = go stallThreshold where
