@@ -1,4 +1,3 @@
-{-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE DeriveFoldable #-}
 {-# LANGUAGE DeriveFunctor #-}
 {-# LANGUAGE DeriveTraversable #-}
@@ -134,7 +133,7 @@ evaluationOptions = info (helper <*> parser)
 			<> help "File to read to set up initial board and pill sequence (if none specified, choose randomly)"
 			<> metavar "FILE"
 			))
-	uiFormat = maybeReader \case
+	uiFormat = maybeReader $ \case
 		"gui" -> Just Visual
 		"machine" -> Just Log
 		"quiet" -> Just None
