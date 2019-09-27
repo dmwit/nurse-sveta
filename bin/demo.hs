@@ -22,7 +22,6 @@ import System.IO
 import Util
 import qualified Data.HashMap.Strict as HM
 import qualified Dr.Mario.Model as M
-import qualified Dr.Mario.Sveta.Cache as Cache
 
 main :: IO ()
 main = do
@@ -130,12 +129,12 @@ data TreeFocus a = TreeFocus
 	, selectedMoveIndex :: Maybe Int
 	} deriving (Eq, Ord, Read, Show, Functor)
 
-bestMovesFor :: DrMarioTree -> [(MCMove, DrMarioNode)]
+bestMovesFor :: DrMarioTree -> [(MCMove, DrMarioTree)]
 bestMovesFor t = exploredMoves ++ unexploredMoves where
-	exploredMoves = sortOn (negate . meanUtility . nStatistics . snd) (HM.toList (tChildren t))
-	unexploredMoves = [(m, MCNode mempty mempty mempty) | m <- nUnexplored (tRoot t)]
+	exploredMoves = sortOn (negate . meanUtility . statistics . snd) (HM.toList (children t))
+	unexploredMoves = [(m, MCTree mempty mempty mempty) | m <- unexplored t]
 
-focusTree :: [MCMove] -> DrMarioTree -> Maybe (TreeFocus DrMarioNode)
+focusTree :: [MCMove] -> DrMarioTree -> Maybe (TreeFocus DrMarioTree)
 focusTree [] t = Just TreeFocus
 	{ bestMoves = bestMovesFor t
 	, selectedMoveIndex = Nothing
@@ -144,48 +143,44 @@ focusTree [m] t = Just TreeFocus
 	{ bestMoves = ms
 	, selectedMoveIndex = findIndex ((m==) . fst) ms
 	} where ms = bestMovesFor t
-focusTree (m:ms) (MCTree cache n)
-	=   focusTree ms . MCTree cache
-	=<< Cache.deref cache . eTarget
-	=<< HM.lookup m (nChildren n)
+focusTree (m:ms) t = HM.lookup m (children t) >>= focusTree ms
 
 focusStats :: [MCMove] -> DrMarioTree -> Maybe (TreeFocus MCStats)
-focusStats ms t = fmap (fmap nStatistics) (focusTree ms t)
+focusStats ms t = fmap (fmap statistics) (focusTree ms t)
 
 changeFocus :: Key -> UIState -> EventM n (Next UIState)
-changeFocus key s = continue $ case (key, focusTree (selectedMoves s) t) of
+changeFocus key s = continue $ case (key, focusTree (selectedMoves s) (tree (commsCache s))) of
 	(KUp, Nothing) -> findValidMovePrefix s
 	(KUp, Just ft) -> refreshBoard s { selectedMoves = safeInit (selectedMoves s) }
 	(_, Just (TreeFocus ((m,_):_) Nothing)) -> replaceLastMove s m
 	(_, Just (TreeFocus ms (Just i))) -> case key of
 		KLeft  -> replaceLastMove s $ fst (ms !! max (i-1) 0)
 		KRight -> replaceLastMove s $ fst (ms !! min (i+1) (length ms-1))
-		KDown  -> case bestMovesFor t { tRoot = n } of
+		KDown  -> case bestMovesFor t of
 			(m',_):_ -> s
 				{ selectedMoves = selectedMoves s ++ [m']
 				, board = makeMove (board s) m
 				}
 			_ -> s
-			where (m, n) = ms !! i
+			where (m, t) = ms !! i
 		_ -> s
 	_ -> s
-	where t = tree (commsCache s)
 
 reroot :: UIState -> EventM n (Next UIState)
 reroot s = case focusTree ms (tree c) of
-	Just (TreeFocus ns (Just i)) | visitCount (nStatistics n) > 0 -> do
+	Just (TreeFocus ts (Just i)) | visitCount (statistics tree') > 0 -> do
 		params' <- liftIO $ dmReroot (params c) ms
 		modifyComms s
 			{ board = board'
 			, rootBoard = board'
 			, selectedMoves = []
 			} $ \c -> c
-			{ tree = (tree c) { tRoot = n }
+			{ tree = tree'
 			, params = params'
 			, sequenceNumber = sequenceNumber c + 1
 			}
 		where
-		(m, n) = ns !! i
+		(m, tree') = ts !! i
 		board' = makeMove (board s) m
 	_ -> continue s
 	where
@@ -201,9 +196,9 @@ replaceLastMove s m = s { selectedMoves = safeInit (selectedMoves s) ++ [m] }
 findValidMovePrefix :: UIState -> UIState
 findValidMovePrefix s = refreshBoard s { selectedMoves = go (selectedMoves s) (tree (commsCache s)) } where
 	go [] _ = []
-	go (m:ms) t = case HM.lookup m (nChildren (tRoot t)) >>= Cache.deref (tCache t) . eTarget of
+	go (m:ms) t = case HM.lookup m (children t) of
 		Nothing -> []
-		Just n -> m : go ms t { tRoot = n }
+		Just t' -> m : go ms t'
 
 refreshBoard :: UIState -> UIState
 refreshBoard s = s { board = go (rootBoard s) (selectedMoves s) } where

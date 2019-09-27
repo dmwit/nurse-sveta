@@ -8,7 +8,6 @@ import Data.IORef
 import Data.List
 import Data.Vector (Vector)
 import Dr.Mario.Model hiding (pp)
-import Dr.Mario.Sveta.BoardSummary
 import Dr.Mario.Sveta.MCTS
 import Dr.Mario.Sveta.Pathfinding
 import Dr.Mario.Sveta.PP
@@ -69,12 +68,8 @@ data AuxiliaryState = AuxiliaryState
 
 data MCPlayer = AI | Chance deriving (Bounded, Enum, Eq, Ord, Read, Show)
 
-type MCSummary = BoardSummary
-
-type DrMarioTree = MCTree MCStats MCMove MCSummary
-type DrMarioNode = MCNode MCStats MCMove MCSummary
-type DrMarioEdge = MCEdge MCStats MCMove MCSummary
-type DrMarioParameters = MCTSParameters MCM MCStats MCScore MCMove MCPosition MCSummary MCPlayer
+type DrMarioTree = MCTree MCStats MCMove
+type DrMarioParameters = MCTSParameters MCM MCStats MCScore MCMove MCPosition MCPlayer
 
 stallThreshold :: Double
 stallThreshold = 20
@@ -99,9 +94,9 @@ won mcpos aux = originalVirusCount mcpos == fromIntegral (virusesCleared aux)
 mwon :: MCPosition -> IO Bool
 mwon mcpos = won mcpos <$> readIORef (auxState mcpos)
 
-dmScore :: MCPlayer -> MCStats -> MCStats -> MCStats -> MCScore
-dmScore AI = uct2 cumulativeUtility visitCount
-dmScore Chance = \_ stats _ -> -visitCount stats
+dmScore :: MCPlayer -> MCStats -> MCStats -> MCScore
+dmScore AI statsParent statsCurrent = ucb1 (visitCount statsParent) (visitCount statsCurrent) (cumulativeUtility statsCurrent)
+dmScore Chance _ statsCurrent = -visitCount statsCurrent
 
 dmEvaluate :: MCPosition -> MCM MCStats
 dmEvaluate mcpos = do
@@ -132,6 +127,12 @@ dmExpand mcpos = do
 		(return (timedOut aux || won mcpos aux))
 		(mtoppedOut mcpos)
 	if done then pure V.empty else case lookahead aux of
+		-- TODO: return all pills, but share rollouts between neighboring
+		-- flipped moves when they both exist
+		--
+		-- ...or maybe that would get too expensive, because then there's 2^n
+		-- paths to update when we're processing an MCTree node n levels deep?
+		-- but then what to do about moves that can't be rotated 180? hmmm...
 		Nothing -> pure allChanceMoves
 		Just (l, r) -> V.fromList . map AIMove . toList
 		           <$> munsafeApproxReachable (mboard mcpos) (launchPill l r)
@@ -188,10 +189,10 @@ accuratePathfindingThreshold = 512
 mapKey :: (Hashable k', Eq k') => (k -> k') -> HashMap k v -> HashMap k' v
 mapKey f m = HM.fromList [(f k, v) | (k, v) <- HM.toList m]
 
-dmPreprocess :: MCPosition -> DrMarioNode -> MCM (MCStats, DrMarioNode)
-dmPreprocess mcpos n
+dmPreprocess :: MCPosition -> DrMarioTree -> IO (MCStats, DrMarioTree)
+dmPreprocess mcpos t
 	| vc /= accuratePathfindingThreshold = nop
-	| HM.null (nChildren n) && null (nUnexplored n) = nop
+	| HM.null (children t) && null (unexplored t) = nop
 	| otherwise = do
 		aux <- readIORef (auxState mcpos)
 		case lookahead aux of
@@ -201,24 +202,17 @@ dmPreprocess mcpos n
 				-- TODO: track drop speed and parity
 				-- TODO: create (and use) mreachable
 				let placements = mapKey AIMove $ reachable b 13 (launchPill l r) Checking
-				    children = HM.intersection (nChildren n) placements
-				    unexplored = HM.keys (HM.difference placements (nChildren n))
-				    stats = foldMap eStatistics children
+				    children' = HM.intersection (children t) placements
+				    unexplored' = HM.keys (HM.difference placements (children t))
+				    stats' = foldMap statistics children'
 				    dstats = MCStats
-				    	{ visitCount = visitCount stats - vc
-				    	, cumulativeUtility = cumulativeUtility stats - cu
+				    	{ visitCount = visitCount stats' - vc
+				    	, cumulativeUtility = cumulativeUtility stats' - cu
 				    	}
-				pure (dstats, n { nChildren = children, nUnexplored = unexplored })
+				pure (dstats, t { children = children', unexplored = unexplored' })
 	where
-	MCStats { visitCount = vc, cumulativeUtility = cu } = nStatistics n
-	nop = pure (mempty, n)
-
-dmSummarize :: MCPosition -> MCM (Maybe MCSummary)
-dmSummarize mcpos = do
-	aux <- readIORef (auxState mcpos)
-	case lookahead aux of
-		Nothing -> Just <$> munsafeSummarizeBoard (mboard mcpos)
-		_ -> pure Nothing
+	MCStats { visitCount = vc, cumulativeUtility = cu } = statistics t
+	nop = pure (mempty, t)
 
 dmParameters :: GenIO -> Board -> DrMarioParameters
 dmParameters gen b = MCTSParameters
@@ -230,7 +224,6 @@ dmParameters gen b = MCTSParameters
 	, play = dmPlay
 	, select = dmSelect gen
 	, preprocess = dmPreprocess
-	, summarize = dmSummarize
 	}
 
 -- | Produce a new set of parameters suitable for use with searching a
