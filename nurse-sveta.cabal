@@ -75,6 +75,21 @@ executable nurse-sveta-multi-play
 executable nurse-sveta-replay
   import:              common, gui
   main-is:             replay.hs
+  other-modules:       Parser
   build-depends:       attoparsec ^>=0.13,
                        bytestring ^>=0.10,
                        unbounded-delays ^>=0.1
+
+executable nurse-sveta-stats
+  import:              common
+  main-is:             stats.hs
+  other-modules:       Parser
+  hs-source-dirs:      bin
+  build-depends:       attoparsec ^>=0.13,
+                       bytestring ^>=0.10,
+                       cassava ^>=0.5,
+                       containers ^>=0.5,
+                       directory ^>=1.3,
+                       filepath ^>=1.4,
+                       utf8-string ^>=1.0,
+                       vector ^>=0.12
