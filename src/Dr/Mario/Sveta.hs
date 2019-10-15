@@ -66,10 +66,8 @@ data AuxiliaryState = AuxiliaryState
 	, virusesCleared :: !Int
 	} deriving (Eq, Ord, Read, Show)
 
-data MCPlayer = AI | Chance deriving (Bounded, Enum, Eq, Ord, Read, Show)
-
 type DrMarioTree = MCTree MCStats MCMove
-type DrMarioParameters = MCTSParameters MCM MCStats MCScore MCMove MCPosition MCPlayer
+type DrMarioParameters = MCTSParameters MCM MCStats MCScore MCMove MCPosition
 
 stallThreshold :: Double
 stallThreshold = 20
@@ -94,9 +92,9 @@ won mcpos aux = originalVirusCount mcpos == fromIntegral (virusesCleared aux)
 mwon :: MCPosition -> IO Bool
 mwon mcpos = won mcpos <$> readIORef (auxState mcpos)
 
-dmScore :: MCPlayer -> MCStats -> MCStats -> MCScore
-dmScore AI statsParent statsCurrent = ucb1 (visitCount statsParent) (visitCount statsCurrent) (cumulativeUtility statsCurrent)
-dmScore Chance _ statsCurrent = -visitCount statsCurrent
+dmScore :: MCMove -> MCStats -> MCStats -> MCScore
+dmScore (ChanceMove l r) _ statsCurrent = visitCount statsCurrent * if l == r then -2 else -1
+dmScore _ statsParent statsCurrent = ucb1 (visitCount statsParent) (visitCount statsCurrent) (cumulativeUtility statsCurrent)
 
 dmEvaluate :: MCPosition -> MCM MCStats
 dmEvaluate mcpos = do
@@ -113,9 +111,35 @@ dmEvaluate mcpos = do
 		, cumulativeUtility = (clearUtility &&& usageUtility) / maxUtility
 		}
 
+-- This is a slight lie, and intricately tied to how a couple other things
+-- work, so, some commentary...
+--
+-- All combinations of left color and right color are actually possible in the
+-- game. A pretty good mental model of how the chance moves works is that the
+-- game chooses two colors uniformly and independently, then presents a pill
+-- with those two colors.
+--
+-- However, strategically speaking, a pill and its flipped version almost
+-- always have exactly the same meaning, since you almost certainly have time
+-- to press the rotate button twice while maneuvering to where you want it to
+-- go. So we normalize the pills in this vector in a way that identifies a pill
+-- and its flipped version.
+--
+-- Note that there are 9 different "raw" pills, but only 6 different normalized
+-- pills. This has some knock-on consequences: when we do our tree search, we
+-- want to spend more time thinking about what to do with pills with two
+-- different colors, since they're twice as likely to happen. So there are two
+-- other parameters that have to be modified to understand the oddity we've
+-- introduced by canonizing: 'dmSelect', which randomly chooses a move (we
+-- return a vector of length 9 with only 6 distinct elements from
+-- 'allChanceMoves', so that choosing uniformly from those 9 gets the right
+-- distribution on the 6 possible outcomes), and 'dmScore', which informs the
+-- search how much of its time to spend searching particular moves (we make
+-- attempts to search pills with two different colors only count half as much,
+-- so the search has to do them twice as often to get the same score).
 allChanceMoves :: Vector MCMove
 allChanceMoves = V.fromListN 9
-	[ ChanceMove l r
+	[ ChanceMove (min l r) (max l r)
 	| l <- [minBound .. maxBound]
 	, r <- [minBound .. maxBound]
 	]
@@ -127,12 +151,6 @@ dmExpand mcpos = do
 		(return (timedOut aux || won mcpos aux))
 		(mtoppedOut mcpos)
 	if done then pure V.empty else case lookahead aux of
-		-- TODO: return all pills, but share rollouts between neighboring
-		-- flipped moves when they both exist
-		--
-		-- ...or maybe that would get too expensive, because then there's 2^n
-		-- paths to update when we're processing an MCTree node n levels deep?
-		-- but then what to do about moves that can't be rotated 180? hmmm...
 		Nothing -> pure allChanceMoves
 		Just (l, r) -> V.fromList . map AIMove . toList
 		           <$> munsafeApproxReachable (mboard mcpos) (launchPill l r)
@@ -158,9 +176,6 @@ dmRoot b = do
 		, y <- [0..15]
 		, Just (Occupied _ Virus) <- [get b (Position x y)]
 		]
-
-dmTurn :: MCPosition -> MCM MCPlayer
-dmTurn mcpos = maybe Chance (const AI) . lookahead <$> readIORef (auxState mcpos)
 
 dmPlay :: MCPosition -> MCMove -> MCM ()
 dmPlay mcpos (ChanceMove l r) = modifyIORef (auxState mcpos) (\aux -> aux { lookahead = Just (l, r) })
@@ -220,7 +235,6 @@ dmParameters gen b = MCTSParameters
 	, evaluate = dmEvaluate
 	, expand = dmExpand
 	, root = dmRoot b
-	, turn = dmTurn
 	, play = dmPlay
 	, select = dmSelect gen
 	, preprocess = dmPreprocess

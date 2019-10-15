@@ -20,11 +20,11 @@ data MCTree stats move = MCTree
 	, unexplored :: [move]
 	} deriving (Eq, Show)
 
-data MCTSParameters m stats score move position player = MCTSParameters
-	{ score :: player -> stats -> stats -> score
-	-- ^ Given which player is currently choosing a move and the statistics for
-	-- the parent node and current node, compute a priority score for searching
-	-- this node in the future. Smaller scores are searched first.
+data MCTSParameters m stats score move position = MCTSParameters
+	{ score :: move -> stats -> stats -> score
+	-- ^ Given a move and the statistics for the parent node and current node,
+	-- compute a priority score for searching this node in the future. Smaller
+	-- scores are searched first.
 	--
 	-- See also 'ucb1'.
 	, evaluate :: position -> m stats
@@ -42,8 +42,6 @@ data MCTSParameters m stats score move position player = MCTSParameters
 	, root :: m position
 	-- ^ An action which can be used to regenerate a fresh, mutable copy of the
 	-- game state you want to choose a move in.
-	, turn :: position -> m player
-	-- ^ Compute which player is currently making choices.
 	, play :: position -> move -> m ()
 	-- ^ Mutate the current position, making the given move.
 	, select :: position -> Vector move -> m move
@@ -68,7 +66,7 @@ data MCTSParameters m stats score move position player = MCTSParameters
 -- | Create an essentially empty tree, suitable for providing to 'mcts'.
 emptyTree ::
 	(Monad m, Monoid stats) =>
-	MCTSParameters m stats score move position player ->
+	MCTSParameters m stats score move position ->
 	m (MCTree stats move)
 emptyTree params = do
 	pos <- root params
@@ -90,7 +88,7 @@ emptyPreprocessor _ t = pure (mempty, t)
 -- budget.
 mcts ::
 	(Monad m, Semigroup stats, Hashable move, Eq move, Ord score) =>
-	MCTSParameters m stats score move position player ->
+	MCTSParameters m stats score move position ->
 	MCTree stats move ->
 	m (MCTree stats move)
 mcts params t = do
@@ -98,28 +96,27 @@ mcts params t = do
 	(_, t') <- mcts_ params pos t
 	pure t'
 
-maximumOn :: Ord a => (v -> a) -> HashMap k v -> Maybe (k, v)
+maximumOn :: Ord a => (k -> v -> a) -> HashMap k v -> Maybe (k, v)
 -- checking for emptiness once at the beginning is cheaper than re-checking on
 -- every iteration, as you would have to do if you folded with a Maybe
 maximumOn f m = case HM.toList m of
 	[] -> Nothing
 	((k,v):_) -> Just . (\(k,v,a) -> (k,v)) $ HM.foldlWithKey'
-		(\old@(k,v,a) k' v' -> let a' = f v' in if a' > a then (k',v',a') else old)
-		(k,v,f v)
+		(\old@(k,v,a) k' v' -> let a' = f k' v' in if a' > a then (k',v',a') else old)
+		(k,v,f k v)
 		m
 
 mcts_ ::
 	(Monad m, Semigroup stats, Hashable move, Eq move, Ord score) =>
-	MCTSParameters m stats score move position player ->
+	MCTSParameters m stats score move position ->
 	position ->
 	MCTree stats move ->
 	m (stats, MCTree stats move)
 mcts_ params pos = go where
 	go t_ = do
-		player <- turn params pos
 		(stats, t) <- preprocess params pos t_
 		case unexplored t of
-			[] -> case maximumOn (\t' -> score params player (statistics t) (statistics t')) (children t) of
+			[] -> case maximumOn (\m t' -> score params m (statistics t) (statistics t')) (children t) of
 				Just (m, t') -> do
 					play params pos m
 					(stats', t'') <- go t'
