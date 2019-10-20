@@ -16,6 +16,7 @@ import Data.ByteString.Builder (Builder)
 import Data.Char
 import Data.Fixed
 import Data.Foldable
+import Data.HashMap.Strict (HashMap)
 import Data.IORef
 import Data.Maybe
 import Data.Time
@@ -48,7 +49,7 @@ main = do
 	(c1, c2) <- genPill
 
 	gen <- createSystemRandom -- we want this to be independent of the randomness, if any, used in genPill
-	params <- dmReroot (dmParameters gen board) [ChanceMove c1 c2]
+	params <- dmReroot (dmParameters gen board) [ChanceMove (Colors WithMirror Exact c1 c2)]
 	tree <- emptyTree params
 
 	commsRef <- newTVarIO Comms
@@ -229,6 +230,17 @@ maximumOn f (a:as) = go a (f a) as where
 	go a b [] = Just a
 	go a b (a':as) = let b' = f a' in if b' > b then go a' b' as else go a b as
 
+findChanceMove :: Color -> Color -> HashMap MCMove a -> Maybe a
+findChanceMove l r m = asum . map (flip HM.lookup m . ChanceMove) . tail $ [undefined
+	, Colors WithMirror Exact lo hi
+	, Colors Positional Exact l r
+	, Colors WithMirror Approximate lo hi
+	-- Colors Positional Approximate l r currently can never happen
+	]
+	where
+	lo = min l r
+	hi = max l r
+
 bestMove :: Color -> Color -> DrMarioTree -> DrMarioParameters -> IO (GameUpdate, DrMarioTree)
 bestMove c1 c2 t params = case maximumOn (meanUtility . statistics . snd) (HM.toList (children t)) of
 	Nothing
@@ -236,12 +248,12 @@ bestMove c1 c2 t params = case maximumOn (meanUtility . statistics . snd) (HM.to
 		| otherwise -> pure (Timeout, t)
 	Just (AIMove p, t')
 		| null (children t') && null (unexplored t') -> pure (Ended p, t')
-		| otherwise -> case HM.lookup (ChanceMove c1 c2) (children t') of
+		| otherwise -> case findChanceMove c1 c2 (children t') of
 			Just t'' -> pure (Continue p c1 c2, t'')
 			Nothing -> do
 				mcpos <- root params
 				play params mcpos (AIMove p)
-				play params mcpos (ChanceMove c1 c2)
+				play params mcpos (ChanceMove (Colors Positional Exact c1 c2))
 				ms <- expand params mcpos
 				pure (Continue p c1 c2, MCTree
 					{ statistics = mempty
@@ -262,7 +274,7 @@ timerThread (MkFixed micros) timerChan commsRef genPill = go stallThreshold wher
 		next <- bestMove c1 c2 (tree comms) (params comms)
 		case next of
 			(u@(Continue p l r), tree') -> do
-				params' <- dmReroot (params comms) [AIMove p, ChanceMove l r]
+				params' <- dmReroot (params comms) [AIMove p, ChanceMove (Colors Positional Exact l r)]
 				atomically $ writeTVar commsRef comms
 					{ tree = tree'
 					, params = params'
