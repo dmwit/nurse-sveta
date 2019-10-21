@@ -166,7 +166,7 @@ chanceMovesDistribution = V.fromListN 9
 
 -- TODO: create (and use) a real mreachable
 mreachable :: IOBoard -> Pill -> MCM (HashMap Pill [Move])
-mreachable mb p = (\b -> reachable b 13 p Checking) <$> mfreeze mb
+mreachable mb p = (\b -> reachable b 14 p Checking) <$> mfreeze mb
 
 dmExpand :: MCPosition -> MCM (Vector MCMove)
 dmExpand mcpos = do
@@ -230,10 +230,7 @@ dmSelect gen _ ms_ = (ms `V.unsafeIndex`) <$> uniformR (0, V.length ms-1) gen wh
 		_ -> ms_
 
 accuratePathfindingThreshold :: Double
-accuratePathfindingThreshold = 512*9
-
--- TODO: change up some constants: make accuratePathFindingThreshold 512
--- instead of 512*9, and use 14 for fall time in mreachable instead of 13
+accuratePathfindingThreshold = 512
 
 mapKey :: (Hashable k', Eq k') => (k -> k') -> HashMap k v -> HashMap k' v
 mapKey f m = HM.fromList [(f k, v) | (k, v) <- HM.toList m]
