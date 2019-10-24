@@ -14,7 +14,6 @@ import Dr.Mario.Sveta.PP
 import Dr.Mario.Util
 import System.Random.MWC
 import qualified Data.HashMap.Strict as HM
-import qualified Data.HashSet as HS
 import qualified Dr.Mario.Model as M
 import qualified Dr.Mario.Sveta.Pathfinding as S
 import qualified Data.Vector as V
@@ -37,54 +36,20 @@ instance Semigroup MCStats where
 instance PP MCStats where
 	pp (MCStats n q) = pp q ++ "/" ++ pp n ++ "=" ++ pp (q / n)
 
-negateStats :: MCStats -> MCStats
-negateStats s = MCStats
-	{ visitCount = -visitCount s
-	, cumulativeUtility = -cumulativeUtility s
-	}
-
-(<>-) :: MCStats -> MCStats -> MCStats
-s1 <>- s2 = s1 <> negateStats s2
-
 type MCScore = Double
-
-data ChanceMoveColorInterpretation = WithMirror | Positional deriving (Bounded, Enum, Eq, Ord, Read, Show)
-instance Hashable ChanceMoveColorInterpretation where hashWithSalt s = hashWithSalt s . fromEnum
-
-data ChanceMovePathfinding = Approximate | Exact deriving (Bounded, Enum, Eq, Ord, Read, Show)
-instance Hashable ChanceMovePathfinding where hashWithSalt s = hashWithSalt s . fromEnum
-
-instance PP ChanceMovePathfinding where
-	pp Approximate = "|"
-	pp Exact = "Z"
-
--- | If the interpretation is 'WithMirror', then the color fields are the
--- smallest color, then the largest; otherwise the color fields are the left
--- color, then the right.
-data ChanceMove = Colors ChanceMoveColorInterpretation ChanceMovePathfinding Color Color
-	deriving (Eq, Ord, Read, Show)
-
-instance Hashable ChanceMove where
-	hashWithSalt s (Colors i p c1 c2) = s `hashWithSalt` i `hashWithSalt` p `hashWithSalt` c1 `hashWithSalt` c2
-
-instance PP ChanceMove where
-	pp (Colors i p c1 c2) = ""
-		++ pp c1 ++ pp c2
-		++ (if i == WithMirror && c1 /= c2 then "/" ++ pp c2 ++ pp c1 else "")
-		++ pp p
 
 data MCMove
 	= AIMove Pill
-	| ChanceMove ChanceMove
+	| ChanceMove Color Color
 	deriving (Eq, Ord, Read, Show)
 
 instance Hashable MCMove where
 	hashWithSalt s (AIMove p) = s `hashWithSalt` (1 :: Int) `hashWithSalt` p
-	hashWithSalt s (ChanceMove m) = s `hashWithSalt` (2 :: Int) `hashWithSalt` m
+	hashWithSalt s (ChanceMove l r) = s `hashWithSalt` (2 :: Int) `hashWithSalt` l `hashWithSalt` r
 
 instance PP MCMove where
 	pp (AIMove p) = pp p
-	pp (ChanceMove m) = pp m
+	pp (ChanceMove l r) = pp l ++ pp r
 
 type MCM = IO
 
@@ -97,12 +62,14 @@ data MCPosition = MCPosition
 data AuxiliaryState = AuxiliaryState
 	{ pillsUsed :: !Double
 	, pillsUsedSinceVirusClear :: !Double
-	, lookahead :: Maybe ChanceMove
+	, lookahead :: Maybe (Color, Color)
 	, virusesCleared :: !Int
 	} deriving (Eq, Ord, Read, Show)
 
+data MCPlayer = AI | Chance deriving (Bounded, Enum, Eq, Ord, Read, Show)
+
 type DrMarioTree = MCTree MCStats MCMove
-type DrMarioParameters = MCTSParameters MCM MCStats MCScore MCMove MCPosition
+type DrMarioParameters = MCTSParameters MCM MCStats MCScore MCMove MCPosition MCPlayer
 
 stallThreshold :: Double
 stallThreshold = 20
@@ -127,10 +94,9 @@ won mcpos aux = originalVirusCount mcpos == fromIntegral (virusesCleared aux)
 mwon :: MCPosition -> IO Bool
 mwon mcpos = won mcpos <$> readIORef (auxState mcpos)
 
-dmScore :: MCMove -> MCStats -> MCStats -> MCScore
-dmScore (ChanceMove (Colors WithMirror _ l r)) _ statsCurrent | l /= r = visitCount statsCurrent / (-2)
-dmScore (ChanceMove (Colors _ _ l r)) _ statsCurrent = -visitCount statsCurrent
-dmScore _ statsParent statsCurrent = ucb1 (visitCount statsParent) (visitCount statsCurrent) (cumulativeUtility statsCurrent)
+dmScore :: MCPlayer -> MCStats -> MCStats -> MCScore
+dmScore AI statsParent statsCurrent = ucb1 (visitCount statsParent) (visitCount statsCurrent) (cumulativeUtility statsCurrent)
+dmScore Chance _ statsCurrent = -visitCount statsCurrent
 
 dmEvaluate :: MCPosition -> MCM MCStats
 dmEvaluate mcpos = do
@@ -147,26 +113,12 @@ dmEvaluate mcpos = do
 		, cumulativeUtility = (clearUtility &&& usageUtility) / maxUtility
 		}
 
--- The pills to consider when first looking at a position.
-baseChanceMoves :: Vector MCMove
-baseChanceMoves = V.fromListN 6
-	[ ChanceMove (Colors WithMirror Approximate l r)
-	| l <- [minBound .. maxBound]
-	, r <- [l .. maxBound]
-	]
-
--- Like baseChanceMoves, but arranged so that choosing uniformly at random from
--- this vector gets the right distribution of pills.
-chanceMovesDistribution :: Vector MCMove
-chanceMovesDistribution = V.fromListN 9
-	[ ChanceMove (Colors WithMirror Approximate (min l r) (max l r))
+allChanceMoves :: Vector MCMove
+allChanceMoves = V.fromListN 9
+	[ ChanceMove l r
 	| l <- [minBound .. maxBound]
 	, r <- [minBound .. maxBound]
 	]
-
--- TODO: create (and use) a real mreachable
-mreachable :: IOBoard -> Pill -> MCM (HashMap Pill [Move])
-mreachable mb p = (\b -> reachable b 14 p Checking) <$> mfreeze mb
 
 dmExpand :: MCPosition -> MCM (Vector MCMove)
 dmExpand mcpos = do
@@ -175,13 +127,15 @@ dmExpand mcpos = do
 		(return (timedOut aux || won mcpos aux))
 		(mtoppedOut mcpos)
 	if done then pure V.empty else case lookahead aux of
-		Nothing -> pure baseChanceMoves
-		Just (Colors _ Approximate l r)
-			 -> V.fromList . map AIMove . toList
-			<$> munsafeApproxReachable (mboard mcpos) (launchPill l r)
-		Just (Colors _ Exact l r)
-			 -> V.fromList . map AIMove . HM.keys
-			<$> mreachable (mboard mcpos) (launchPill l r)
+		-- TODO: return all pills, but share rollouts between neighboring
+		-- flipped moves when they both exist
+		--
+		-- ...or maybe that would get too expensive, because then there's 2^n
+		-- paths to update when we're processing an MCTree node n levels deep?
+		-- but then what to do about moves that can't be rotated 180? hmmm...
+		Nothing -> pure allChanceMoves
+		Just (l, r) -> V.fromList . map AIMove . toList
+		           <$> munsafeApproxReachable (mboard mcpos) (launchPill l r)
 
 dmRoot :: Board -> MCM MCPosition
 dmRoot b = do
@@ -205,8 +159,11 @@ dmRoot b = do
 		, Just (Occupied _ Virus) <- [get b (Position x y)]
 		]
 
+dmTurn :: MCPosition -> MCM MCPlayer
+dmTurn mcpos = maybe Chance (const AI) . lookahead <$> readIORef (auxState mcpos)
+
 dmPlay :: MCPosition -> MCMove -> MCM ()
-dmPlay mcpos (ChanceMove m) = modifyIORef (auxState mcpos) (\aux -> aux { lookahead = Just m })
+dmPlay mcpos (ChanceMove l r) = modifyIORef (auxState mcpos) (\aux -> aux { lookahead = Just (l, r) })
 dmPlay mcpos (AIMove p) = do
 	mVirusCount <- mplace (mboard mcpos) p
 	case mVirusCount of
@@ -224,10 +181,7 @@ dmPlay mcpos (AIMove p) = do
 				++ pp b
 
 dmSelect :: GenIO -> MCPosition -> Vector MCMove -> MCM MCMove
-dmSelect gen _ ms_ = (ms `V.unsafeIndex`) <$> uniformR (0, V.length ms-1) gen where
-	ms = case V.head ms_ of
-		ChanceMove (Colors WithMirror _ _ _) -> chanceMovesDistribution
-		_ -> ms_
+dmSelect gen _ ms = (ms `V.unsafeIndex`) <$> uniformR (0, V.length ms-1) gen
 
 accuratePathfindingThreshold :: Double
 accuratePathfindingThreshold = 512
@@ -235,58 +189,30 @@ accuratePathfindingThreshold = 512
 mapKey :: (Hashable k', Eq k') => (k -> k') -> HashMap k v -> HashMap k' v
 mapKey f m = HM.fromList [(f k, v) | (k, v) <- HM.toList m]
 
-updateSubtree :: DrMarioTree -> HashMap MCMove ignored -> DrMarioTree
-updateSubtree t ms = MCTree
-	{ statistics = statistics t <> foldMap statistics children' <>- foldMap statistics (children t)
-	, children = children'
-	, unexplored = unexplored'
-	} where
-	children' = HM.intersection (children t) ms
-	unexplored' = HM.keys (HM.difference ms (children t))
-
 dmPreprocess :: MCPosition -> DrMarioTree -> IO (MCStats, DrMarioTree)
 dmPreprocess mcpos t
-	| visitCount (statistics t) /= accuratePathfindingThreshold = nop
+	| vc /= accuratePathfindingThreshold = nop
 	| HM.null (children t) && null (unexplored t) = nop
 	| otherwise = do
 		aux <- readIORef (auxState mcpos)
 		case lookahead aux of
-			Nothing -> do
-				placementsM <- mreachable (mboard mcpos) (launchPill Red Blue)
+			Nothing -> nop
+			Just (l, r) -> do
+				b <- mfreeze (mboard mcpos)
 				-- TODO: track drop speed and parity
-				let placementsS = HM.keysSet placementsM
-				    onOrderings :: (Color -> Color -> a) -> Color -> Color -> [a]
-				    (i, onOrderings) = if placementsS == HS.map aboutFacePill placementsS
-				    	then (WithMirror, \f l r -> [f (min l r) (max l r)])
-				    	else (Positional, \f l r -> [f l r, f r l])
-				    moves l r = mapKey (AIMove . adjustPill l r) placementsM
-				    children' = HM.fromList
-				    	[ (ChanceMove m, updateSubtree t (moves c1 c2))
-				    	| (ChanceMove (Colors _ _ l r), t) <- HM.toList (children t)
-				    	, (m, c1, c2) <- onOrderings (\c1 c2 -> (Colors i Exact c1 c2, c1, c2)) l r
-				    	]
-				    unexplored' =
-				    	[ ChanceMove m
-				    	| ChanceMove (Colors _ _ l r) <- unexplored t
-				    	, m <- onOrderings (Colors i Exact) l r
-				    	]
-				    dstats = foldMap statistics children' <>- foldMap statistics (children t)
-				pure (dstats, t
-					{ children = children'
-					, unexplored = unexplored'
-					})
-			Just _ -> nop
+				-- TODO: create (and use) mreachable
+				let placements = mapKey AIMove $ reachable b 13 (launchPill l r) Checking
+				    children' = HM.intersection (children t) placements
+				    unexplored' = HM.keys (HM.difference placements (children t))
+				    stats' = foldMap statistics children'
+				    dstats = MCStats
+				    	{ visitCount = visitCount stats' - vc
+				    	, cumulativeUtility = cumulativeUtility stats' - cu
+				    	}
+				pure (dstats, t { children = children', unexplored = unexplored' })
 	where
+	MCStats { visitCount = vc, cumulativeUtility = cu } = statistics t
 	nop = pure (mempty, t)
-
-	adjustColor l r Red = l
-	adjustColor l r Blue = r
-	adjustColor l r Yellow = error "The impossible happened: saw Yellow in adjustColor."
-	adjustPillContent l r pc = pc
-		{ bottomLeftColor = adjustColor l r (bottomLeftColor pc)
-		, otherColor = adjustColor l r (otherColor pc)
-		}
-	adjustPill l r p = p { content = adjustPillContent l r (content p) }
 
 dmParameters :: GenIO -> Board -> DrMarioParameters
 dmParameters gen b = MCTSParameters
@@ -294,6 +220,7 @@ dmParameters gen b = MCTSParameters
 	, evaluate = dmEvaluate
 	, expand = dmExpand
 	, root = dmRoot b
+	, turn = dmTurn
 	, play = dmPlay
 	, select = dmSelect gen
 	, preprocess = dmPreprocess

@@ -28,7 +28,7 @@ main = do
 	gen <- createSystemRandom
 	b <- randomBoard gen
 	(c1, c2) <- randomPill gen
-	params <- dmReroot (dmParameters gen b) [ChanceMove (Colors WithMirror Exact c1 c2)]
+	params <- dmReroot (dmParameters gen b) [ChanceMove c1 c2]
 	initialTree <- emptyTree params
 
 	let c = Comms
@@ -208,7 +208,7 @@ refreshBoard s = s { board = go (rootBoard s) (selectedMoves s) } where
 
 makeMove :: M.Board -> MCMove -> M.Board
 makeMove b m = case m of
-	ChanceMove _ -> b
+	ChanceMove _ _ -> b
 	AIMove p -> case M.place b p of
 		Just (_, b') -> b'
 		Nothing -> error
@@ -280,7 +280,7 @@ renderMoveAndStats b rank focused (m, stats) = withBorderStyle style . border $ 
 	style = if focused then unicode else borderStyleFromChar ' '
 
 renderMove :: M.Board -> MCMove -> Widget n
-renderMove b (ChanceMove (Colors _ _ l r)) = raw
+renderMove b (ChanceMove l r) = raw
 	$   renderLookaheadFor b l r
 	<-> renderBoard b (const Nothing)
 renderMove b (AIMove p) = raw
