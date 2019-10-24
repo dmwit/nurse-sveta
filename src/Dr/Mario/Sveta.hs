@@ -127,12 +127,6 @@ dmExpand mcpos = do
 		(return (timedOut aux || won mcpos aux))
 		(mtoppedOut mcpos)
 	if done then pure V.empty else case lookahead aux of
-		-- TODO: return all pills, but share rollouts between neighboring
-		-- flipped moves when they both exist
-		--
-		-- ...or maybe that would get too expensive, because then there's 2^n
-		-- paths to update when we're processing an MCTree node n levels deep?
-		-- but then what to do about moves that can't be rotated 180? hmmm...
 		Nothing -> pure allChanceMoves
 		Just (l, r) -> V.fromList . map AIMove . toList
 		           <$> munsafeApproxReachable (mboard mcpos) (launchPill l r)
@@ -195,13 +189,14 @@ dmPreprocess mcpos t
 	| HM.null (children t) && null (unexplored t) = nop
 	| otherwise = do
 		aux <- readIORef (auxState mcpos)
+		-- TODO: do accurate pathfinding once and share it among all 9 possible pills
 		case lookahead aux of
 			Nothing -> nop
 			Just (l, r) -> do
 				b <- mfreeze (mboard mcpos)
 				-- TODO: track drop speed and parity
 				-- TODO: create (and use) mreachable
-				let placements = mapKey AIMove $ reachable b 13 (launchPill l r) Checking
+				let placements = mapKey AIMove $ reachable b 14 (launchPill l r) Checking
 				    children' = HM.intersection (children t) placements
 				    unexplored' = HM.keys (HM.difference placements (children t))
 				    stats' = foldMap statistics children'
