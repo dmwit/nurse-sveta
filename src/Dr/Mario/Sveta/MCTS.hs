@@ -24,7 +24,7 @@ data MCTSParameters m stats score move position player = MCTSParameters
 	{ score :: player -> stats -> stats -> score
 	-- ^ Given which player is currently choosing a move and the statistics for
 	-- the parent node and current node, compute a priority score for searching
-	-- this node in the future. Smaller scores are searched first.
+	-- this node in the future. Larger scores are searched first.
 	--
 	-- See also 'ucb1'.
 	, evaluate :: position -> m stats
