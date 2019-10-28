@@ -66,10 +66,8 @@ data AuxiliaryState = AuxiliaryState
 	, virusesCleared :: !Int
 	} deriving (Eq, Ord, Read, Show)
 
-data MCPlayer = AI | Chance deriving (Bounded, Enum, Eq, Ord, Read, Show)
-
 type DrMarioTree = MCTree MCStats MCMove
-type DrMarioParameters = MCTSParameters MCM MCStats MCScore MCMove MCPosition MCPlayer
+type DrMarioParameters = MCTSParameters MCM MCStats MCScore MCMove MCPosition
 
 stallThreshold :: Double
 stallThreshold = 20
@@ -94,9 +92,9 @@ won mcpos aux = originalVirusCount mcpos == fromIntegral (virusesCleared aux)
 mwon :: MCPosition -> IO Bool
 mwon mcpos = won mcpos <$> readIORef (auxState mcpos)
 
-dmScore :: MCPlayer -> MCStats -> MCStats -> MCScore
-dmScore AI statsParent statsCurrent = ucb1 (visitCount statsParent) (visitCount statsCurrent) (cumulativeUtility statsCurrent)
-dmScore Chance _ statsCurrent = -visitCount statsCurrent
+dmScore :: MCMove -> MCStats -> MCStats -> MCScore
+dmScore (AIMove _) statsParent statsCurrent = ucb1 (visitCount statsParent) (visitCount statsCurrent) (cumulativeUtility statsCurrent)
+dmScore (ChanceMove _ _) _ statsCurrent = -visitCount statsCurrent
 
 dmEvaluate :: MCPosition -> MCM MCStats
 dmEvaluate mcpos = do
@@ -152,9 +150,6 @@ dmRoot b = do
 		, y <- [0..15]
 		, Just (Occupied _ Virus) <- [get b (Position x y)]
 		]
-
-dmTurn :: MCPosition -> MCM MCPlayer
-dmTurn mcpos = maybe Chance (const AI) . lookahead <$> readIORef (auxState mcpos)
 
 dmPlay :: MCPosition -> MCMove -> MCM ()
 dmPlay mcpos (ChanceMove l r) = modifyIORef (auxState mcpos) (\aux -> aux { lookahead = Just (l, r) })
@@ -215,7 +210,6 @@ dmParameters gen b = MCTSParameters
 	, evaluate = dmEvaluate
 	, expand = dmExpand
 	, root = dmRoot b
-	, turn = dmTurn
 	, play = dmPlay
 	, select = dmSelect gen
 	, preprocess = dmPreprocess
