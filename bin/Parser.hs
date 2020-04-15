@@ -36,11 +36,14 @@ describeEnding Stall = "Stalemate: gameplay halted for placing too many pills wi
 gameFormat :: A.Parser (Board, [Pill], Ending)
 gameFormat = liftA3 (,,)
 	(parseAndWarn <* newline)
-	(some (parseAndWarn <* newline))
+	(some parseIgnoreAndWarn)
 	(ending <* newline)
 	where
 	newline = A.word8 10
 	ending = asum [e <$ (A.string . C8.pack . map toLower . show) e | e <- [minBound .. maxBound]]
+
+parseIgnoreAndWarn :: Protocol a => A.Parser a
+parseIgnoreAndWarn = parseAndWarn <* A.takeWhile (/= 10) <* A.word8 10
 
 parseAndWarn :: Protocol a => A.Parser a
 parseAndWarn = do

@@ -16,12 +16,13 @@ import Data.ByteString.Builder (Builder)
 import Data.Char
 import Data.Fixed
 import Data.Foldable
+import Data.HashMap.Strict (HashMap)
 import Data.IORef
 import Data.Maybe
 import Data.Time
 import Data.Vector.Unboxed (Vector)
 import Data.Word
-import Dr.Mario.Model as M
+import Dr.Mario.Model as M hiding (pp)
 import Dr.Mario.Sveta
 import Dr.Mario.Sveta.MCTS
 import Numeric
@@ -217,10 +218,10 @@ evalBoardSelection (RandomBoard levelSelection seedSelection) = do
 	pure (b, U.randomPill gen)
 
 data GameUpdate
-	= Ended Pill
+	= Ended Pill (HashMap Pill Double)
 	| Timeout -- no rollouts had been completed within the time allotted for making a move
 	| Stall -- too many pills went by without clearing any viruses
-	| Continue Pill Color Color
+	| Continue Pill (HashMap Pill Double) Color Color
 	deriving (Eq, Ord, Read, Show)
 
 maximumOn :: Ord b => (a -> b) -> [a] -> Maybe a
@@ -235,15 +236,15 @@ bestMove c1 c2 t params = case maximumOn (meanUtility . statistics . snd) (HM.to
 		| null (unexplored t) -> error "The impossible happened! The game was not yet won or lost, but there were no valid moves."
 		| otherwise -> pure (Timeout, t)
 	Just (AIMove p, t')
-		| null (children t') && null (unexplored t') -> pure (Ended p, t')
+		| null (children t') && null (unexplored t') -> pure (Ended p visitCounts, t')
 		| otherwise -> case HM.lookup (ChanceMove c1 c2) (children t') of
-			Just t'' -> pure (Continue p c1 c2, t'')
+			Just t'' -> pure (Continue p visitCounts c1 c2, t'')
 			Nothing -> do
 				mcpos <- root params
 				play params mcpos (AIMove p)
 				play params mcpos (ChanceMove c1 c2)
 				ms <- expand params mcpos
-				pure (Continue p c1 c2, MCTree
+				pure (Continue p visitCounts c1 c2, MCTree
 					{ statistics = mempty
 					, children = HM.empty
 					, unexplored = toList ms
@@ -251,6 +252,11 @@ bestMove c1 c2 t params = case maximumOn (meanUtility . statistics . snd) (HM.to
 	Just (m, _) -> error
 		$  "The impossible happened! It was the AI's turn, but the best available move was"
 		++ show m
+	where
+	visitCounts = HM.fromList
+		[ (p, visitCount (statistics t'))
+		| (AIMove p, t') <- HM.toList (children t)
+		]
 
 timerThread :: Micro -> BChan (Double, GameUpdate) -> TVar Comms -> IO (Color, Color) -> IO ()
 timerThread (MkFixed micros) timerChan commsRef genPill = go stallThreshold where
@@ -261,7 +267,7 @@ timerThread (MkFixed micros) timerChan commsRef genPill = go stallThreshold wher
 		comms <- atomically (readTVar commsRef)
 		next <- bestMove c1 c2 (tree comms) (params comms)
 		case next of
-			(u@(Continue p l r), tree') -> do
+			(u@(Continue p _ l r), tree') -> do
 				params' <- dmReroot (params comms) [AIMove p, ChanceMove l r]
 				atomically $ writeTVar commsRef comms
 					{ tree = tree'
@@ -289,13 +295,19 @@ timerThread (MkFixed micros) timerChan commsRef genPill = go stallThreshold wher
 
 showUpdate :: GameUpdate -> Builder
 showUpdate = \case
-	Ended p -> ppLn p <> endBuilder
+	Ended p vs -> ppPill p vs <> endBuilder
 	Timeout -> timeoutBuilder
 	Stall -> stallBuilder
-	Continue p _ _ -> ppLn p
+	Continue p vs _ _ -> ppPill p vs
 	where
 	[endBuilder, timeoutBuilder, stallBuilder]
 		= map B.string8 ["end\n","timeout\n","stall\n"]
+
+ppPill :: Pill -> HashMap Pill Double -> Builder
+ppPill p vs = HM.foldlWithKey' (\b p v -> b <> B.char8 ' ' <> pp p <> B.char8 ' ' <> B.doubleDec v) (pp p) vs <> B.char8 '\n'
+
+pp :: Proto.Protocol a => a -> Builder
+pp = snd . Proto.pp
 
 ppLn :: Proto.Protocol a => a -> Builder
 ppLn a = snd (Proto.pp a) <> B.char8 '\n'
@@ -370,12 +382,12 @@ handleEvent hs s = \case
 	_ -> continue s
 
 pillFromGameUpdate :: GameUpdate -> Maybe Pill
-pillFromGameUpdate (Ended p) = Just p
-pillFromGameUpdate (Continue p _ _) = Just p
+pillFromGameUpdate (Ended p _) = Just p
+pillFromGameUpdate (Continue p _ _ _) = Just p
 pillFromGameUpdate _ = Nothing
 
 lookaheadFromGameUpdate :: GameUpdate -> Maybe (Color, Color)
-lookaheadFromGameUpdate (Continue _ l r) = Just (l, r)
+lookaheadFromGameUpdate (Continue _ _ l r) = Just (l, r)
 lookaheadFromGameUpdate _ = Nothing
 
 placeGameUpdate :: GameUpdate -> Board -> Board
