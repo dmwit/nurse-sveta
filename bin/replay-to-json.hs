@@ -45,7 +45,7 @@ examplesFromRecord (b_, ms_, e) = (\(_won, _cleared, es) -> es) <$> go b_ ms_ wh
 	isNotVirus _ = All True
 
 movesFromVisitCounts :: PillContent -> HashMap Pill Double -> [[[Double]]]
-movesFromVisitCounts c0 ws =
+movesFromVisitCounts c0_ ws =
 	[
 		[
 			[ HM.lookupDefault 0 (Pill c (Position x y)) ws / w
@@ -57,6 +57,7 @@ movesFromVisitCounts c0 ws =
 	]
 	where
 	w = sum ws * if bottomLeftColor c0 == otherColor c0 then 2 else 1
+	c0 = c0_ { orientation = Horizontal }
 
 -- This is unsafe because it assumes the incoming list is a permutation of
 -- [Red, Yellow, Blue].
@@ -85,7 +86,12 @@ mirrorBoard e = e
 	{ board = go (board e)
 	, moves = mirrorMoves (moves e)
 	} where
-	go b = unsafeGenerateBoard (width b) (height b) (\(Position x y) -> unsafeGet b (Position (width b - x - 1) y))
+	go b = unsafeGenerateBoard (width b) (height b) (\(Position x y) -> mirrorCell . unsafeGet b $ Position (width b - x - 1) y)
+
+	mirrorCell (Occupied c East) = Occupied c West
+	mirrorCell (Occupied c West) = Occupied c East
+	mirrorCell c = c
+
 	mirrorMoves [zero, one, two, three] = [horizReverse two, reverse one, horizReverse zero, reverse three]
 	horizReverse xs = reverse (init xs) ++ [last xs]
 
