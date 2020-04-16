@@ -1,0 +1,58 @@
+Training examples are JSON files. They have an object with two keys, input and output.
+
+== Input ==
+A 22x10x18 array of 0s and 1s. I'll use "channel" for the first dimension, "x"
+or "column" for the second, and "y" or "row" for the third.
+
+The board is 8x16, and we add one row and one column to the borders. Following
+the maryodel protocol, the bottom left of the board is at the lowest x- and
+y-coordinates, so (1,1) (with (0,0) being in the added row and column), and the
+top right is at (8,16) (with (9,17) being again in an added row and column).
+
+The first 3 channels encode the positions of viruses:
+
+00. 1s where red viruses are, 0s elsewhere
+01. yellow viruses
+02. blue viruses
+
+The next 15 channels also come in groups of three (for red, yellow, blue in
+that order), and encode the positions of:
+
+03-05. disconnected pill halves (top- and bottom-pill halves are considered
+       disconnected for this purpose)
+06-08. left pill halves
+09-11. right pill halves
+12-14. a channel that is 1s everywhere if the left  half of the next pill is
+       the appropriate color, 0s everywhere if not
+15-17. a channel that is 1s everywhere if the right half of the next pill is
+       the appropriate color, 0s everywhere if not
+
+The last four channels give the neural net a way to notice where the boundaries
+of the board are.
+
+18. 1s in the left column (x=0), 0s everywhere else
+19. right column (x=9)
+20. bottom row (y=0)
+21. top row (y=17)
+
+== Output ==
+An object with three keys, won, cleared, and moves.
+
+* won: -1 if the game ended by topping out, 1 for a game completed by clearing
+  all viruses or stalemating
+* cleared: how many viruses were cleared by the time the game ended
+* moves: a 4x8x16 array of numbers in the range [0,1]. The first dimension
+  gives the rotation of the original pill, in number of clockwise rotations mod
+  4. The second and third dimensions are position, with the same convention as
+  for the input: (0,0) is bottom left and (7,15) is top right. The number tells
+  the probability of choosing that move (traditionally, computed as the
+  fraction of MCTS expansions that passed through that move, but in our round-0
+  training with no neural net, it's proportional to the computed value of the
+  move instead). No distinction is made in the spec between illegal moves and
+  moves that the engine will never pick -- 0 could mean either thing -- but it
+  should be very rare indeed that legal moves have probability 0 in the
+  implementation used here.
+
+  The numbers in this array will sum to 1. In case the pill has both colors the
+  same, the 8x16 subarrays at indices 0 and 2 will be the same, and the 8x16
+  subarrays at indices 1 and 3 will be the same.

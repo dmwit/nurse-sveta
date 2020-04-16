@@ -97,8 +97,8 @@ uiStateFromBoardStates e (b:bs) = UIState
 	, ending = e
 	}
 
-uiStateFromGameRecord :: (Board, [Pill], Ending) -> IO UIState
-uiStateFromGameRecord (b, ps, e) = case boardStatesFromPills b ps of
+uiStateFromGameRecord :: (Board, [(Pill, a)], Ending) -> IO UIState
+uiStateFromGameRecord (b, ps, e) = case boardStatesFromPills b (map fst ps) of
 	Left (b', p) -> die
 		$  "Found illegal pill placement in game record.\n"
 		++ "Pill: " ++ show p ++ "\n"

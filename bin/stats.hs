@@ -93,8 +93,8 @@ gather = go "" where
 		goFile = readGameRecord (dir </> file) >>= summarize dir file
 		complain = [] <$ hPutStrLn stderr ("Skipping unparseable game record in " ++ (dir </> file))
 
-summarize :: FilePath -> FilePath -> (Board, [Pill], Ending) -> IO [GameInformation]
-summarize dir file (b, ps, e) = case boardStatesFromPills b ps >>= finalBoard of
+summarize :: FilePath -> FilePath -> (Board, [(Pill, a)], Ending) -> IO [GameInformation]
+summarize dir file (b, ps, e) = case boardStatesFromPills b (map fst ps) >>= finalBoard of
 	Left (b,p) -> fail ("Cannot place pill " ++ show p ++ " on board " ++ show b)
 	Right b' -> pure . pure $ GameInformation
 		{ directory = dir

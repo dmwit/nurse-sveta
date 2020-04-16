@@ -3,13 +3,17 @@ module Parser (Ending(..), describeEnding, readGameRecord, BoardState(..), board
 import Control.Applicative
 import Data.Char
 import Data.Foldable
+import Data.HashMap.Strict (HashMap)
+import Data.Word
 import Dr.Mario.Model
 import Dr.Mario.Protocol.Raw
 import qualified Data.Attoparsec.ByteString.Lazy as A
+import qualified Data.Attoparsec.ByteString.Char8 as A8
 import qualified Data.ByteString.Char8 as C8
 import qualified Data.ByteString.Lazy as LBS
+import qualified Data.HashMap.Strict as HM
 
-readGameRecord :: FilePath -> IO (Board, [Pill], Ending)
+readGameRecord :: FilePath -> IO (Board, [(Pill, HashMap Pill Double)], Ending)
 readGameRecord fp = do
 	bs <- LBS.readFile fp
 	case A.parse gameFormat bs of
@@ -33,14 +37,25 @@ describeEnding End = "The game ended normally."
 describeEnding Timeout = "The AI timed out without finishing a single rollout from this position."
 describeEnding Stall = "Stalemate: gameplay halted for placing too many pills without clearing a virus."
 
-gameFormat :: A.Parser (Board, [Pill], Ending)
+gameFormat :: A.Parser (Board, [(Pill, HashMap Pill Double)], Ending)
 gameFormat = liftA3 (,,)
 	(parseAndWarn <* newline)
-	(some parseIgnoreAndWarn)
+	(some moveFormat)
 	(ending <* newline)
 	where
-	newline = A.word8 10
 	ending = asum [e <$ (A.string . C8.pack . map toLower . show) e | e <- [minBound .. maxBound]]
+
+moveFormat :: A.Parser (Pill, HashMap Pill Double)
+moveFormat = do
+	chosenMove <- parseAndWarn
+	allMoves <- some $ do
+		space
+		move <- parseAndWarn
+		space
+		weight <- A8.double
+		pure (move, weight)
+	newline
+	pure (chosenMove, HM.fromList allMoves)
 
 parseIgnoreAndWarn :: Protocol a => A.Parser a
 parseIgnoreAndWarn = parseAndWarn <* A.takeWhile (/= 10) <* A.word8 10
@@ -52,6 +67,12 @@ parseAndWarn = do
 		[] -> pure ()
 		_ -> fail (show ws)
 	pure a
+
+newline :: A.Parser Word8
+newline = A.word8 10
+
+space :: A.Parser Word8
+space = A.word8 32
 
 data BoardState = BoardState
 	{ board :: Board
