@@ -236,15 +236,15 @@ bestMove c1 c2 t params = case maximumOn (meanUtility . statistics . snd) (HM.to
 		| null (unexplored t) -> error "The impossible happened! The game was not yet won or lost, but there were no valid moves."
 		| otherwise -> pure (Timeout, t)
 	Just (AIMove p, t')
-		| null (children t') && null (unexplored t') -> pure (Ended p visitCounts, t')
+		| null (children t') && null (unexplored t') -> pure (Ended p utilities, t')
 		| otherwise -> case HM.lookup (ChanceMove c1 c2) (children t') of
-			Just t'' -> pure (Continue p visitCounts c1 c2, t'')
+			Just t'' -> pure (Continue p utilities c1 c2, t'')
 			Nothing -> do
 				mcpos <- root params
 				play params mcpos (AIMove p)
 				play params mcpos (ChanceMove c1 c2)
 				ms <- expand params mcpos
-				pure (Continue p visitCounts c1 c2, MCTree
+				pure (Continue p utilities c1 c2, MCTree
 					{ statistics = mempty
 					, children = HM.empty
 					, unexplored = toList ms
@@ -253,8 +253,13 @@ bestMove c1 c2 t params = case maximumOn (meanUtility . statistics . snd) (HM.to
 		$  "The impossible happened! It was the AI's turn, but the best available move was"
 		++ show m
 	where
-	visitCounts = HM.fromList
-		[ (p, visitCount (statistics t'))
+	utilities = HM.fromList
+		-- In the implementation that uses a neural net, the traditional thing
+		-- to report is the number of visits, not the computed utility. But
+		-- that's really uninformative at low thinking times for now, because
+		-- the exploration factor completely outweighs the utility factor at
+		-- the number of visits we're doing here.
+		[ (p, meanUtility (statistics t'))
 		| (AIMove p, t') <- HM.toList (children t)
 		]
 
