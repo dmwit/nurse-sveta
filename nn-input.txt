@@ -56,3 +56,12 @@ An object with three keys, won, cleared, and moves.
   The numbers in this array will sum to 1. In case the pill has both colors the
   same, the 8x16 subarrays at indices 0 and 2 will be the same, and the 8x16
   subarrays at indices 1 and 3 will be the same.
+
+TODO: This turns out to result in prohibitively large JSON files (20MB per
+game, which at 20000 games is about 400GB). Perhaps sparsifying some or all of
+these channels will help. We should probably also drop the constant channels
+and the borders in the input. Another idea: since the first 12 channels are
+mutually exclusive, just make them a 10x18 (8x16) array of numbers saying which
+channel should have a 1 in it (but take care to distinguish between "no
+channel" and "channel 0"). ...or just reuse the format we've so carefully
+designed in maryodel...
