@@ -85,9 +85,11 @@ executable nurse-sveta-replay-to-json
   main-is:             replay-to-json.hs
   other-modules:       Parser
   hs-source-dirs:      bin
-  build-depends:       attoparsec ^>=0.13,
+  build-depends:       aeson ^>=1.4,
+                       attoparsec ^>=0.13,
                        bytestring ^>=0.10,
-                       containers ^>=0.5
+                       containers ^>=0.5,
+                       text ^>=1.2
 
 executable nurse-sveta-stats
   import:              common

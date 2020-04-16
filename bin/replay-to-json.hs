@@ -6,14 +6,16 @@ import Data.Monoid
 import Dr.Mario.Model
 import Parser (Ending(..), readGameRecord)
 import System.Environment
+import qualified Data.Aeson as A
 import qualified Data.HashMap.Strict as HM
 import qualified Data.IntMap as IM
+import qualified Data.Text as T
 
 main :: IO ()
 main = do
 	[i, o] <- getArgs
-	record <- readGameRecord i
-	print (examplesFromRecord record)
+	Just examples <- examplesFromRecord <$> readGameRecord i
+	A.encodeFile o (generateVariants examples)
 
 data TrainingExample = TrainingExample
 	{ board :: Board
@@ -25,6 +27,45 @@ data TrainingExample = TrainingExample
 	-- innermost: y
 	, moves :: [[[Double]]]
 	} deriving (Eq, Ord, Read, Show)
+
+instance A.ToJSON TrainingExample where
+	-- TODO: Since the border values in all channels are constant, and the
+	-- final 4 channels are completely constant, should those values be the
+	-- responsibility of the reader rather than the writer to save a bit of
+	-- disk space and disk bandwidth?
+	toJSON e = A.object
+		[ T.pack "input" .=
+			[
+				[
+					[ fromEnum $ get (board e) (Position x y) `elem` cells
+					| y <- [-1..16]
+					]
+				| x <- [-1..8]
+				]
+			| shapes <- [[Virus], [Disconnected, North, South], [East], [West]]
+			, color <- [Red, Yellow, Blue]
+			, let cells = [Just (Occupied color shape) | shape <- shapes]
+			] ++
+			[ replicate 10 (replicate 18 (fromEnum (pillColor == channelColor)))
+			| pillColor <- [fst (pill e), snd (pill e)]
+			, channelColor <- [Red, Yellow, Blue]
+			] ++
+			[ replicate 18 1 : replicate 9 (replicate 18 0)
+			, replicate 9 (replicate 18 0) ++ [replicate 18 1]
+			, replicate 10 (1 : replicate 17 0)
+			, replicate 10 (replicate 17 0 ++ [1])
+			]
+		, T.pack "output" .= A.object
+			[ T.pack "won" .= 2*fromEnum (won e) - 1
+			, T.pack "cleared" .= cleared e
+			, T.pack "moves" .= moves e
+			]
+		] where
+		-- Why does A..= bind so tightly? Who knows. Anyway, we want it to have a
+		-- precedence of 4 or lower so ++ happens first.
+		infixr 3 .=
+		(.=) :: (A.KeyValue kv, A.ToJSON v) => T.Text -> v -> kv
+		(.=) = (A..=)
 
 examplesFromRecord :: (Board, [(Pill, HashMap Pill Double)], Ending) -> Maybe [TrainingExample]
 examplesFromRecord (b_, ms_, e) = (\(_won, _cleared, es) -> es) <$> go b_ ms_ where
