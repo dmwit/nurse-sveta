@@ -7,9 +7,13 @@ import Dr.Mario.Model
 import Parser (Ending(..), readGameRecord)
 import System.Environment
 import qualified Data.Aeson as A
+import qualified Data.ByteString.Builder as BS
+import qualified Data.ByteString.Lazy as BS
 import qualified Data.HashMap.Strict as HM
 import qualified Data.IntMap as IM
 import qualified Data.Text as T
+import qualified Data.Text.Encoding as T
+import qualified Dr.Mario.Protocol.Raw as Proto
 
 main :: IO ()
 main = do
@@ -22,50 +26,28 @@ data TrainingExample = TrainingExample
 	, pill :: (Color, Color)
 	, won :: Bool
 	, cleared :: Int
-	-- outermost: rotation
-	-- middlemost: x
-	-- innermost: y
-	, moves :: [[[Double]]]
+	-- one element per rotation
+	, moves :: [HashMap Position Double]
 	} deriving (Eq, Ord, Read, Show)
 
 instance A.ToJSON TrainingExample where
-	-- TODO: Since the border values in all channels are constant, and the
-	-- final 4 channels are completely constant, should those values be the
-	-- responsibility of the reader rather than the writer to save a bit of
-	-- disk space and disk bandwidth?
-	toJSON e = A.object
-		[ T.pack "input" .=
-			[
-				[
-					[ fromEnum $ get (board e) (Position x y) `elem` cells
-					| y <- [-1..16]
-					]
-				| x <- [-1..8]
-				]
-			| shapes <- [[Virus], [Disconnected, North, South], [East], [West]]
-			, color <- [Red, Yellow, Blue]
-			, let cells = [Just (Occupied color shape) | shape <- shapes]
-			] ++
-			[ replicate 10 (replicate 18 (fromEnum (pillColor == channelColor)))
-			| pillColor <- [fst (pill e), snd (pill e)]
-			, channelColor <- [Red, Yellow, Blue]
-			] ++
-			[ replicate 18 1 : replicate 9 (replicate 18 0)
-			, replicate 9 (replicate 18 0) ++ [replicate 18 1]
-			, replicate 10 (1 : replicate 17 0)
-			, replicate 10 (replicate 17 0 ++ [1])
-			]
-		, T.pack "output" .= A.object
-			[ T.pack "won" .= 2*fromEnum (won e) - 1
-			, T.pack "cleared" .= cleared e
-			, T.pack "moves" .= moves e
-			]
+	toJSON e = A.toJSON
+		[ protoJSON (board e)
+		, protoJSON (PillContent Horizontal l r)
+		, A.toJSON (if won e then 1 else -1 :: Int)
+		, A.toJSON (cleared e)
+		, A.toJSON . map sparseJSON $ moves e
 		] where
-		-- Why does A..= bind so tightly? Who knows. Anyway, we want it to have a
-		-- precedence of 4 or lower so ++ happens first.
-		infixr 3 .=
-		(.=) :: (A.KeyValue kv, A.ToJSON v) => T.Text -> v -> kv
-		(.=) = (A..=)
+		(l, r) = pill e
+
+		-- oof
+		protoJSON v = A.toJSON . T.decodeLatin1 . BS.toStrict . BS.toLazyByteString . snd . Proto.pp $ v
+
+		sparseJSON ws = A.toJSON
+			[ v
+			| (Position x y, w) <- HM.toList ws
+			, v <- [fromIntegral x, fromIntegral y, w]
+			]
 
 examplesFromRecord :: (Board, [(Pill, HashMap Pill Double)], Ending) -> Maybe [TrainingExample]
 examplesFromRecord (b_, ms_, e) = (\(_won, _cleared, es) -> es) <$> go b_ ms_ where
@@ -85,19 +67,13 @@ examplesFromRecord (b_, ms_, e) = (\(_won, _cleared, es) -> es) <$> go b_ ms_ wh
 	isNotVirus (Occupied _ Virus) = All False
 	isNotVirus _ = All True
 
-movesFromVisitCounts :: PillContent -> HashMap Pill Double -> [[[Double]]]
+movesFromVisitCounts :: PillContent -> HashMap Pill Double -> [HashMap Position Double]
 movesFromVisitCounts c0_ ws =
-	[
-		[
-			[ HM.lookupDefault 0 (Pill c (Position x y)) ws / w
-			| y <- [0..15]
-			]
-		| x <- [0..7]
-		]
+	[ HM.fromList [(pos, w / sumw) | (Pill c' pos, w) <- HM.toList ws, c' == c]
 	| c <- take 4 $ iterate (`rotateContent` Clockwise) c0
 	]
 	where
-	w = sum ws * if bottomLeftColor c0 == otherColor c0 then 2 else 1
+	sumw = sum ws * if bottomLeftColor c0 == otherColor c0 then 2 else 1
 	c0 = c0_ { orientation = Horizontal }
 
 -- This is unsafe because it assumes the incoming list is a permutation of
@@ -133,8 +109,9 @@ mirrorBoard e = e
 	mirrorCell (Occupied c West) = Occupied c East
 	mirrorCell c = c
 
-	mirrorMoves [zero, one, two, three] = [horizReverse two, reverse one, horizReverse zero, reverse three]
-	horizReverse xs = reverse (init xs) ++ [last xs]
+	mirrorMoves [zero, one, two, three] = [horizMirrorPosition two, vertMirrorPosition one, horizMirrorPosition zero, vertMirrorPosition three]
+	horizMirrorPosition ws = HM.fromList [(Position (6-x) y, w) | (Position x y, w) <- HM.toList ws]
+	vertMirrorPosition  ws = HM.fromList [(Position (7-x) y, w) | (Position x y, w) <- HM.toList ws]
 
 mirrorPill :: TrainingExample -> TrainingExample
 mirrorPill e = e
@@ -175,8 +152,7 @@ ppTrainingExample e = unlines
 
 	placements = sortOn (\(_, _, _, score) -> -score)
 		[ (rotation, x, y, score)
-		| (rotation, scoress) <- zip [0..] (moves e)
-		, (x, scores) <- zip [0..] scoress
-		, (y, score) <- zip [0..] scores
-		, score /= 0
+		| (rotation, scores) <- zip [0..] (moves e)
+		, (Position x y, score) <- HM.toList scores
+		, score /= 0 -- probably not needed, but what the heck
 		]

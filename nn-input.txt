@@ -1,13 +1,21 @@
-Training examples are JSON files. They have an object with two keys, input and output.
+= Neural net architecture =
+
+There are some hyperparameters in this design:
+
+1. Kernel size, k. k=3 seems sensible
+2. Filter count, f. f=256 is what the alphago paper chose
+3. Residual layer count, r. the alphago paper considered both r=19 and r=39;
+   given our low compute power we'll go with r=19 for now
+4. Leakiness, l. I picked l=0.1 because it seemed like a good idea at the time
 
 == Input ==
-A 22x10x18 array of 0s and 1s. I'll use "channel" for the first dimension, "x"
+
+An 18x8x16 array of 0s and 1s. I'll use "channel" for the first dimension, "x"
 or "column" for the second, and "y" or "row" for the third.
 
-The board is 8x16, and we add one row and one column to the borders. Following
-the maryodel protocol, the bottom left of the board is at the lowest x- and
-y-coordinates, so (1,1) (with (0,0) being in the added row and column), and the
-top right is at (8,16) (with (9,17) being again in an added row and column).
+The Dr. Mario board is 8x16. Following the maryodel protocol, the bottom left
+of the board is at the lowest x- and y-coordinates, so (0,0), and the top right
+is at (7,15).
 
 The first 3 channels encode the positions of viruses:
 
@@ -27,41 +35,82 @@ that order), and encode the positions of:
 15-17. a channel that is 1s everywhere if the right half of the next pill is
        the appropriate color, 0s everywhere if not
 
-The last four channels give the neural net a way to notice where the boundaries
-of the board are.
+== Layers ==
 
-18. 1s in the left column (x=0), 0s everywhere else
-19. right column (x=9)
-20. bottom row (y=0)
-21. top row (y=17)
+* A 2D convolutional layer with kernel size k, filter count f, zero-padding,
+  and stride 1
+* Batch normalization
+* A leaky ReLU nonlinearity with parameter l
+* A bunch (r) of residual layers; each residual layer is:
+    * A 2D convolutional layer with kernel size k, filter count f,
+      zero-padding, and stride 1
+    * Batch normalization
+    * A leaky ReLU nonlinearity with parameter l
+    * A 2D convolutional layer with kernel size k, filter count f,
+      zero-padding, and stride 1
+    * Batch normalization
+    * Skip connection
+    * A leaky ReLU nonlinearity with parameter l
+* A fully-connected layer to 1+1+4x8x16 pre-outputs
+* In parallel:
+    * An single scalar tanh to produce a "won" indicator
+    * A single scalar ReLU to produce a "cleared" virus count
+    * A 4x8x16 inverse-logit + rescaling to produce a "moves" probability
+      distribution
 
 == Output ==
-An object with three keys, won, cleared, and moves.
 
-* won: -1 if the game ended by topping out, 1 for a game completed by clearing
-  all viruses or stalemating
-* cleared: how many viruses were cleared by the time the game ended
-* moves: a 4x8x16 array of numbers in the range [0,1]. The first dimension
-  gives the rotation of the original pill, in number of clockwise rotations mod
-  4. The second and third dimensions are position, with the same convention as
-  for the input: (0,0) is bottom left and (7,15) is top right. The number tells
-  the probability of choosing that move (traditionally, computed as the
-  fraction of MCTS expansions that passed through that move, but in our round-0
-  training with no neural net, it's proportional to the computed value of the
-  move instead). No distinction is made in the spec between illegal moves and
-  moves that the engine will never pick -- 0 could mean either thing -- but it
-  should be very rare indeed that legal moves have probability 0 in the
-  implementation used here.
+The output has three parts:
+* A single number in [-1,1]; -1 indicates that the game ended by topping out, 1
+  that the game ended either in stalemate or by clearing all the viruses.
+* A single non-negative number, indicating how many viruses were cleared by the
+  time the game ended.
+* A 4x8x16 array of numbers in [0,1]. The first dimension gives the rotation of
+  the original pill, in number of clockwise rotations mod 4. The second and
+  third dimensions are position, with the same convention as for the input:
+  (0,0) is bottom left and (7,15) is top right. The number tells the
+  probability of choosing that move. (For training examples, this is
+  traditionally computed as the fraction of MCTS expansions that passed through
+  that move, but in our round-0 training with no neural net, it's proportional
+  to the computed value of the move instead). No distinction is made in the
+  spec between illegal moves and moves that the engine will never pick -- 0
+  could mean either thing -- but it should be very rare indeed that legal moves
+  have probability 0 in the training examples produced by the implementation
+  used here.
 
-  The numbers in this array will sum to 1. In case the pill has both colors the
-  same, the 8x16 subarrays at indices 0 and 2 will be the same, and the 8x16
-  subarrays at indices 1 and 3 will be the same.
+  The numbers in this array sum to 1 (up to rounding). In training examples, if
+  the pill has both colors the same, the 8x16 subarrays at indices 0 and 2 will
+  be the same, and the 8x16 subarrays at indices 1 and 3 will be the same.
 
-TODO: This turns out to result in prohibitively large JSON files (20MB per
-game, which at 20000 games is about 400GB). Perhaps sparsifying some or all of
-these channels will help. We should probably also drop the constant channels
-and the borders in the input. Another idea: since the first 12 channels are
-mutually exclusive, just make them a 10x18 (8x16) array of numbers saying which
-channel should have a 1 in it (but take care to distinguish between "no
-channel" and "channel 0"). ...or just reuse the format we've so carefully
-designed in maryodel...
+== JSON representation ==
+
+A training example can be stored in a JSON array of this shape:
+
+    [board, pill, won, cleared, moves]
+
+The elements of this array are described below.
+
+* board: A string, in the maryodel board format, describing the board.
+* pill: A string, in the maryodel pill format, describing the next pill. The
+  pill must be horizontal.
+* won: Either -1 or 1, the first neural net output.
+* cleared: A non-negative integer, the second neural net output.
+* moves: An array of length 4. The index matches the first dimension of the
+  neural net output. Each element is itself an array, of indeterminate (and not
+  necessarily matching) lengths. The length must be a multiple of 3. Each chunk
+  of 3 is an x,y,p triple giving an x coordinate, a y coordinate, and a
+  probability of choosing to put the pill at that position in the current
+  rotation amount. Together these are a sparse encoding of the third neural net
+  output.
+
+  For example, consider this array:
+
+      [[3,5,0.5]
+      ,[6,7,0.2,2,4,0.3]
+      ,[]
+      ,[]
+      ]
+
+  This indicates that the MCTS search favored putting the current pill at (3,5)
+  without rotating it half the time, at (6,7) with one rotation 0.2 of the
+  time, and at (2,4) with one rotation 0.3 of the time.
