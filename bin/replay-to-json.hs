@@ -26,6 +26,7 @@ data TrainingExample = TrainingExample
 	, pill :: (Color, Color)
 	, won :: Bool
 	, cleared :: Int
+	, duration :: Int
 	-- one element per rotation
 	, moves :: [HashMap Position Double]
 	} deriving (Eq, Ord, Read, Show)
@@ -36,6 +37,7 @@ instance A.ToJSON TrainingExample where
 		, protoJSON (PillContent Horizontal l r)
 		, A.toJSON (if won e then 1 else -1 :: Int)
 		, A.toJSON (cleared e)
+		, A.toJSON (duration e)
 		, A.toJSON . map sparseJSON $ moves e
 		] where
 		(l, r) = pill e
@@ -50,19 +52,20 @@ instance A.ToJSON TrainingExample where
 			]
 
 examplesFromRecord :: (Board, [(Pill, HashMap Pill Double)], Ending) -> Maybe [TrainingExample]
-examplesFromRecord (b_, ms_, e) = (\(_won, _cleared, es) -> es) <$> go b_ ms_ where
+examplesFromRecord (b_, ms_, e) = (\(_won, _cleared, _duration, es) -> es) <$> go b_ ms_ where
 	go b [] = case e of
-		End -> pure (getAll (ofoldMap isNotVirus b), 0, [])
-		Stall -> pure (False, 0, [])
+		End -> pure (getAll (ofoldMap isNotVirus b), 0, 0, [])
+		Stall -> pure (False, 0, 0, [])
 		Timeout -> Nothing
 	go b ((p, ps):ms) = do
 		(cleared, b') <- place b p
-		(won, cleared', es) <- go b' ms
+		(won, cleared', duration, es) <- go b' ms
 		let c = content p
 		    cleared'' = cleared+cleared'
 		    moves = movesFromVisitCounts c ps
-		    e = TrainingExample b (bottomLeftColor c, otherColor c) won cleared'' moves
-		pure (won, cleared'', e:es)
+		    duration' = duration + 1
+		    e = TrainingExample b (bottomLeftColor c, otherColor c) won cleared'' duration' moves
+		pure (won, cleared'', duration', e:es)
 
 	isNotVirus (Occupied _ Virus) = All False
 	isNotVirus _ = All True

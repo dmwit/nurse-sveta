@@ -65,6 +65,8 @@ The output has three parts:
   that the game ended either in stalemate or by clearing all the viruses.
 * A single non-negative number, indicating how many viruses were cleared by the
   time the game ended.
+* A single non-negative number, indicating how many pills were used by the time
+  the game ended.
 * A 4x8x16 array of numbers in [0,1]. The first dimension gives the rotation of
   the original pill, in number of clockwise rotations mod 4. The second and
   third dimensions are position, with the same convention as for the input:
@@ -86,7 +88,7 @@ The output has three parts:
 
 A training example can be stored in a JSON array of this shape:
 
-    [board, pill, won, cleared, moves]
+    [board, pill, won, cleared, duration, moves]
 
 The elements of this array are described below.
 
@@ -95,13 +97,14 @@ The elements of this array are described below.
   pill must be horizontal.
 * won: Either -1 or 1, the first neural net output.
 * cleared: A non-negative integer, the second neural net output.
+* duration: A non-negative integer, the third neural net output.
 * moves: An array of length 4. The index matches the first dimension of the
   neural net output. Each element is itself an array, of indeterminate (and not
   necessarily matching) lengths. The length must be a multiple of 3. Each chunk
   of 3 is an x,y,p triple giving an x coordinate, a y coordinate, and a
   probability of choosing to put the pill at that position in the current
-  rotation amount. Together these are a sparse encoding of the third neural net
-  output.
+  rotation amount. Together these are a sparse encoding of the fourth neural
+  net output.
 
   For example, consider this array:
 
