@@ -5,12 +5,12 @@ import torch.nn as tn
 import torch.nn.functional as tf
 import torch.optim as to
 
-k = 3
-f = 1
-r = 1
-l = 0.1
-c = 1e-4 # scaling on weight regularization
-lr = 0.000001
+kernel_size = 3
+filter_count = 1
+rounds = 1
+leakage = 0.1
+regularization = 1e-4
+learning_rate = 0.000001
 momentum = 0.9
 dty = t.float64
 
@@ -70,11 +70,11 @@ class Residual2d(tn.Module):
 		self.prefix_layer = tn.Sequential \
 			( tn.Conv2d(channels, channels, kernel_size, padding=(kernel_size-1)//2)
 			, tn.BatchNorm2d(channels)
-			, tn.LeakyReLU(negative_slope=l)
+			, tn.LeakyReLU(negative_slope=leakage)
 			, tn.Conv2d(channels, channels, kernel_size, padding=(kernel_size-1)//2)
 			, tn.BatchNorm2d(channels)
 			)
-		self.suffix_layer = tn.LeakyReLU(negative_slope=l)
+		self.suffix_layer = tn.LeakyReLU(negative_slope=leakage)
 
 	def forward(self, x):
 		return self.suffix_layer(x + self.prefix_layer.forward(x))
@@ -106,12 +106,12 @@ class DrMarioFinalLayer(tn.Module):
 
 def build_net():
 	layers = \
-		[ tn.Conv2d(18, f, k, padding=1)
-		, tn.BatchNorm2d(f)
-		, tn.LeakyReLU(negative_slope=l)
+		[ tn.Conv2d(18, filter_count, kernel_size, padding=1)
+		, tn.BatchNorm2d(filter_count)
+		, tn.LeakyReLU(negative_slope=leakage)
 		] + \
-		[ Residual2d(f, k) for i in range(r) ] + \
-		[ DrMarioFinalLayer(f) ]
+		[ Residual2d(filter_count, kernel_size) for i in range(rounds) ] + \
+		[ DrMarioFinalLayer(filter_count) ]
 
 	layers = tn.Sequential(*layers)
 	layers.type(dty)
@@ -129,7 +129,7 @@ def loss(nn, nn_outputs, tr_outputs):
 		(nn_cleared - tr_cleared)**2 +
 		(nn_duration - tr_duration)**2
 		) - t.sum(tr_moves * t.log(nn_moves))
-	for p in nn.parameters(): loss = loss + c * t.sum(p*p)
+	for p in nn.parameters(): loss = loss + regularization * t.sum(p*p)
 
 	return loss
 
@@ -137,7 +137,7 @@ if __name__ == '__main__':
 	if len(sys.argv) == 2:
 		es = load_examples(sys.argv[1])
 		net = build_net()
-		optimizer = to.SGD(net.parameters(), lr=lr, momentum=momentum)
+		optimizer = to.SGD(net.parameters(), lr=learning_rate, momentum=momentum)
 		for i in range(100):
 			net.zero_grad()
 			x = loss(net, net.forward(es[0]), es[1:])
