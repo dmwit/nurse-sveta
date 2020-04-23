@@ -7,6 +7,7 @@ There are some hyperparameters in this design:
 3. Residual layer count, r. the alphago paper considered both r=19 and r=39;
    given our low compute power we'll go with r=19 for now
 4. Leakiness, l. I picked l=0.1 because it seemed like a good idea at the time
+5. Regularization constant, c. I picked c=0.0001 because cargo cult lol
 
 == Input ==
 
@@ -51,16 +52,19 @@ that order), and encode the positions of:
     * Batch normalization
     * Skip connection
     * A leaky ReLU nonlinearity with parameter l
-* A fully-connected layer to 1+1+4x8x16 pre-outputs
+* A fully-connected layer to 1+1+1+4x8x16 pre-outputs
 * In parallel:
     * An single scalar tanh to produce a "won" indicator
-    * A single scalar ReLU to produce a "cleared" virus count
+    * A single scalar softplus to produce a "cleared" virus count, with beta=1,
+      threshold=5
+    * A single scalar softplus to produce a "duration", how many pills we
+      placed, with beta=1, threshold=5
     * A 4x8x16 inverse-logit + rescaling to produce a "moves" probability
       distribution
 
 == Output ==
 
-The output has three parts:
+The output has four parts:
 * A single number in [-1,1]; -1 indicates that the game ended by topping out, 1
   that the game ended either in stalemate or by clearing all the viruses.
 * A single non-negative number, indicating how many viruses were cleared by the
@@ -83,6 +87,17 @@ The output has three parts:
   The numbers in this array sum to 1 (up to rounding). In training examples, if
   the pill has both colors the same, the 8x16 subarrays at indices 0 and 2 will
   be the same, and the 8x16 subarrays at indices 1 and 3 will be the same.
+
+== Loss ==
+
+We use cross-entropy for the probability-like outputs, L2 norm for the others,
+and a parameter regularization term:
+
+      (won_predicted - won_ground_truth)^2
+    + (cleared_predicted - cleared_ground_truth)^2
+    + (duration_predicted - duration_ground_truth)^2
+    - moves_ground_truth * log(moves_predicted)
+    + c||parameters||^2
 
 == JSON representation ==
 
