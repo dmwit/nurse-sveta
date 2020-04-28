@@ -90,14 +90,26 @@ The output has four parts:
 
 == Loss ==
 
-We use cross-entropy for the probability-like outputs, L2 norm for the others,
-and a parameter regularization term:
+We use cross-entropy for the probability-like outputs, L2 norm for the win
+prediction, a parameter regularization term, and then a somewhat non-standard
+scaled L2 norm for the rest:
 
       (won_predicted - won_ground_truth)^2
-    + (cleared_predicted - cleared_ground_truth)^2
-    + (duration_predicted - duration_ground_truth)^2
+    + ((cleared_predicted - cleared_ground_truth) / cleared_ground_truth)^2
+    + ((duration_predicted - duration_ground_truth) / duration_ground_truth)^2
     - moves_ground_truth * log(moves_predicted)
     + c||parameters||^2
+
+What's up with the non-standard norm? I found that using a straight L2-norm
+made choosing a learning rate very difficult. Because the numbers for cleared
+and duration are much larger than the others -- often in the range of 50-100 --
+their contribution to the loss is large, and the gradient of the loss is
+correspondingly large. This meant that increasing batch size, or even switching
+from one training batch to another, wildly changed what the appropriate choice
+of learning rate was. By scaling in this way, the numbers stay closer to 1-ish
+when the net is doing well (and closer to 0-ish at the start of training),
+meaning these terms' contribution to the loss function is on par with the other
+terms.
 
 == JSON representation ==
 

@@ -10,7 +10,7 @@ filter_count = 1
 rounds = 1
 leakage = 0.1
 regularization = 1e-4
-learning_rate = 0.000001
+learning_rate = 0.1
 momentum = 0.9
 dty = t.float64
 
@@ -126,8 +126,8 @@ def loss(nn, nn_outputs, tr_outputs):
 	# double-counting
 	loss = t.sum(
 		(nn_won - tr_won)**2 +
-		(nn_cleared - tr_cleared)**2 +
-		(nn_duration - tr_duration)**2
+		((nn_cleared - tr_cleared) / tr_cleared)**2 +
+		((nn_duration - tr_duration) / tr_duration)**2
 		) - t.sum(tr_moves * t.log(nn_moves))
 	for p in nn.parameters(): loss = loss + regularization * t.sum(p*p)
 
