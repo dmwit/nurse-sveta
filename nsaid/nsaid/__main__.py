@@ -120,14 +120,15 @@ def build_net():
 def loss(nn, nn_outputs, tr_outputs):
 	nn_won, nn_cleared, nn_duration, nn_moves = nn_outputs
 	tr_won, tr_cleared, tr_duration, tr_moves = tr_outputs
+	one = t.tensor(1, dtype=dty)
 
 	# all these sums need to be separate, because they have different
 	# dimensions and we don't want broadcasting behavior to introduce
 	# double-counting
 	loss = t.sum(
 		(nn_won - tr_won)**2 +
-		((nn_cleared - tr_cleared) / tr_cleared)**2 +
-		((nn_duration - tr_duration) / tr_duration)**2
+		((nn_cleared - tr_cleared) / t.max(tr_cleared, one))**2 +
+		((nn_duration - tr_duration) / t.max(tr_duration, one))**2
 		) - t.sum(tr_moves * t.log(nn_moves))
 	for p in nn.parameters(): loss = loss + regularization * t.sum(p*p)
 
