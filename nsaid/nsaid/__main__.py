@@ -1,9 +1,12 @@
 import json
+import PIL.Image as pil
 import sys
 import torch as t
 import torch.nn as tn
 import torch.nn.functional as tf
 import torch.optim as to
+import torch.utils.tensorboard as tb
+import torchvision.transforms.functional as til
 
 kernel_size = 3
 filter_count = 1
@@ -62,7 +65,7 @@ def load_examples(filepath):
 		return tensors_from_examples(map(parse_example, json.load(file)))
 
 def tensors_from_examples(es):
-	return [t.cat([t.unsqueeze(val, 0) for val in field]) for field in zip(*es)]
+	return [t.stack([val for val in field]) for field in zip(*es)]
 
 class Residual2d(tn.Module):
 	def __init__(self, channels, kernel_size):
@@ -134,16 +137,46 @@ def loss(nn, nn_outputs, tr_outputs):
 
 	return loss
 
+def load_images():
+	imgs = t.stack([t.transpose(til.to_tensor(pil.open(filename)), 1, 2) for filename in
+			[ 'imgs/' + color + '-' + shape + '.png'
+			for shape in ['virus', 'disconnected', 'west', 'east']
+			for color in ['red', 'yellow', 'blue']
+			]
+		])
+	# was:              12 channels x 3 colors x             8 x-pixels x          8 y-pixels
+	# now: 1 examples x 12 channels x 3 colors x 1 columns x 8 x-pixels x 1 rows x 8 y-pixels
+	imgs = t.unsqueeze(t.unsqueeze(t.unsqueeze(imgs, 3), 2), 0)
+	return imgs
+
+def images_from_nn_data(imgs, nn_inputs, nn_outputs):
+	nn_won, nn_cleared, nn_duration, nn_moves = nn_outputs
+
+	# was: n examples x 18 channels x            8 columns x              16 rows
+	# now: n examples x 12 channels x 1 colors x 8 columns x 1 x-pixels x 16 rows x 1 y-pixels
+	boards = t.unsqueeze(t.unsqueeze(t.unsqueeze(t.flip(nn_inputs[:,0:12,:,:], [3]), 4), 3), 2)
+	# n examples x 3 colors x 8 columns x 8 x-pixels x 16 rows x 8 y-pixels
+	board_images = t.sum(boards * imgs, 1)
+	nexample, ncolor, ncol, nx, nrow, ny = board_images.size()
+	board_images = t.reshape(board_images, [nexample, ncolor, ncol*nx, nrow*ny])
+	return board_images
+
 if __name__ == '__main__':
+	writer = tb.SummaryWriter()
+	imgs = load_images()
+
 	if len(sys.argv) == 2:
 		es = load_examples(sys.argv[1])
 		net = build_net()
 		optimizer = to.SGD(net.parameters(), lr=learning_rate, momentum=momentum)
 		for i in range(100):
 			net.zero_grad()
-			x = loss(net, net.forward(es[0]), es[1:])
-			print(x)
-			x.backward()
+			nn_outputs = net.forward(es[0])
+			badness = loss(net, nn_outputs, es[1:])
+			writer.add_scalar('loss', badness, i)
+			board_images = images_from_nn_data(imgs, es[0], nn_outputs)
+			writer.add_images('moves', board_images, i, dataformats='NCWH')
+			badness.backward()
 			optimizer.step()
 	else:
 		print('USAGE: nsaid FILE')
