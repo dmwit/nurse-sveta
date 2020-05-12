@@ -1,5 +1,6 @@
 import json
 import PIL.Image as pil
+import PIL.ImageDraw as pild
 import sys
 import torch as t
 import torch.nn as tn
@@ -120,7 +121,7 @@ def build_net():
 	layers.type(dty)
 	return layers
 
-def loss(nn, nn_outputs, tr_outputs):
+def loss_without_logging(_writer, _i, nn, nn_outputs, tr_outputs):
 	nn_won, nn_cleared, nn_duration, nn_moves = nn_outputs
 	tr_won, tr_cleared, tr_duration, tr_moves = tr_outputs
 	one = t.tensor(1, dtype=dty)
@@ -137,11 +138,34 @@ def loss(nn, nn_outputs, tr_outputs):
 
 	return loss
 
+def loss_with_logging(writer, i, nn, nn_outputs, tr_outputs):
+	nn_won, nn_cleared, nn_duration, nn_moves = nn_outputs
+	tr_won, tr_cleared, tr_duration, tr_moves = tr_outputs
+	one = t.tensor(1, dtype=dty)
+
+	won_loss = t.sum((nn_won - tr_won)**2)
+	cleared_loss = t.sum(((nn_cleared - tr_cleared) / t.max(tr_cleared, one))**2)
+	duration_loss = t.sum(((nn_duration - tr_duration) / t.max(tr_duration, one))**2)
+	moves_loss = -1*t.sum(tr_moves * t.log(nn_moves))
+	parameters_loss = t.tensor(0, dtype=dty)
+	for p in nn.parameters(): parameters_loss = parameters_loss + regularization * t.sum(p*p)
+
+	writer.add_scalar('won_loss', won_loss, i)
+	writer.add_scalar('cleared_loss', cleared_loss, i)
+	writer.add_scalar('duration_loss', duration_loss, i)
+	writer.add_scalar('moves_loss', moves_loss, i)
+	writer.add_scalar('parameters_loss', parameters_loss, i)
+
+	return won_loss + cleared_loss + duration_loss + moves_loss + parameters_loss
+
 def load_images():
 	imgs = t.stack([t.transpose(til.to_tensor(pil.open(filename)), 1, 2) for filename in
 			[ 'imgs/' + color + '-' + shape + '.png'
 			for shape in ['virus', 'disconnected', 'west', 'east']
 			for color in ['red', 'yellow', 'blue']
+			] +
+			[ 'imgs/chevron-' + direction + '.png'
+			for direction in ['east', 'south', 'west', 'north']
 			]
 		])
 	# was:              12 channels x 3 colors x             8 x-pixels x          8 y-pixels
@@ -152,14 +176,37 @@ def load_images():
 def images_from_nn_data(imgs, nn_inputs, nn_outputs):
 	nn_won, nn_cleared, nn_duration, nn_moves = nn_outputs
 
+	nexample = nn_inputs.size()[0]
+	pills_left  = t.cat([t.zeros(nexample, 6, 1, dtype=dty), nn_inputs[:,12:15,0:1,0], t.zeros(nexample, 7, 1, dtype=dty)], 1)
+	pills_right = t.cat([t.zeros(nexample, 9, 1, dtype=dty), nn_inputs[:,15:18,0:1,0], t.zeros(nexample, 4, 1, dtype=dty)], 1)
+	pills = t.cat([t.zeros(nexample, 16, 3, dtype=dty), pills_left, pills_right, t.zeros(nexample, 16, 3, dtype=dty)], 2)
+	# was: n examples x 16 channels x            8 columns
+	# now: n examples x 16 channels x 1 colors x 8 columns x 1 x-pixels x 1 rows x 1 y-pixels
+	pills = t.unsqueeze(t.unsqueeze(t.unsqueeze(t.unsqueeze(pills, 3), 3), 3), 2)
+
 	# was: n examples x 18 channels x            8 columns x              16 rows
 	# now: n examples x 12 channels x 1 colors x 8 columns x 1 x-pixels x 16 rows x 1 y-pixels
 	boards = t.unsqueeze(t.unsqueeze(t.unsqueeze(t.flip(nn_inputs[:,0:12,:,:], [3]), 4), 3), 2)
-	# n examples x 3 colors x 8 columns x 8 x-pixels x 16 rows x 8 y-pixels
-	board_images = t.sum(boards * imgs, 1)
-	nexample, ncolor, ncol, nx, nrow, ny = board_images.size()
-	board_images = t.reshape(board_images, [nexample, ncolor, ncol*nx, nrow*ny])
-	return board_images
+	# was: n examples x 4 directions x            8 columns x              16 rows
+	# now: n examples x 4 directions x 1 colors x 8 columns x 1 x-pixels x 16 rows x 1 y-pixels
+	moves = t.unsqueeze(t.unsqueeze(t.unsqueeze(t.flip(nn_moves, [3]), 4), 3), 2)
+	moves = moves / max(0.00001, min(1, t.max(moves)))
+
+	# n examples x 16 images x 1 colors x 8 columns x 1 x-pixels x 17 rows x 1 y-pixels
+	boards_moves_pills = t.cat([pills, t.cat([boards, moves], dim=1)], dim=5)
+	# n examples x 3 colors x 8 columns x w x-pixels x 17 rows x h y-pixels
+	board_images = t.sum(boards_moves_pills * imgs, 1)
+	nexample, ncolor, ncol, w, nrow, h = board_images.size()
+	board_images = t.reshape(board_images, [nexample, ncolor, ncol*w, nrow*h])
+
+	footers = [pil.new('RGB', (ncol*w, 35), color=(0, 0, 0)) for i in range(nexample)]
+	for i, footer in enumerate(footers):
+		msg = 'won: %f\ncleared: %f\nduration: %f' % (nn_won[i], nn_cleared[i], nn_duration[i])
+		pild.Draw(footer).text((1, 0), msg, fill=(255, 255, 255), spacing=1)
+	footer_images = t.stack([t.transpose(til.to_tensor(footer), 1, 2) for footer in footers])
+	footer_images = footer_images.type(dty)
+
+	return t.cat([board_images, footer_images], dim=3)
 
 if __name__ == '__main__':
 	writer = tb.SummaryWriter()
@@ -172,11 +219,11 @@ if __name__ == '__main__':
 		for i in range(100):
 			net.zero_grad()
 			nn_outputs = net.forward(es[0])
-			badness = loss(net, nn_outputs, es[1:])
-			writer.add_scalar('loss', badness, i)
+			loss = loss_with_logging(writer, i, net, nn_outputs, es[1:])
+			writer.add_scalar('loss', loss, i)
 			board_images = images_from_nn_data(imgs, es[0], nn_outputs)
 			writer.add_images('moves', board_images, i, dataformats='NCWH')
-			badness.backward()
+			loss.backward()
 			optimizer.step()
 	else:
 		print('USAGE: nsaid FILE')
