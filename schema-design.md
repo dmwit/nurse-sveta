@@ -29,7 +29,7 @@ Unless otherwise specified, none of the fields are nullable.
 
 # nurse-sveta-multi-play to nsaid
 
-There are six concepts that each have their own table:
+There are six concepts represented in the database:
 
 * A *batch* is a collection of games that were all played by the same nsmp instance.
 * A *game* is a sequence of board positions and the moves that mediate between them.
@@ -41,8 +41,10 @@ There are six concepts that each have their own table:
   give you a chance to play Rocket League or something. A *pause* is such a
   period of time where nsmp is running but not calculating.
 
-In the next six subsections we describe each of those tables in detail, then
-there's a final subsection with the schema in SQL format.
+In the next six subsections we describe the tables for each concept in detail,
+then there's a final subsection with the schema in SQL format. Each has a
+single table named after the concept, except for pill sequences, which have two
+tables that store the same information in different formats.
 
 ## batch
 
@@ -73,9 +75,7 @@ database for this batch. It has these fields:
 * `id` (the primary key): no special meaning/format other than being unique per
   game
 * `batch`: foreign key for the batch table
-* `sequence_hash`: the hash of the pill sequence used in this game (see the
-  description of the pill sequence table below for details on computing this
-  hash)
+* `sequence`: foreign key for the pill sequence table
 * `outcome`: how did the game end? this field is nullable, and you'll see nulls
   while a game is still being computed
     * `win`: the AI successfully cleared all viruses
@@ -121,26 +121,28 @@ and stuff was all settled and had a family has index *n+1*.
 
 The `game` and `index` together are the primary key.
 
-## pill\_sequence
+## pill sequence
 
-* `sequence_hash`: the sha256 hash of the pills in the sequence, concatenated
-  and in [maryodel protocol format](maryodel/protocol/README.md). For example,
-  for the sequence containing just two pills, the first with yellow on the left
-  and blue on the right, the second with red in both halves, you would hash the
-  bytes of the ASCII string `rwqu`, getting a hash of
+There are two tables here, one named `pill_sequence` and one named `pill`. The
+store the same information, but in different formats; sometimes one format is
+convenient, sometimes the other. The `pill_sequence` table has just two fields:
 
-        8f3441cdfd8ed2aa72b58e8b9df7a20817ded2b818170c2b654376374e2e46aa
+* `id` (the primary key): no special meaning/format other than being unique per
+  sequence
+* `pills`: the pills in the sequence, concatenated and in [maryodel protocol
+  format](maryodel/protocol/README.md). For example, for the sequence
+  containing just two pills, the first with yellow on the left and blue on the
+  right, the second with red in both halves, this field would have the bytes of
+  the ASCII string `rwqu`.
 
+The `pill` table stores pills one per row:
+
+* `sequence`: foreign key for the `pill_sequence` table
 * `index`: indices start at 0, count up, and are dense
 * `pill`: two bytes in maryodel protocol format describing the pill; calculate
   as the first byte\*256 + the second byte
 
-The `sequence_hash` and `index` together are the primary key.
-
-A minor side calculation: if you would like to store 2^40 hashes, and have a
-probability of 2^-40 or less of a collision, you need a ~119-bit hash. Those
-numbers are already both pretty overkill, so 256 bits is completely ridiculous,
-but hey. It's simple.
+In the `pill` table, the `id` and `index` together are the primary key.
 
 ## pause
 
@@ -180,17 +182,22 @@ create table batch (
 );
 
 create table pill_sequence (
-    sequence_hash bytea not null check (octet_length(sequence_hash) = 32),
-    index integer not null check (0 <= index),
+    id serial primary key,
+    pills bytea not null check (octet_length(pills) > 0 and mod(octet_length(pills),2) = 0)
+);
+
+create table pill (
+    sequence integer references pill_sequence,
+    index integer check (0 <= index),
     pill smallint not null check (pill in (29045,29046,29047,29301,29302,29303,29557,29558,29559)),
-    primary key (sequence_hash, index)
+    primary key (sequence, index)
 );
 
 create type outcome as enum ('error', 'killed', 'stall', 'lose', 'win');
 create table game (
     id serial primary key,
     batch integer references batch not null,
-    sequence_hash bytea not null, /* TODO: how to check that this hash is somewhere in the pill_sequence table? */
+    sequence integer references pill_sequence not null,
     outcome outcome
 );
 
