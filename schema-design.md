@@ -160,10 +160,10 @@ All of `pause_begin`, `resume_request`, and `resume_begin` are nullable, and
 will transition in order from null to non-null. You can expect that
 `pause_request <. pause_begin`, `pause_request <. resume_request`, and
 `resume_request <. resume_begin`, where `<.` is a version of less than where
-null is minimal; that is,
+null is maximal; that is,
 
     null <. null
-    null <. a non-null time
+    a non-null time <. null
     t1 <. t2 whenever t1 and t2 are non-null and t1 < t2
 
 ## SQL schema
