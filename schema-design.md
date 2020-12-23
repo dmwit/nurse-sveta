@@ -166,60 +166,62 @@ null is minimal; that is,
 
 ## SQL schema
 
-    create table batch (
-        id serial primary key,
-        iterations bigint not null check (0 <= iterations),
-        net bytea not null,
-        commit bytea not null,
-        dirty boolean not null,
-        scoring integer not null,
-        stall integer not null check (0 <= stall),
-        seed bytea not null,
-        threads smallint not null check (1 <= threads)
-    );
+```sql
+create table batch (
+    id serial primary key,
+    iterations bigint not null check (0 <= iterations),
+    net bytea not null,
+    commit bytea not null,
+    dirty boolean not null,
+    scoring integer not null,
+    stall integer not null check (0 <= stall),
+    seed bytea not null,
+    threads smallint not null check (1 <= threads)
+);
 
-    create table pill_sequence (
-        sequence_hash bytea not null check (octet_length(sequence_hash) = 32),
-        index integer not null check (0 <= index),
-        pill smallint not null check (pill in (29045,29046,29047,29301,29302,29303,29557,29558,29559)),
-        primary key (sequence_hash, index)
-    );
+create table pill_sequence (
+    sequence_hash bytea not null check (octet_length(sequence_hash) = 32),
+    index integer not null check (0 <= index),
+    pill smallint not null check (pill in (29045,29046,29047,29301,29302,29303,29557,29558,29559)),
+    primary key (sequence_hash, index)
+);
 
-    create type outcome as enum ('error', 'killed', 'stall', 'lose', 'win');
-    create table game (
-        id serial primary key,
-        batch integer references batch not null,
-        sequence_hash bytea not null, /* TODO: how to check that this hash is somewhere in the pill_sequence table? */
-        outcome outcome
-    );
+create type outcome as enum ('error', 'killed', 'stall', 'lose', 'win');
+create table game (
+    id serial primary key,
+    batch integer references batch not null,
+    sequence_hash bytea not null, /* TODO: how to check that this hash is somewhere in the pill_sequence table? */
+    outcome outcome
+);
 
-    create table move (
-        game integer references game,
-        index integer check (0 <= index),
-        start timestamp not null,
-        completion timestamp not null check (start < completion),
-        rotation smallint not null check (0 <= rotation and rotation <= 3),
-        x smallint not null check (0 <= x and x <= 7),
-        y smallint not null check (0 <= y and y <= 15),
-        evaluation real[4][8][16], /* TODO: check that it's actually [4][8][16] and in 0-1 range? */
-        primary key (game, index)
-    );
+create table move (
+    game integer references game,
+    index integer check (0 <= index),
+    start timestamp not null,
+    completion timestamp not null check (start < completion),
+    rotation smallint not null check (0 <= rotation and rotation <= 3),
+    x smallint not null check (0 <= x and x <= 7),
+    y smallint not null check (0 <= y and y <= 15),
+    evaluation real[4][8][16], /* TODO: check that it's actually [4][8][16] and in 0-1 range? */
+    primary key (game, index)
+);
 
-    create table position (
-        game integer references game,
-        index integer check (0 <= index),
-        board bytea not null check (octet_length(board) = 128),
-        primary key (game, index)
-    );
+create table position (
+    game integer references game,
+    index integer check (0 <= index),
+    board bytea not null check (octet_length(board) = 128),
+    primary key (game, index)
+);
 
-    create table pause (
-        batch integer references batch,
-        pause_request timestamp,
-        pause_begin timestamp check (pause_request < pause_begin),
-        resume_request timestamp check (pause_request < resume_request),
-        resume_begin timestamp check (resume_request < resume_begin),
-        primary key (batch, pause_request)
-    );
+create table pause (
+    batch integer references batch,
+    pause_request timestamp,
+    pause_begin timestamp check (pause_request < pause_begin),
+    resume_request timestamp check (pause_request < resume_request),
+    resume_begin timestamp check (resume_request < resume_begin),
+    primary key (batch, pause_request)
+);
+```
 
 # nsaid to brain-pattern
 
