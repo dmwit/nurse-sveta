@@ -99,7 +99,9 @@ database for this batch. It has these fields:
   left
 * `y`: the row of the bottom left of the pill when it was placed, 0 on the
   bottom
-* `evaluation`: a 4x8x16 array of numbers in [0,1], each one nullable. The
+* `value`: a number in [0,1] ranking how good the AI felt the board was before
+  this move was made
+* `policy`: a 4x8x16 array of numbers in [0,1], each one nullable. The
   indices are rotation, x, and y coordinate of a placement (using the same
   conventions as the fields above). The value is the probability that the AI
   chooses that move, with null indicating that the given placement is illegal
@@ -209,7 +211,8 @@ create table move (
     rotation smallint not null check (0 <= rotation and rotation <= 3),
     x smallint not null check (0 <= x and x <= 7),
     y smallint not null check (0 <= y and y <= 15),
-    evaluation real[4][8][16], /* TODO: check that it's actually [4][8][16] and in 0-1 range? */
+    value real not null check (0 <= value and value <= 1),
+    policy real[4][8][16], /* TODO: check that it's actually [4][8][16] and in 0-1 range? */
     primary key (game, index)
 );
 
