@@ -1,1 +1,2 @@
 packages: . maryodel/haskell tomcats
+haddock-hyperlink-source: True
