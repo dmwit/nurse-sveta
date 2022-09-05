@@ -1,0 +1,2 @@
+module Dr.Mario (
+	) where
