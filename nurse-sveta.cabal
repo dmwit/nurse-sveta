@@ -11,17 +11,33 @@ copyright:          2022 Daniel Wagner
 category:           AI
 extra-source-files: CHANGELOG.md
 
+common shared
+    build-depends:        base ^>=4.14.1.0
+                        , gi-gtk ^>=4.0
+                        , maryodel ^>=0.1
+                        , unordered-containers ^>=0.2
+    default-language:   Haskell2010
+    default-extensions:   FlexibleInstances
+                        , GADTs
+                        , LambdaCase
+                        , MultiParamTypeClasses
+                        , OverloadedLabels
+                        , OverloadedStrings
+                        , UndecidableInstances
+                        , ViewPatterns
+    ghc-options:        -Wno-tabs -O2
+
 library
-    exposed-modules:  Dr.Mario
+    import:             shared
+    hs-source-dirs:     src
+    exposed-modules:    Dr.Mario.Widget
+    build-depends:        gi-cairo-connector ^>=0.1
+                        , gi-cairo-render ^>=0.1
+                        , tomcats ^>=0.1
 
-    -- Modules included in this executable, other than Main.
-    -- other-modules:
-
-    -- LANGUAGE extensions used by modules in this package.
-    -- other-extensions:
-    build-depends:      base ^>=4.14.1.0
-                      , maryodel ^>=0.1
-                      , tomcats ^>=0.1
-    hs-source-dirs:   src
-    default-language: Haskell2010
-    ghc-options:      -Wno-tabs -O2
+executable pathfinding-demo
+    import:             shared
+    hs-source-dirs:     bin
+    main-is:            Main.hs
+    build-depends:        nurse-sveta
+                        , text ^>=1.2
