@@ -13,6 +13,7 @@ import Dr.Mario.Widget
 import GI.GLib
 import GI.Gtk as G
 import System.Environment
+import System.IO
 import System.Random.MWC
 
 import qualified Data.HashMap.Strict as HM
@@ -22,21 +23,30 @@ main :: IO ()
 main = do
 	app <- new Application []
 	on app #activate $ do
+		mainRef <- newIORef (MTRunning [])
 		box <- new Box [#orientation := OrientationVertical]
 		btn <- new Button $ tail [undefined
 			, #iconName := "list-add"
 			, #halign := AlignCenter
-			, On #clicked (startGenerationThread box)
+			, On #clicked (startGenerationThread app mainRef box)
 			]
 		#append box btn
-		replicateM_ 3 (startGenerationThread box)
+		replicateM_ 3 (startGenerationThread app mainRef box)
 		w <- new Window $ tail [undefined
 			, #title := "Nurse Sveta"
 			, #application := app
 			, #child :=> new ScrolledWindow [#child := box]
 			, #defaultWidth := 200
 			, #defaultHeight := 1000
-			-- TODO: On #closeRequest (clean up, then exit, or exit immediately if requested a second time)
+			, On #closeRequest $ do
+				set btn [#sensitive := False]
+				mts <- readIORef mainRef
+				case mts of
+					MTDying{} -> pure False
+					MTRunning btns -> do
+						traverse_ #activate btns
+						writeIORef mainRef (MTDying (length btns))
+						pure True
 			]
 		#show w
 	args <- getArgs
@@ -45,31 +55,34 @@ main = do
 tshow :: Show a => a -> T.Text
 tshow = T.pack . show
 
-data ThreadStatus = Initializing | Computing | Dying | Dead SomeException deriving Show
-data ThreadState = ThreadState
-	{ status :: ThreadStatus
+data MainThreadStatus = MTRunning [Button] | MTDying Int
+
+data GenerationThreadStatus = GTInitializing | GTComputing | GTDying | GTDead SomeException deriving Show
+data GenerationThreadState = GenerationThreadState
+	{ status :: GenerationThreadStatus
 	, rootPosition :: Maybe PlayerStateModel
 	, generation :: Int -- this generation is in the sense of epoch/number of steps/etc.
 	} deriving Show
 
-generationThreadView :: MVar ThreadState -> IO Widget
-generationThreadView stateRef = do
+generationThreadView :: Application -> IORef MainThreadStatus -> [Button] -> MVar GenerationThreadState -> IO Widget
+generationThreadView app mainRef btns genRef = do
 	lbl <- new Label []
 	btn <- new Button []
 	psv <- psvNew (PSM (emptyBoard 8 16) Nothing [])
 	row <- new Box [#orientation := OrientationHorizontal]
 	top <- new Box [#orientation := OrientationVertical]
 
-	let displayState ts = do
-	    	set lbl [#label := tshow (status ts)]
-	    	case status ts of
-	    		Initializing -> set btn [#iconName := "process-stop", #sensitive := False]
-	    		Computing -> set btn [#iconName := "process-stop", #sensitive := True]
-	    		Dying -> set btn [#iconName := "edit-delete", #sensitive := False]
-	    		Dead _ -> set btn [#iconName := "edit-delete", #sensitive := True]
-	    	traverse_ (psvSet psv) (rootPosition ts)
-	readMVar stateRef >>= displayState
+	let displayState gts = do
+	    	set lbl [#label := tshow (status gts)]
+	    	case status gts of
+	    		GTInitializing -> set btn [#iconName := "process-stop", #sensitive := False]
+	    		GTComputing -> set btn [#iconName := "process-stop", #sensitive := True]
+	    		GTDying -> set btn [#iconName := "edit-delete", #sensitive := False]
+	    		GTDead _ -> set btn [#iconName := "edit-delete", #sensitive := True]
+	    	traverse_ (psvSet psv) (rootPosition gts)
+	readMVar genRef >>= displayState
 
+	writeIORef mainRef (MTRunning (btn:btns))
 	#append row btn
 	#append row lbl
 	#append top row
@@ -77,48 +90,60 @@ generationThreadView stateRef = do
 
 	on btn #clicked $ do
 		set btn [#sensitive := False]
-		ts <- takeMVar stateRef
-		case status ts of
-			Computing -> do
-				let ts' = ts { status = Dying }
-				putMVar stateRef ts'
-				displayState ts'
-			Dead{} -> G.get top #parent >>= traverse (castTo Box) >>= \case
+		gts <- takeMVar genRef
+		case status gts of
+			GTDead{} -> G.get top #parent >>= traverse (castTo Box) >>= \case
 				Just (Just box) -> boxRemove box top
 				_ -> fail "the impossible happened: a generation thread's view's parent was not a box"
+			_ -> let gts' = gts { status = GTDying } in do
+				putMVar genRef gts'
+				mts <- readIORef mainRef
+				case mts of
+					MTDying{} -> pure ()
+					MTRunning btns -> writeIORef mainRef (MTRunning (delete btn btns))
+				displayState gts'
 
-	prevGenRef <- newIORef . generation =<< readMVar stateRef
+	prevGenRef <- newIORef . generation =<< readMVar genRef
 	timeoutAdd PRIORITY_DEFAULT 30 $ do
 		prevGen <- readIORef prevGenRef
-		ts <- readMVar stateRef
-		unless (prevGen == generation ts) (displayState ts)
-		writeIORef prevGenRef (generation ts)
-		pure $ case status ts of
-			Dead{} -> SOURCE_REMOVE
-			_ -> SOURCE_CONTINUE
+		gts <- readMVar genRef
+		unless (prevGen == generation gts) (displayState gts)
+		writeIORef prevGenRef (generation gts)
+		case status gts of
+			GTDead{} -> do
+				mts <- readIORef mainRef
+				SOURCE_REMOVE <$ case mts of
+					MTDying n | n <= 1 -> #quit app
+					          | otherwise -> writeIORef mainRef (MTDying (n-1))
+					_ -> pure ()
+			_ -> pure SOURCE_CONTINUE
 
 	toWidget top
 
 -- this generation is in the sense of creation
-startGenerationThread :: Box -> IO ()
-startGenerationThread box = do
-	ref <- newMVar (ThreadState Initializing Nothing minBound)
-	generationThreadView ref >>= #append box
-	() <$ forkIO (catch (go ref) (reportDeath ref))
+startGenerationThread :: Application -> IORef MainThreadStatus -> Box -> IO ()
+startGenerationThread app mainRef box = do
+	mts <- readIORef mainRef
+	case mts of
+		MTDying{} -> hPutStrLn stderr "WARNING: requested the creation of a new generation thread after beginning the shutdown process; ignoring request"
+		MTRunning btns -> do
+			genRef <- newMVar (GenerationThreadState GTInitializing Nothing minBound)
+			generationThreadView app mainRef btns genRef >>= #append box
+			() <$ forkIO (catch (go genRef) (reportDeath genRef))
 	where
-	reportDeath ref e = modifyMVar_ ref (\ts -> pure ts { status = Dead e, generation = generation ts + 1 })
+	reportDeath ref e = modifyMVar_ ref (\gts -> pure gts { status = GTDead e, generation = generation gts + 1 })
 	go ref = createSystemRandom >>= startGame ref
 	startGame ref g = loop where
 		loop = do
 			threadDelay 1000000 -- TODO
-			ts <- takeMVar ref
-			case status ts of
-				Dying -> putMVar ref ts { status = Dead (SomeException DiedSuccessfully), generation = generation ts + 1 }
-				Initializing -> do
-					putMVar ref ts { status = Computing, generation = generation ts + 1 }
+			gts <- takeMVar ref
+			case status gts of
+				GTDying -> putMVar ref gts { status = GTDead (SomeException DiedSuccessfully), generation = generation gts + 1 }
+				GTInitializing -> do
+					putMVar ref gts { status = GTComputing, generation = generation gts + 1 }
 					loop
 				_ -> do
-					putMVar ref ts
+					putMVar ref gts
 					loop
 
 data DiedSuccessfully = DiedSuccessfully deriving (Eq, Ord, Read, Show, Bounded, Enum)
