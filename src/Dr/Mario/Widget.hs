@@ -47,6 +47,8 @@ dgNew w h = do
 		, #ratio := realToFrac (w / h)
 		, #child := da
 		, #obeyChild := False
+		, #hexpand := True
+		, #vexpand := True
 		]
 	ref <- liftIO $ newIORef (w, h)
 	pure (DG da af ref)
@@ -148,8 +150,14 @@ psvNew psm = do
 	dg <- dgNew (fromIntegral (DM.width b + 2)) (fromIntegral (DM.height b + 4))
 	ref <- liftIO $ newIORef psm
 	dgSetRenderer dg $ liftIO (readIORef ref) >>= psmRender
+	psvUpdateHeightRequest dg psm
 	pure (PSV dg ref)
 	where b = psmBoard psm
+
+psvUpdateHeightRequest :: MonadIO m => DrawingGrid -> PlayerStateModel -> m ()
+psvUpdateHeightRequest dg psm = do
+	w <- dgWidget dg
+	set w [#heightRequest := fromIntegral (4 * DM.height (psmBoard psm))]
 
 psvWidget :: MonadIO m => PlayerStateView -> m Widget
 psvWidget = dgWidget . psvCanvas
@@ -160,6 +168,7 @@ psvGet = liftIO . readIORef . psvModel
 psvSet :: MonadIO m => PlayerStateView -> PlayerStateModel -> m ()
 psvSet psv psm = do
 	liftIO $ writeIORef (psvModel psv) psm
+	psvUpdateHeightRequest (psvCanvas psv) psm
 	#queueDraw psv
 
 psvModifyM :: MonadIO m => PlayerStateView -> (PlayerStateModel -> m (PlayerStateModel, a)) -> m a

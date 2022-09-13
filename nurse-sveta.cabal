@@ -15,6 +15,7 @@ common shared
     build-depends:        base ^>=4.14.1.0
                         , gi-gtk ^>=4.0
                         , maryodel ^>=0.1
+                        , text ^>=1.2
                         , unordered-containers ^>=0.2
     default-language:   Haskell2010
     default-extensions:   FlexibleInstances
@@ -27,6 +28,12 @@ common shared
                         , ViewPatterns
     ghc-options:        -Wno-tabs -O2
 
+common executable
+    import:             shared
+    hs-source-dirs:     bin
+    build-depends:      nurse-sveta
+    ghc-options:        -threaded
+
 library
     import:             shared
     hs-source-dirs:     src
@@ -36,8 +43,11 @@ library
                         , tomcats ^>=0.1
 
 executable pathfinding-demo
-    import:             shared
-    hs-source-dirs:     bin
-    main-is:            Main.hs
-    build-depends:        nurse-sveta
-                        , text ^>=1.2
+    import:             executable
+    main-is:            pathfinding-demo.hs
+
+executable nurse-sveta
+    import:             executable
+    main-is:            nurse-sveta.hs
+    build-depends:        gi-glib ^>=2.0
+                        , mwc-random ^>=0.15
