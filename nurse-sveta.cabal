@@ -32,7 +32,7 @@ common executable
     import:             shared
     hs-source-dirs:     bin
     build-depends:      nurse-sveta
-    ghc-options:        -threaded
+    ghc-options:        -threaded -rtsopts
 
 library
     import:             shared
