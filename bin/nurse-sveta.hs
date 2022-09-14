@@ -46,7 +46,7 @@ main = do
 					MTRunning btns -> do
 						traverse_ #activate btns
 						writeIORef mainRef (MTDying (length btns))
-						pure True
+						pure . not . null $ btns
 			]
 		#show w
 	args <- getArgs
@@ -55,6 +55,7 @@ main = do
 tshow :: Show a => a -> T.Text
 tshow = T.pack . show
 
+-- buttons to activate to stop everything, or else the number of deaths we're waiting for before we quit
 data MainThreadStatus = MTRunning [Button] | MTDying Int
 
 data GenerationThreadStatus = GTInitializing | GTComputing | GTDying | GTDead SomeException deriving Show
