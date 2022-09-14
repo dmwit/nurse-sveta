@@ -134,18 +134,33 @@ startGenerationThread app mainRef box = do
 	where
 	reportDeath ref e = modifyMVar_ ref (\gts -> pure gts { status = GTDead e, generation = generation gts + 1 })
 	go ref = createSystemRandom >>= startGame ref
-	startGame ref g = loop where
-		loop = do
-			threadDelay 1000000 -- TODO
+	startGame ref g = gameLoop where
+		gameLoop = do
+			-- TODO: sometimes choose Algorithm H
+			seed <- uniformR (2, maxBound) g
+			level <- uniformR (0, 20) g
+			board <- mrandomBoard seed level
+			moveLoop board
+		moveLoop board = do
+			-- TODO: sometimes choose the NES' pill generation algorithm
+			[l, r] <- map toEnum <$> replicateM 2 (uniformR (0, 2) g)
+			-- TODO: actually do some AI
+			moves <- HM.keys <$> munsafeApproxReachable board (launchPill l r)
+			moveIx <- uniformR (0, length moves - 1) g
+			mplace board (moves !! moveIx)
+			boardSnapshot <- mfreeze board
 			gts <- takeMVar ref
 			case status gts of
 				GTDying -> putMVar ref gts { status = GTDead (SomeException DiedSuccessfully), generation = generation gts + 1 }
-				GTInitializing -> do
-					putMVar ref gts { status = GTComputing, generation = generation gts + 1 }
-					loop
 				_ -> do
-					putMVar ref gts
-					loop
+					putMVar ref GenerationThreadState
+						{ status = GTComputing
+						, rootPosition = Just (PSM boardSnapshot Nothing [])
+						, generation = generation gts + 1
+						}
+					lCell <- munsafeGet board startingBottomLeftPosition
+					rCell <- munsafeGet board startingOtherPosition
+					if lCell == Empty && rCell == Empty then moveLoop board else gameLoop
 
 data DiedSuccessfully = DiedSuccessfully deriving (Eq, Ord, Read, Show, Bounded, Enum)
 instance Exception DiedSuccessfully where displayException _ = "died successfully"
