@@ -8,7 +8,7 @@ import Data.IORef
 import Data.List
 import Data.Maybe
 import Dr.Mario.Model
-import Dr.Mario.Pathfinding
+import Dr.Mario.Tomcats
 import Dr.Mario.Widget
 import GI.GLib
 import GI.Gtk as G
@@ -59,6 +59,10 @@ tshow = T.pack . show
 data MainThreadStatus = MTRunning [Button] | MTDying Int
 
 data GenerationThreadStatus = GTInitializing | GTComputing | GTDying | GTDead SomeException deriving Show
+
+gtDead :: Exception e => e -> GenerationThreadStatus
+gtDead = GTDead . SomeException
+
 data GenerationThreadState = GenerationThreadState
 	{ status :: GenerationThreadStatus
 	, rootPosition :: Maybe PlayerStateModel
@@ -116,7 +120,7 @@ generationThreadView app mainRef btns genRef = do
 				SOURCE_REMOVE <$ case mts of
 					MTDying n | n <= 1 -> #quit app
 					          | otherwise -> writeIORef mainRef (MTDying (n-1))
-					_ -> pure ()
+					MTRunning btns -> writeIORef mainRef (MTRunning (delete btn btns))
 			_ -> pure SOURCE_CONTINUE
 
 	toWidget top
@@ -134,33 +138,40 @@ startGenerationThread app mainRef box = do
 	where
 	reportDeath ref e = modifyMVar_ ref (\gts -> pure gts { status = GTDead e, generation = generation gts + 1 })
 	go ref = createSystemRandom >>= startGame ref
+	config = SearchConfiguration { c_puct = 1, iterations = 100000 } -- TODO: be more dynamic
+	params = dmParameters config
 	startGame ref g = gameLoop where
-		gameLoop = do
-			-- TODO: sometimes choose Algorithm H
-			seed <- uniformR (2, maxBound) g
-			level <- uniformR (0, 20) g
-			board <- mrandomBoard seed level
-			moveLoop board
-		moveLoop board = do
-			-- TODO: sometimes choose the NES' pill generation algorithm
+		gameLoop = initialTree params g >>= uncurry moveLoop
+		moveLoop s t = do
 			[l, r] <- map toEnum <$> replicateM 2 (uniformR (0, 2) g)
-			-- TODO: actually do some AI
-			moves <- HM.keys <$> munsafeApproxReachable board (launchPill l r)
-			moveIx <- uniformR (0, length moves - 1) g
-			mplace board (moves !! moveIx)
-			boardSnapshot <- mfreeze board
+			t' <- unsafeDescend params (RNG l r) s t
+			boardSnapshot <- mfreeze (board s)
+			modifyMVar_ ref (\gts -> pure gts { rootPosition = Just (PSM boardSnapshot (Just (l, r)) []) })
+			searchLoop s t' (iterations config)
+
+		searchLoop s t 0 = descend params visitCount s t >>= \case
+			Nothing -> gameLoop
+			Just (_, t') -> moveLoop s t'
+
+		searchLoop s t n = do
+			t' <- mcts params s t
 			gts <- takeMVar ref
-			case status gts of
-				GTDying -> putMVar ref gts { status = GTDead (SomeException DiedSuccessfully), generation = generation gts + 1 }
-				_ -> do
-					putMVar ref GenerationThreadState
-						{ status = GTComputing
-						, rootPosition = Just (PSM boardSnapshot Nothing [])
-						, generation = generation gts + 1
-						}
-					lCell <- munsafeGet board startingBottomLeftPosition
-					rCell <- munsafeGet board startingOtherPosition
-					if lCell == Empty && rCell == Empty then moveLoop board else gameLoop
+			let gts' = gts { generation = generation gts + 1 }
+			    gts'' = case gts of
+			    	GenerationThreadState { status = GTDying } -> gts' { status = gtDead DiedSuccessfully }
+			    	GenerationThreadState { status = GTInitializing } -> gts' { status = GTComputing }
+			    	GenerationThreadState { rootPosition = Just (PSM b l ps) } -> case maximumOn (\_ -> visitCount . statistics) (children t') of
+			    		Just (Placement _ p, _, _) -> case ps of
+			    			[(p', _)] | p == p' -> gts
+			    			_ -> gts' { rootPosition = Just (PSM b l [(p, 0.3)] ) }
+			    		Just (rngMove, _, _) -> gts' { status = gtDead . userError $ "weird search loop state: looking at RNG moves like " ++ show rngMove }
+			    		Nothing -> gts
+			    	_ -> gts' { status = gtDead . userError $ "weird search loop state: no root position" }
+			putMVar ref gts''
+			case (status gts'', HM.size (children t')) of
+				(GTDead{}, _) -> pure ()
+				(_, 0) -> gameLoop
+				_ -> searchLoop s t' (n-1)
 
 data DiedSuccessfully = DiedSuccessfully deriving (Eq, Ord, Read, Show, Bounded, Enum)
 instance Exception DiedSuccessfully where displayException _ = "died successfully"

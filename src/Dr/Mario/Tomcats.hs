@@ -1,4 +1,14 @@
-module Dr.Mario.Tomcats where
+module Dr.Mario.Tomcats (
+	DMParameters, dmParameters,
+	initialTree,
+	mcts, descend, unsafeDescend,
+	SearchConfiguration(..),
+	Move(..),
+	GameState(..),
+	A0.Statistics(..),
+	Tree(..),
+	maximumOn,
+	) where
 
 import Control.Concurrent
 import Control.Concurrent.MVar
@@ -25,6 +35,7 @@ import qualified Tomcats.AlphaZero as A0
 -- 	* temperature/dirichlet params
 data SearchConfiguration = SearchConfiguration
 	{ c_puct :: Double
+	, iterations :: Int
 	} deriving (Eq, Ord, Read, Show)
 
 -- | The 'BoxMove' is ignored for 'Eq', 'Ord', and 'Hashable'.
@@ -52,6 +63,8 @@ data GameState = GameState
 	, originalVirusCount :: Int
 	}
 
+type DMParameters = Parameters IO Double A0.Statistics Move GameState
+
 -- note to self: when the NES does it, it generates the pill sequence first,
 -- then the board
 initialState :: GenIO -> IO GameState
@@ -70,7 +83,13 @@ initialState g = do
 		, originalVirusCount = 4*(level + 1)
 		}
 
-dmParameters :: SearchConfiguration -> Parameters IO Double A0.Statistics Move GameState
+initialTree :: DMParameters -> GenIO -> IO (GameState, Tree A0.Statistics Move)
+initialTree params g = do
+	s <- initialState g
+	(_, t) <- Tomcats.initialize params s >>= preprocess params s
+	pure (s, t)
+
+dmParameters :: SearchConfiguration -> DMParameters
 dmParameters config = Parameters
 	{ score = dmScore config
 	, expand = dmExpand
@@ -158,10 +177,9 @@ dmPreprocess gs t = if not (RNG Blue Blue `HM.member` unexplored t) then pure (m
 	moves <- munsafeApproxReachable (board gs) (launchPill Blue Red)
 	-- doing fromListWith instead of fromList is probably a bit paranoid, but what the hell
 	let symmetricMoves = HM.fromListWith smallerBox [(substPill Blue Blue p, m) | (p, m) <- HM.toList moves]
-	frozen <- mfreeze (board gs)
 	children' <- flip HM.traverseWithKey (unexplored t) $ \(RNG l r) stats -> do
 		evaluationRef <- newEmptyMVar
-		forkIO (nullEvaluation frozen l r >>= putMVar evaluationRef)
+		forkIO (dumbEvaluation gs l r >>= putMVar evaluationRef)
 		~(valueEstimate, moveWeights) <- unsafeInterleaveIO (takeMVar evaluationRef)
 		pure Tree
 			{ statistics = A0.Statistics 1 (A0.priorProbability stats) valueEstimate
@@ -188,15 +206,17 @@ dmPreprocess gs t = if not (RNG Blue Blue `HM.member` unexplored t) then pure (m
 		Red -> r
 		Yellow -> error "The impossible happened in Dr.Mario.Tomcats.dmPreprocess: pathfinding on a blue-red pill resulted in placing a yellow pill half."
 
--- Given a board and the colors for the upcoming pill, guess where moves will
--- be made and how good the final outcome will be. The Vector's are indexed by
--- (x, y) position of the bottom left.
-nullEvaluation :: Board -> Color -> Color -> IO (Double, HashMap PillContent (Vector (Vector Double)))
-nullEvaluation b l r = pure (0, HM.fromList
-	[ (PillContent orient bl o, vec)
-	| orient <- [Horizontal, Vertical]
-	, (bl, o) <- [(l, r), (r, l)]
-	])
+-- Given the game state and the colors for the upcoming pill, guess where moves
+-- will be made and how good the final outcome will be. The Vector's are
+-- indexed by (x, y) position of the bottom left.
+dumbEvaluation :: GameState -> Color -> Color -> IO (Double, HashMap PillContent (Vector (Vector Double)))
+dumbEvaluation = \s l r -> do
+	(stats, _) <- evaluateFinalState s
+	pure (A0.cumulativeValuation stats, HM.fromList
+		[ (PillContent orient bl o, vec)
+		| orient <- [Horizontal, Vertical]
+		, (bl, o) <- [(l, r), (r, l)]
+		])
 	-- when horizontal, this has one extra x position. but who cares?
 	where vec = V.replicate 8 (V.replicate 16 1)
 
