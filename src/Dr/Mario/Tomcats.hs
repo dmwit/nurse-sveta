@@ -228,8 +228,10 @@ dumbEvaluation = \s l r -> do
 	-- when horizontal, this has one extra x position. but who cares?
 	where vec = V.replicate 8 (V.replicate 16 1)
 
+-- all the rest of this stuff is just for debugging
+
 ppTreeSparse :: String -> Tree A0.Statistics Move -> String
-ppTreeSparse indent (Tree stats cs un cache) = ppStats stats ++ "{\n" ++ ppTreesSparse ('\t':indent) cs ++ "}" ++ ppCache cache ++ "\n"
+ppTreeSparse indent (Tree stats cs un cache) = ppStats stats ++ "{\n" ++ ppTreesSparse ('\t':indent) cs ++ indent ++ "}" ++ ppCache cache
 
 ppTreesSparse :: String -> HashMap Move (Tree A0.Statistics Move) -> String
 ppTreesSparse indent ts = concat
@@ -239,7 +241,7 @@ ppTreesSparse indent ts = concat
 	]
 
 ppTree :: String -> Tree A0.Statistics Move -> String
-ppTree indent (Tree stats cs un cache) = ppStats stats ++ "{\n" ++ ppTrees indent' cs ++ indent' ++ ppStatss un ++ "\n" ++ indent ++ "}" ++ ppCache cache ++ "\n"
+ppTree indent (Tree stats cs un cache) = ppStats stats ++ "{\n" ++ ppTrees indent' cs ++ indent' ++ ppStatss un ++ "\n" ++ indent ++ "}" ++ ppCache cache
 	where indent' = '\t':indent
 
 ppStats :: A0.Statistics -> String
