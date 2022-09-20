@@ -192,7 +192,15 @@ dmPreprocess gs t = if not (RNG Blue Blue `HM.member` unexplored t) then pure (m
 				]
 			, cachedEvaluation = Nothing
 			}
-	let childStats = (foldMap A0.statistics children') { A0.priorProbability = 0 }
+	let childStatsRaw = foldMap A0.statistics children'
+	    childStats = childStatsRaw
+	    	{ A0.priorProbability = 0
+	    	-- Make up for the fact that we gave 0 valuation during the
+	    	-- expansion of the parent node. This is important, because it lets
+	    	-- non-game-ending nodes accumulate value as quickly as game-ending
+	    	-- nodes.
+	    	, A0.cumulativeValuation = A0.cumulativeValuation childStatsRaw * 10/9
+	    	}
 	pure (childStats, t { statistics = statistics t <> childStats, children = children', unexplored = HM.empty })
 	where
 	visited = A0.visitCount (statistics t) > 0
