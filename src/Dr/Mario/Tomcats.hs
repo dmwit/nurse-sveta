@@ -128,7 +128,9 @@ evaluateFinalState gs = flip (,) HM.empty <$> do
 	pure (A0.Statistics 1 0 points)
 
 rngExpansion :: (A0.Statistics, HashMap Move A0.Statistics)
-rngExpansion = (mempty { A0.visitCount = 1 }, HM.fromList [(RNG l r, A0.Statistics 0 (1/9) 0) | [l, r] <- replicateM 2 [minBound .. maxBound]])
+-- Give a valuation of 1; this encourages the search to try to stay alive at all costs.
+-- TODO: maybe the thing to do is to copy the valuation from the parent node or something? this is so, so awkward
+rngExpansion = (mempty { A0.visitCount = 1, A0.cumulativeValuation = 1 }, HM.fromList [(RNG l r, A0.Statistics 0 (1/9) 0) | [l, r] <- replicateM 2 [minBound .. maxBound]])
 
 dmClone :: GameState -> IO GameState
 dmClone gs = pure GameState
@@ -195,11 +197,10 @@ dmPreprocess gs t = if not (RNG Blue Blue `HM.member` unexplored t) then pure (m
 	let childStatsRaw = foldMap A0.statistics children'
 	    childStats = childStatsRaw
 	    	{ A0.priorProbability = 0
-	    	-- Make up for the fact that we gave 0 valuation during the
-	    	-- expansion of the parent node. This is important, because it lets
-	    	-- non-game-ending nodes accumulate value as quickly as game-ending
-	    	-- nodes.
-	    	, A0.cumulativeValuation = A0.cumulativeValuation childStatsRaw * 10/9
+	    	-- Make up for the fact that we gave valuation 1 during the
+	    	-- expansion of the parent node, reducing it to the average of the
+	    	-- children's evaluations.
+	    	, A0.cumulativeValuation = A0.cumulativeValuation childStatsRaw * 10/9 - 1
 	    	}
 	pure (childStats, t { statistics = statistics t <> childStats, children = children', unexplored = HM.empty })
 	where

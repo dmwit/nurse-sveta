@@ -138,7 +138,7 @@ startGenerationThread app mainRef box = do
 	where
 	reportDeath ref e = modifyMVar_ ref (\gts -> pure gts { status = GTDead e, generation = generation gts + 1 })
 	go ref = createSystemRandom >>= startGame ref
-	config = SearchConfiguration { c_puct = 1, iterations = 100000 } -- TODO: be more dynamic
+	config = SearchConfiguration { c_puct = 1, iterations = 10000 } -- TODO: be more dynamic
 	params = dmParameters config
 	startGame ref g = gameLoop where
 		gameLoop = initialTree params g >>= uncurry moveLoop
