@@ -155,12 +155,19 @@ startGenerationThread app mainRef box = do
 
 		searchLoop s t n = do
 			t' <- mcts params s t
+			let move = maximumOn (\_ -> visitCount . statistics) (children t')
+			-- if mcts has thrown an error somewhere that matters, force it
+			-- before we get into the critical section
+			case move of
+				Just (Placement _ p, _, _) -> p `seq` pure ()
+				_ -> pure ()
+
 			gts <- takeMVar ref
 			let gts' = gts { generation = generation gts + 1 }
 			    gts'' = case gts of
 			    	GenerationThreadState { status = GTDying } -> gts' { status = gtDead DiedSuccessfully }
 			    	GenerationThreadState { status = GTInitializing } -> gts' { status = GTComputing }
-			    	GenerationThreadState { rootPosition = Just (PSM b l ps) } -> case maximumOn (\_ -> visitCount . statistics) (children t') of
+			    	GenerationThreadState { rootPosition = Just (PSM b l ps) } -> case move of
 			    		Just (Placement _ p, _, _) -> case ps of
 			    			[(p', _)] | p == p' -> gts
 			    			_ -> gts' { rootPosition = Just (PSM b l [(p, 0.3)] ) }
@@ -168,6 +175,7 @@ startGenerationThread app mainRef box = do
 			    		Nothing -> gts
 			    	_ -> gts' { status = gtDead . userError $ "weird search loop state: no root position" }
 			putMVar ref gts''
+
 			case (status gts'', HM.size (children t')) of
 				(GTDead{}, _) -> pure ()
 				(_, 0) -> gameLoop
