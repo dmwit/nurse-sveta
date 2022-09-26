@@ -1,25 +1,31 @@
 module Main where
 
+import Control.Applicative
 import Control.Concurrent
 import Control.Exception
 import Control.Monad
+import Data.Fixed
 import Data.Foldable
+import Data.Functor
 import Data.HashMap.Strict (HashMap)
 import Data.IORef
 import Data.List
 import Data.Maybe
-import Data.Time
+import Data.Monoid
+import Data.Time (UTCTime)
 import Dr.Mario.Model
 import Dr.Mario.Tomcats
 import Dr.Mario.Widget
 import GI.GLib
 import GI.Gtk as G
+import Numeric
 import System.Environment
 import System.IO
 import System.Random.MWC
 
 import qualified Data.HashMap.Strict as HM
 import qualified Data.Text as T
+import qualified Data.Time as Time
 
 main :: IO ()
 main = do
@@ -38,7 +44,7 @@ main = do
 			, #title := "Nurse Sveta"
 			, #application := app
 			, #child :=> new ScrolledWindow [#child := box]
-			, #defaultWidth := 200
+			, #defaultWidth := 700
 			, #defaultHeight := 1000
 			, On #closeRequest $ do
 				set btn [#sensitive := False]
@@ -88,12 +94,31 @@ onRootPosition :: (Stable PlayerStateModel -> Stable PlayerStateModel) -> Genera
 onRootPosition f gts = gts { summary = s { rootPosition = f (rootPosition s) } } where
 	s = summary gts
 
+onSpeeds :: (HashMap T.Text SearchSpeed -> HashMap T.Text SearchSpeed) -> GenerationThreadState -> GenerationThreadState
+onSpeeds f gts = gts { summary = s { speeds = f (speeds s) } } where
+	s = summary gts
+
+-- ╭╴top╶─────────────╮
+-- │╭╴sta╶─────────╮  │
+-- ││╭╴btn╶╮╭╴lbl╶╮│  │
+-- ││╰─────╯╰─────╯│  │
+-- │╰──────────────╯  │
+-- │╭╴gfx╶───────────╮│
+-- ││╭╴psv╶╮╭╴nfo╶──╮││
+-- ││╰─────╯│╭╴spd╶╮│││
+-- ││       │╰─────╯│││
+-- ││       ╰───────╯││
+-- │╰────────────────╯│
+-- ╰──────────────────╯
 generationThreadView :: Application -> IORef MainThreadStatus -> [Button] -> MVar GenerationThreadState -> IO Widget
 generationThreadView app mainRef btns genRef = do
 	lbl <- new Label []
 	btn <- new Button []
+	sta <- new Box [#orientation := OrientationHorizontal]
 	psv <- psvNew (PSM (emptyBoard 8 16) Nothing [])
-	row <- new Box [#orientation := OrientationHorizontal]
+	spd <- new Grid []
+	nfo <- new Box [#orientation := OrientationVertical]
+	gfx <- new Box [#orientation := OrientationHorizontal]
 	top <- new Box [#orientation := OrientationVertical]
 
 	psvTracker <- newTracker
@@ -101,6 +126,7 @@ generationThreadView app mainRef btns genRef = do
 	cfgTracker <- newTracker
 
 	let displayState gts = do
+	    	renderSpeeds spd (speeds (summary gts))
 	    	whenUpdated staTracker (status gts) $ \s -> do
 	    		set lbl [#label := tshow s]
 	    		case s of
@@ -112,17 +138,20 @@ generationThreadView app mainRef btns genRef = do
 	readMVar genRef >>= displayState
 
 	writeIORef mainRef (MTRunning (btn:btns))
-	#append row btn
-	#append row lbl
-	#append top row
-	psvWidget psv >>= #append top
+	#append sta btn
+	#append sta lbl
+	psvWidget psv >>= #append gfx
+	#append nfo spd
+	#append gfx nfo
+	#append top sta
+	#append top gfx
 
 	on btn #clicked $ do
 		set btn [#sensitive := False]
 		gts <- takeMVar genRef
 		case payload (status gts) of
 			GTDead{} -> G.get top #parent >>= traverse (castTo Box) >>= \case
-				Just (Just box) -> boxRemove box top
+				Just (Just box) -> #remove box top
 				_ -> fail "the impossible happened: a generation thread's view's parent was not a box"
 			_ -> let gts' = gts { status = setPayload GTDying (status gts) } in do
 				putMVar genRef gts'
@@ -146,6 +175,29 @@ generationThreadView app mainRef btns genRef = do
 
 	toWidget top
 
+renderSpeeds :: Grid -> HashMap T.Text SearchSpeed -> IO ()
+renderSpeeds spd sss = do
+	now <- Time.getCurrentTime
+	let column nm ss = Ap . ZipList . map (:[]) $ [nm, ": ", tshow (searchIterations ss), " positions/", ms, "s = ", T.justifyRight 5 ' ' . tshow . round $ rate, " positions/s"] where
+	    	dt = realToFrac . Time.diffUTCTime now . searchStart $ ss :: Double
+	    	ms = T.pack (showFFloat (Just 1) (realToFrac dt) "")
+	    	rate = fromIntegral (searchIterations ss) / dt
+	    Ap (ZipList columns) = HM.foldMapWithKey column sss
+	unless (HM.null sss) $ zipWithM_ updateLabel [0..] (T.unlines <$> columns)
+	where
+	updateLabel n t = #getChildAt spd n 0 >>= \case
+		Just w -> castTo Label w >>= \case
+			Just lbl -> set lbl [#label := t]
+			Nothing -> #remove spd w >> mkLabel n t
+		Nothing -> mkLabel n t
+	mkLabel n t = do
+		lbl <- new Label [#label := t, #justify := JustificationRight, #cssClasses := ["mono"]]
+		cssPrv <- new CssProvider []
+		#loadFromData cssPrv ".mono { font-family: \"monospace\"; }"
+		cssCtx <- #getStyleContext lbl
+		#addProvider cssCtx cssPrv (fromIntegral STYLE_PROVIDER_PRIORITY_APPLICATION)
+		#attach spd lbl n 0 1 1
+
 startGenerationThread :: Application -> IORef MainThreadStatus -> Box -> IO ()
 startGenerationThread app mainRef box = do
 	mts <- readIORef mainRef
@@ -160,20 +212,25 @@ startGenerationThread app mainRef box = do
 	go ref = createSystemRandom >>= startGame ref
 	config = SearchConfiguration { c_puct = 1, iterations = 10000 } -- TODO: be more dynamic
 	params = dmParameters config
-	startGame ref g = gameLoop where
-		gameLoop = initialTree params g >>= uncurry moveLoop
-		moveLoop s t = do
+	startGame ref g = newSearchSpeed >>= gameLoop
+		where
+		gameLoop threadSpeed = do
+			(s, t) <- initialTree params g
+			gameSpeed <- newSearchSpeed
+			moveLoop threadSpeed gameSpeed s t
+		moveLoop threadSpeed gameSpeed s t = do
 			[l, r] <- map toEnum <$> replicateM 2 (uniformR (0, 2) g)
 			t' <- unsafeDescend params (RNG l r) s t
 			boardSnapshot <- mfreeze (board s)
 			modifyMVar_ ref (pure . onRootPosition (setPayload (PSM boardSnapshot (Just (l, r)) [])))
-			searchLoop s t' (iterations config)
+			moveSpeed <- newSearchSpeed
+			searchLoop threadSpeed gameSpeed moveSpeed s t' (iterations config)
 
-		searchLoop s t 0 = descend params visitCount s t >>= \case
-			Nothing -> gameLoop
-			Just (_, t') -> moveLoop s t'
+		searchLoop threadSpeed gameSpeed moveSpeed s t 0 = descend params visitCount s t >>= \case
+			Nothing -> gameLoop threadSpeed
+			Just (_, t') -> moveLoop threadSpeed gameSpeed s t'
 
-		searchLoop s t n = do
+		searchLoop threadSpeed gameSpeed moveSpeed s t n = do
 			t' <- mcts params s t
 			let move = maximumOn (\_ -> visitCount . statistics) (children t')
 			-- if mcts has thrown an error somewhere that matters, force it
@@ -193,17 +250,26 @@ startGenerationThread app mainRef box = do
 			    gts' = case move of
 			    	Just (Placement _ p, _, _) -> onRootPosition (onSubterm psmOverlayL (trySetPayload [(p, 0.3)])) gts
 			    	_ -> gts
-			putMVar ref gts' { status = status' }
+			    [threadSpeed', gameSpeed', moveSpeed'] = incSearchIterations <$> [threadSpeed, gameSpeed, moveSpeed]
+			    speeds' = HM.fromList [("thread", threadSpeed), ("game", gameSpeed), ("move", moveSpeed)]
+			    gts'' = onSpeeds (const speeds') gts'
+			putMVar ref gts'' { status = status' }
 
 			case (payload status', HM.size (children t')) of
 				(GTDead{}, _) -> pure ()
-				(_, 0) -> gameLoop
-				_ -> searchLoop s t' (n-1)
+				(_, 0) -> gameLoop threadSpeed
+				_ -> searchLoop threadSpeed' gameSpeed' moveSpeed' s t' (n-1)
 
 data SearchSpeed = SearchSpeed
 	{ searchStart :: UTCTime
 	, searchIterations :: Int
 	} deriving (Eq, Ord, Read, Show)
+
+newSearchSpeed :: IO SearchSpeed
+newSearchSpeed = Time.getCurrentTime <&> \now -> SearchSpeed now 0
+
+incSearchIterations :: SearchSpeed -> SearchSpeed
+incSearchIterations ss = ss { searchIterations = searchIterations ss + 1 }
 
 data SearchSummary = SearchSummary
 	{ rootPosition :: Stable PlayerStateModel
