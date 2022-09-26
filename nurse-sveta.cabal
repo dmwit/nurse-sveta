@@ -54,3 +54,4 @@ executable nurse-sveta
     import:             executable
     main-is:            nurse-sveta.hs
     build-depends:        gi-glib ^>=2.0
+                        , time ^>=1.9

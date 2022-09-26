@@ -6,6 +6,7 @@ module Dr.Mario.Widget (
 	dgGetSize, dgGetWidth, dgGetHeight,
 
 	PlayerStateModel(..),
+	psmBoardL, psmLookaheadL, psmOverlayL,
 	PlayerStateView, psvNew, psvWidget,
 	psvGet, psvSet,
 	psvModifyM, psvModifyM_, psvModify, psvModify_,
@@ -100,6 +101,15 @@ data PlayerStateModel = PSM
 	, psmLookahead :: Maybe (Color, Color)
 	, psmOverlay :: [(Pill, Double)] -- ^ the 'Double's are opacities, 1 for fully visible, 0 for fully transparent
 	} deriving (Eq, Ord, Read, Show)
+
+psmBoardL :: PlayerStateModel -> (Board, Board -> PlayerStateModel)
+psmBoardL psm = (psmBoard psm, \b -> psm { psmBoard = b })
+
+psmLookaheadL :: PlayerStateModel -> (Maybe (Color, Color), Maybe (Color, Color) -> PlayerStateModel)
+psmLookaheadL psm = (psmLookahead psm, \l -> psm { psmLookahead = l })
+
+psmOverlayL :: PlayerStateModel -> ([(Pill, Double)], [(Pill, Double)] -> PlayerStateModel)
+psmOverlayL psm = (psmOverlay psm, \o -> psm { psmOverlay = o })
 
 psmRender :: PlayerStateModel -> Render ()
 psmRender psm = do

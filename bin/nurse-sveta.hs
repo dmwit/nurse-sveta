@@ -4,9 +4,11 @@ import Control.Concurrent
 import Control.Exception
 import Control.Monad
 import Data.Foldable
+import Data.HashMap.Strict (HashMap)
 import Data.IORef
 import Data.List
 import Data.Maybe
+import Data.Time
 import Dr.Mario.Model
 import Dr.Mario.Tomcats
 import Dr.Mario.Widget
@@ -63,11 +65,28 @@ data GenerationThreadStatus = GTInitializing | GTComputing | GTDying | GTDead So
 gtDead :: Exception e => e -> GenerationThreadStatus
 gtDead = GTDead . SomeException
 
+-- this generation is in the sense of creation
 data GenerationThreadState = GenerationThreadState
-	{ status :: GenerationThreadStatus
-	, rootPosition :: Maybe PlayerStateModel
-	, generation :: Int -- this generation is in the sense of epoch/number of steps/etc.
+	{ status :: Stable GenerationThreadStatus
+	, summary :: SearchSummary
+	, requestedConfiguration :: SearchConfiguration
+	, currentConfiguration :: Stable SearchConfiguration
 	} deriving Show
+
+newGenerationThreadState :: SearchConfiguration -> GenerationThreadState
+newGenerationThreadState cfg = GenerationThreadState
+	{ status = newStable GTInitializing
+	, summary = SearchSummary
+		{ rootPosition = newStable (PSM (emptyBoard 8 16) Nothing [])
+		, speeds = HM.empty
+		}
+	, requestedConfiguration = cfg
+	, currentConfiguration = newStable cfg
+	}
+
+onRootPosition :: (Stable PlayerStateModel -> Stable PlayerStateModel) -> GenerationThreadState -> GenerationThreadState
+onRootPosition f gts = gts { summary = s { rootPosition = f (rootPosition s) } } where
+	s = summary gts
 
 generationThreadView :: Application -> IORef MainThreadStatus -> [Button] -> MVar GenerationThreadState -> IO Widget
 generationThreadView app mainRef btns genRef = do
@@ -77,14 +96,19 @@ generationThreadView app mainRef btns genRef = do
 	row <- new Box [#orientation := OrientationHorizontal]
 	top <- new Box [#orientation := OrientationVertical]
 
+	psvTracker <- newTracker
+	staTracker <- newTracker
+	cfgTracker <- newTracker
+
 	let displayState gts = do
-	    	set lbl [#label := tshow (status gts)]
-	    	case status gts of
-	    		GTInitializing -> set btn [#iconName := "process-stop", #sensitive := False]
-	    		GTComputing -> set btn [#iconName := "process-stop", #sensitive := True]
-	    		GTDying -> set btn [#iconName := "edit-delete", #sensitive := False]
-	    		GTDead _ -> set btn [#iconName := "edit-delete", #sensitive := True]
-	    	traverse_ (psvSet psv) (rootPosition gts)
+	    	whenUpdated staTracker (status gts) $ \s -> do
+	    		set lbl [#label := tshow s]
+	    		case s of
+	    			GTInitializing -> set btn [#iconName := "process-stop", #sensitive := False]
+	    			GTComputing -> set btn [#iconName := "process-stop", #sensitive := True]
+	    			GTDying -> set btn [#iconName := "edit-delete", #sensitive := False]
+	    			GTDead _ -> set btn [#iconName := "edit-delete", #sensitive := True]
+	    	whenUpdated psvTracker (rootPosition (summary gts)) (psvSet psv)
 	readMVar genRef >>= displayState
 
 	writeIORef mainRef (MTRunning (btn:btns))
@@ -96,11 +120,11 @@ generationThreadView app mainRef btns genRef = do
 	on btn #clicked $ do
 		set btn [#sensitive := False]
 		gts <- takeMVar genRef
-		case status gts of
+		case payload (status gts) of
 			GTDead{} -> G.get top #parent >>= traverse (castTo Box) >>= \case
 				Just (Just box) -> boxRemove box top
 				_ -> fail "the impossible happened: a generation thread's view's parent was not a box"
-			_ -> let gts' = gts { status = GTDying } in do
+			_ -> let gts' = gts { status = setPayload GTDying (status gts) } in do
 				putMVar genRef gts'
 				mts <- readIORef mainRef
 				case mts of
@@ -108,13 +132,10 @@ generationThreadView app mainRef btns genRef = do
 					MTRunning btns -> writeIORef mainRef (MTRunning (delete btn btns))
 				displayState gts'
 
-	prevGenRef <- newIORef . generation =<< readMVar genRef
 	timeoutAdd PRIORITY_DEFAULT 30 $ do
-		prevGen <- readIORef prevGenRef
 		gts <- readMVar genRef
-		unless (prevGen == generation gts) (displayState gts)
-		writeIORef prevGenRef (generation gts)
-		case status gts of
+		displayState gts
+		case payload (status gts) of
 			GTDead{} -> do
 				mts <- readIORef mainRef
 				SOURCE_REMOVE <$ case mts of
@@ -125,18 +146,17 @@ generationThreadView app mainRef btns genRef = do
 
 	toWidget top
 
--- this generation is in the sense of creation
 startGenerationThread :: Application -> IORef MainThreadStatus -> Box -> IO ()
 startGenerationThread app mainRef box = do
 	mts <- readIORef mainRef
 	case mts of
 		MTDying{} -> hPutStrLn stderr "WARNING: requested the creation of a new generation thread after beginning the shutdown process; ignoring request"
 		MTRunning btns -> do
-			genRef <- newMVar (GenerationThreadState GTInitializing Nothing minBound)
+			genRef <- newMVar (newGenerationThreadState config)
 			generationThreadView app mainRef btns genRef >>= #append box
 			() <$ forkIO (catch (go genRef) (reportDeath genRef))
 	where
-	reportDeath ref e = modifyMVar_ ref (\gts -> pure gts { status = GTDead e, generation = generation gts + 1 })
+	reportDeath ref e = modifyMVar_ ref (\gts -> pure gts { status = setPayload (GTDead e) (status gts) })
 	go ref = createSystemRandom >>= startGame ref
 	config = SearchConfiguration { c_puct = 1, iterations = 10000 } -- TODO: be more dynamic
 	params = dmParameters config
@@ -146,7 +166,7 @@ startGenerationThread app mainRef box = do
 			[l, r] <- map toEnum <$> replicateM 2 (uniformR (0, 2) g)
 			t' <- unsafeDescend params (RNG l r) s t
 			boardSnapshot <- mfreeze (board s)
-			modifyMVar_ ref (\gts -> pure gts { rootPosition = Just (PSM boardSnapshot (Just (l, r)) []) })
+			modifyMVar_ ref (pure . onRootPosition (setPayload (PSM boardSnapshot (Just (l, r)) [])))
 			searchLoop s t' (iterations config)
 
 		searchLoop s t 0 = descend params visitCount s t >>= \case
@@ -163,23 +183,78 @@ startGenerationThread app mainRef box = do
 				_ -> pure ()
 
 			gts <- takeMVar ref
-			let gts' = gts { generation = generation gts + 1 }
-			    gts'' = case gts of
-			    	GenerationThreadState { status = GTDying } -> gts' { status = gtDead DiedSuccessfully }
-			    	GenerationThreadState { status = GTInitializing } -> gts' { status = GTComputing }
-			    	GenerationThreadState { rootPosition = Just (PSM b l ps) } -> case move of
-			    		Just (Placement _ p, _, _) -> case ps of
-			    			[(p', _)] | p == p' -> gts
-			    			_ -> gts' { rootPosition = Just (PSM b l [(p, 0.3)] ) }
-			    		Just (rngMove, _, _) -> gts' { status = gtDead . userError $ "weird search loop state: looking at RNG moves like " ++ show rngMove }
-			    		Nothing -> gts
-			    	_ -> gts' { status = gtDead . userError $ "weird search loop state: no root position" }
-			putMVar ref gts''
+			let status' = flip updateM (status gts) $ \case
+			    	GTDying -> Just (gtDead DiedSuccessfully)
+			    	GTInitializing -> Just GTComputing
+			    	_ -> case move of
+			    		Just (Placement _ _, _, _) -> Nothing
+			    		Just (rngMove, _, _) -> Just . gtDead . userError $ "weird search loop state: looking at RNG moves like " ++ show rngMove
+			    		Nothing -> Nothing
+			    gts' = case move of
+			    	Just (Placement _ p, _, _) -> onRootPosition (onSubterm psmOverlayL (trySetPayload [(p, 0.3)])) gts
+			    	_ -> gts
+			putMVar ref gts' { status = status' }
 
-			case (status gts'', HM.size (children t')) of
+			case (payload status', HM.size (children t')) of
 				(GTDead{}, _) -> pure ()
 				(_, 0) -> gameLoop
 				_ -> searchLoop s t' (n-1)
 
+data SearchSpeed = SearchSpeed
+	{ searchStart :: UTCTime
+	, searchIterations :: Int
+	} deriving (Eq, Ord, Read, Show)
+
+data SearchSummary = SearchSummary
+	{ rootPosition :: Stable PlayerStateModel
+	, speeds :: HashMap T.Text SearchSpeed
+	} deriving (Eq, Ord, Read, Show)
+
 data DiedSuccessfully = DiedSuccessfully deriving (Eq, Ord, Read, Show, Bounded, Enum)
 instance Exception DiedSuccessfully where displayException _ = "died successfully"
+
+-- | A type for tracking the updates to something that doesn't change very often.
+data Stable a = Stable
+	-- this generation is in the sense of epoch/number of steps/etc.
+	{ generation :: {-# UNPACK #-} !Int
+	, payload :: a
+	} deriving (Eq, Ord, Read, Show)
+
+newStable :: a -> Stable a
+newStable = Stable (minBound+1)
+
+update :: (a -> a) -> Stable a -> Stable a
+update f (Stable g p) = Stable (g + 1) (f p)
+
+updateM :: (a -> Maybe a) -> Stable a -> Stable a
+updateM f s@(Stable g p) = case f p of
+	Nothing -> s
+	Just p' -> Stable (g+1) p'
+
+setPayload :: a -> Stable a -> Stable a
+setPayload p s = Stable (generation s + 1) p
+
+trySetPayload :: Eq a => a -> Stable a -> Stable a
+trySetPayload p s = if p == payload s then s else Stable (generation s + 1) p
+
+onSubterm :: (a -> (b, b -> a)) -> (Stable b -> Stable b) -> Stable a -> Stable a
+onSubterm lens f sa@(Stable g pa) = if g == g' then sa else Stable g' pa'
+	where
+	(pb, mk) = lens pa
+	Stable g' pb' = f (Stable g pb)
+	pa' = mk pb'
+
+-- | Not thread safe.
+newtype Tracker = Tracker { generationCacheRef :: IORef Int }
+
+newTracker :: IO Tracker
+newTracker = Tracker <$> newIORef minBound
+
+whenUpdated :: Tracker -> Stable a -> (a -> IO b) -> IO ()
+whenUpdated t s f = do
+	oldGen <- readIORef (generationCacheRef t)
+	when (newGen > oldGen) $ do
+		f (payload s)
+		writeIORef (generationCacheRef t) newGen
+	where
+	newGen = generation s
