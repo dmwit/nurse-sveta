@@ -1,15 +1,21 @@
 {-# Language DataKinds #-} -- not on by default because of how much extra stuff it creates at the type/kind level
 
 module Dr.Mario.Widget (
+	-- * Raw drawing grid
 	DrawingGrid, dgNew, dgSetRenderer, dgWidget,
 	dgSetSize, dgSetWidth, dgSetHeight,
 	dgGetSize, dgGetWidth, dgGetHeight,
 
+	-- * Player state
 	PlayerStateModel(..),
 	psmBoardL, psmLookaheadL, psmOverlayL,
 	PlayerStateView, psvNew, psvWidget,
 	psvGet, psvSet,
 	psvModifyM, psvModifyM_, psvModify, psvModify_,
+
+	-- * Search configuration
+	SearchConfigurationView,
+	scvNew, scvWidget, scvSet,
 	) where
 
 import Control.Monad
@@ -18,10 +24,13 @@ import Data.Foldable
 import Data.IORef
 import Data.Monoid
 import Dr.Mario.Model as DM
+import Dr.Mario.Tomcats (SearchConfiguration(..))
 import GI.Cairo.Render
 import GI.Cairo.Render.Connector
 import GI.Gtk as G
+import Text.Read
 
+import qualified Data.Text as T
 import qualified GHC.OverloadedLabels as Overload
 
 data DrawingGrid = DG
@@ -282,3 +291,94 @@ renderColor = \case
 
 centered :: (Double -> Double -> a) -> (Double, Double) -> a
 centered f (x,y) = f (x+0.5) (y+0.5)
+
+data SearchConfigurationView = SCV
+	{ scvTop :: Grid
+	, scvCache :: IORef (SearchConfiguration, SearchConfiguration)
+	, scvC_puct :: Label
+	, scvIterations :: Label
+	}
+
+scvNew :: SearchConfiguration -> (SearchConfiguration -> IO ()) -> IO SearchConfigurationView
+scvNew sc request = do
+	grid <- new Grid [#columnSpacing := 7, #rowSpacing := 3]
+	cache <- newIORef (sc, sc)
+
+	let mkLabel t = new Label [#label := t, #halign := AlignStart]
+
+	c_puctLabel <- new Label [#halign := AlignStart]
+	#setMarkup c_puctLabel "c<sub>puct</sub>"
+	c_puctEditor <- new Entry [#inputPurpose := InputPurposeNumber]
+	c_puctBuffer <- G.get c_puctEditor #buffer
+	let c_puctText = tshow (c_puct sc)
+	set c_puctBuffer [#text := c_puctText]
+	c_puctDisplay <- mkLabel c_puctText
+
+	iterationsLabel <- mkLabel "iterations per move"
+	iterationsEditor <- new Entry [#inputPurpose := InputPurposeDigits]
+	iterationsBuffer <- G.get iterationsEditor #buffer
+	let iterationsText = tshow (iterations sc)
+	set iterationsBuffer [#text := iterationsText]
+	iterationsDisplay <- mkLabel iterationsText
+
+	let scv = SCV
+	    	{ scvTop = grid
+	    	, scvCache = cache
+	    	, scvC_puct = c_puctDisplay
+	    	, scvIterations = iterationsDisplay
+	    	}
+
+	on c_puctEditor #activate $ do
+		c_puctText <- G.get c_puctBuffer #text
+		for_ (tread c_puctText) $ \c -> do
+			(scReq, scCur) <- readIORef cache
+			let scReq' = scReq { c_puct = c }
+			request scReq'
+			writeIORef cache (scReq', scCur)
+			scvDisplay scv scReq' scCur
+
+	on iterationsEditor #activate $ do
+		iterationsText <- G.get iterationsBuffer #text
+		for_ (tread iterationsText) $ \n -> do
+			(scReq, scCur) <- readIORef cache
+			let scReq' = scReq { iterations = n }
+			request scReq'
+			writeIORef cache (scReq', scCur)
+			scvDisplay scv scReq' scCur
+
+	#attach grid c_puctLabel   0 0 1 1
+	#attach grid c_puctEditor  1 0 1 1
+	#attach grid c_puctDisplay 2 0 1 1
+
+	#attach grid iterationsLabel   0 1 1 1
+	#attach grid iterationsEditor  1 1 1 1
+	#attach grid iterationsDisplay 2 1 1 1
+
+	pure scv
+
+scvWidget :: SearchConfigurationView -> IO Widget
+scvWidget = toWidget . scvTop
+
+scvSet :: SearchConfigurationView -> SearchConfiguration -> IO ()
+scvSet scv scCur = do
+	(scReq, _) <- readIORef (scvCache scv)
+	writeIORef (scvCache scv) (scReq, scCur)
+	scvDisplay scv scReq scCur
+
+-- | If you see this documentation, please report a bug.
+scvDisplay :: SearchConfigurationView -> SearchConfiguration -> SearchConfiguration -> IO ()
+scvDisplay scv scReq scCur = do
+	set (scvC_puct scv) [#label := describe c_puct]
+	set (scvIterations scv) [#label := describe iterations]
+	where
+	describe :: (Eq a, Show a) => (SearchConfiguration -> a) -> T.Text
+	describe f = tshow cur <> if req == cur then mempty else " (will change to " <> tshow req <> " next game)"
+		where
+		req = f scReq
+		cur = f scCur
+
+tshow :: Show a => a -> T.Text
+tshow = T.pack . show
+
+tread :: Read a => T.Text -> Maybe a
+tread = readMaybe . T.unpack

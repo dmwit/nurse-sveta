@@ -98,6 +98,18 @@ onSpeeds :: (HashMap T.Text SearchSpeed -> HashMap T.Text SearchSpeed) -> Genera
 onSpeeds f gts = gts { summary = s { speeds = f (speeds s) } } where
 	s = summary gts
 
+initialSearchConfiguration :: SearchConfiguration
+initialSearchConfiguration = SearchConfiguration
+	{ c_puct = 1
+	, iterations = 10000
+	}
+
+requestConfiguration :: SearchConfiguration -> GenerationThreadState -> IO GenerationThreadState
+requestConfiguration sc gts = pure gts { requestedConfiguration = sc }
+
+acceptConfiguration :: GenerationThreadState -> GenerationThreadState
+acceptConfiguration gts = gts { currentConfiguration = trySetPayload (requestedConfiguration gts) (currentConfiguration gts) }
+
 -- ╭╴top╶─────────────╮
 -- │╭╴sta╶─────────╮  │
 -- ││╭╴btn╶╮╭╴lbl╶╮│  │
@@ -105,7 +117,9 @@ onSpeeds f gts = gts { summary = s { speeds = f (speeds s) } } where
 -- │╰──────────────╯  │
 -- │╭╴gfx╶───────────╮│
 -- ││╭╴psv╶╮╭╴nfo╶──╮││
--- ││╰─────╯│╭╴spd╶╮│││
+-- ││╰─────╯│╭╴scv╶╮│││
+-- ││       │╰─────╯│││
+-- ││       │╭╴spd╶╮│││
 -- ││       │╰─────╯│││
 -- ││       ╰───────╯││
 -- │╰────────────────╯│
@@ -116,14 +130,15 @@ generationThreadView app mainRef btns genRef = do
 	btn <- new Button []
 	sta <- new Box [#orientation := OrientationHorizontal]
 	psv <- psvNew (PSM (emptyBoard 8 16) Nothing [])
+	scv <- scvNew initialSearchConfiguration (modifyMVar_ genRef . requestConfiguration)
 	spd <- new Grid []
 	nfo <- new Box [#orientation := OrientationVertical]
 	gfx <- new Box [#orientation := OrientationHorizontal]
 	top <- new Box [#orientation := OrientationVertical]
 
-	psvTracker <- newTracker
 	staTracker <- newTracker
-	cfgTracker <- newTracker
+	psvTracker <- newTracker
+	scvTracker <- newTracker
 
 	let displayState gts = do
 	    	renderSpeeds spd (speeds (summary gts))
@@ -135,12 +150,14 @@ generationThreadView app mainRef btns genRef = do
 	    			GTDying -> set btn [#iconName := "edit-delete", #sensitive := False]
 	    			GTDead _ -> set btn [#iconName := "edit-delete", #sensitive := True]
 	    	whenUpdated psvTracker (rootPosition (summary gts)) (psvSet psv)
+	    	whenUpdated scvTracker (currentConfiguration gts) (scvSet scv)
 	readMVar genRef >>= displayState
 
 	writeIORef mainRef (MTRunning (btn:btns))
 	#append sta btn
 	#append sta lbl
 	psvWidget psv >>= #append gfx
+	scvWidget scv >>= #append nfo
 	#append nfo spd
 	#append gfx nfo
 	#append top sta
@@ -204,33 +221,36 @@ startGenerationThread app mainRef box = do
 	case mts of
 		MTDying{} -> hPutStrLn stderr "WARNING: requested the creation of a new generation thread after beginning the shutdown process; ignoring request"
 		MTRunning btns -> do
-			genRef <- newMVar (newGenerationThreadState config)
+			genRef <- newMVar (newGenerationThreadState initialSearchConfiguration)
 			generationThreadView app mainRef btns genRef >>= #append box
 			() <$ forkIO (catch (go genRef) (reportDeath genRef))
 	where
 	reportDeath ref e = modifyMVar_ ref (\gts -> pure gts { status = setPayload (GTDead e) (status gts) })
-	go ref = createSystemRandom >>= startGame ref
-	config = SearchConfiguration { c_puct = 1, iterations = 10000 } -- TODO: be more dynamic
-	params = dmParameters config
-	startGame ref g = newSearchSpeed >>= gameLoop
-		where
-		gameLoop threadSpeed = do
-			(s, t) <- initialTree params g
-			gameSpeed <- newSearchSpeed
-			moveLoop threadSpeed gameSpeed s t
-		moveLoop threadSpeed gameSpeed s t = do
-			[l, r] <- map toEnum <$> replicateM 2 (uniformR (0, 2) g)
-			t' <- unsafeDescend params (RNG l r) s t
-			boardSnapshot <- mfreeze (board s)
-			modifyMVar_ ref (pure . onRootPosition (setPayload (PSM boardSnapshot (Just (l, r)) [])))
-			moveSpeed <- newSearchSpeed
-			searchLoop threadSpeed gameSpeed moveSpeed s t' (iterations config)
 
-		searchLoop threadSpeed gameSpeed moveSpeed s t 0 = descend params visitCount s t >>= \case
-			Nothing -> gameLoop threadSpeed
-			Just (_, t') -> moveLoop threadSpeed gameSpeed s t'
+	go ref = do
+		g <- createSystemRandom
+		threadSpeed <- newSearchSpeed
+		gameLoop ref g threadSpeed
+	gameLoop ref g threadSpeed = do
+		config <- modifyMVar ref $ \gts -> pure (acceptConfiguration gts, requestedConfiguration gts)
+		let params = dmParameters config
+		(s, t) <- initialTree params g
+		gameSpeed <- newSearchSpeed
+		moveLoop ref g config params threadSpeed gameSpeed s t
+	moveLoop ref g config params threadSpeed gameSpeed s t = do
+		[l, r] <- map toEnum <$> replicateM 2 (uniformR (0, 2) g)
+		t' <- unsafeDescend params (RNG l r) s t
+		boardSnapshot <- mfreeze (board s)
+		modifyMVar_ ref (pure . onRootPosition (setPayload (PSM boardSnapshot (Just (l, r)) [])))
+		moveSpeed <- newSearchSpeed
+		searchLoop ref g config params s threadSpeed gameSpeed moveSpeed t' (iterations config)
 
-		searchLoop threadSpeed gameSpeed moveSpeed s t n = do
+	searchLoop ref g config params s = innerLoop where
+		innerLoop threadSpeed gameSpeed moveSpeed t 0 = descend params visitCount s t >>= \case
+			Nothing -> gameLoop ref g threadSpeed
+			Just (_, t') -> moveLoop ref g config params threadSpeed gameSpeed s t'
+
+		innerLoop threadSpeed gameSpeed moveSpeed t n = do
 			t' <- mcts params s t
 			let move = maximumOn (\_ -> visitCount . statistics) (children t')
 			-- if mcts has thrown an error somewhere that matters, force it
@@ -257,8 +277,8 @@ startGenerationThread app mainRef box = do
 
 			case (payload status', HM.size (children t')) of
 				(GTDead{}, _) -> pure ()
-				(_, 0) -> gameLoop threadSpeed
-				_ -> searchLoop threadSpeed' gameSpeed' moveSpeed' s t' (n-1)
+				(_, 0) -> gameLoop ref g threadSpeed
+				_ -> innerLoop threadSpeed' gameSpeed' moveSpeed' t' (n-1)
 
 data SearchSpeed = SearchSpeed
 	{ searchStart :: UTCTime
