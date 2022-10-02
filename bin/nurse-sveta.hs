@@ -12,6 +12,7 @@ import Data.Maybe
 import Data.Monoid
 import Data.Time (UTCTime)
 import Dr.Mario.Model
+import Dr.Mario.STM
 import Dr.Mario.Tomcats
 import Dr.Mario.Widget
 import GI.Gtk as G
@@ -95,8 +96,8 @@ initialSearchConfiguration = SearchConfiguration
 	, iterations = 10000
 	}
 
-requestConfiguration :: SearchConfiguration -> GenerationThreadState -> IO GenerationThreadState
-requestConfiguration sc gts = pure gts { requestedConfiguration = sc }
+requestConfiguration :: SearchConfiguration -> GenerationThreadState -> GenerationThreadState
+requestConfiguration sc gts = gts { requestedConfiguration = sc }
 
 acceptConfiguration :: GenerationThreadState -> GenerationThreadState
 acceptConfiguration gts = gts { currentConfiguration = sTrySetPayload (requestedConfiguration gts) (currentConfiguration gts) }
@@ -111,10 +112,10 @@ acceptConfiguration gts = gts { currentConfiguration = sTrySetPayload (requested
 -- ╰────────────────╯
 generationThreadView :: IO ThreadView
 generationThreadView = do
-	genRef <- newMVar (newGenerationThreadState initialSearchConfiguration)
+	genRef <- newTVarIO (newGenerationThreadState initialSearchConfiguration)
 
 	psv <- newPlayerStateView (PSM (emptyBoard 8 16) Nothing [])
-	scv <- newSearchConfigurationView initialSearchConfiguration (modifyMVar_ genRef . requestConfiguration)
+	scv <- newSearchConfigurationView initialSearchConfiguration (atomically . modifyTVar genRef . requestConfiguration)
 	spd <- new Grid []
 	nfo <- new Box [#orientation := OrientationVertical]
 	top <- new Box [#orientation := OrientationHorizontal]
@@ -131,7 +132,7 @@ generationThreadView = do
 	pure ThreadView
 		{ tvWidget = topWidget
 		, tvRefresh = do
-			gts <- readMVar genRef
+			gts <- readTVarIO genRef
 			renderSpeeds spd (speeds (summary gts))
 			tWhenUpdated psvTracker (rootPosition (summary gts)) (psvSet psv)
 			tWhenUpdated scvTracker (currentConfiguration gts) (scvSet scv)
@@ -161,14 +162,14 @@ renderSpeeds spd sss = do
 		#addProvider cssCtx cssPrv (fromIntegral STYLE_PROVIDER_PRIORITY_APPLICATION)
 		#attach spd lbl n 0 1 1
 
-generationThread :: MVar GenerationThreadState -> IO () -> IO ()
+generationThread :: TVar GenerationThreadState -> IO () -> IO ()
 generationThread genRef checkStatus = do
 	g <- createSystemRandom
 	threadSpeed <- newSearchSpeed
 	gameLoop g threadSpeed
 	where
 	gameLoop g threadSpeed = do
-		config <- modifyMVar genRef $ \gts -> pure (acceptConfiguration gts, requestedConfiguration gts)
+		config <- atomically . stateTVar genRef $ \gts -> (requestedConfiguration gts, acceptConfiguration gts)
 		let params = dmParameters config
 		(s, t) <- initialTree params g
 		gameSpeed <- newSearchSpeed
@@ -178,7 +179,7 @@ generationThread genRef checkStatus = do
 		[l, r] <- map toEnum <$> replicateM 2 (uniformR (0, 2) g)
 		t' <- unsafeDescend params (RNG l r) s t
 		boardSnapshot <- mfreeze (board s)
-		modifyMVar_ genRef (pure . onRootPosition (sSetPayload (PSM boardSnapshot (Just (l, r)) [])))
+		atomically $ modifyTVar genRef (onRootPosition (sSetPayload (PSM boardSnapshot (Just (l, r)) [])))
 		moveSpeed <- newSearchSpeed
 		searchLoop g config params s threadSpeed gameSpeed moveSpeed t' (iterations config)
 
@@ -196,14 +197,14 @@ generationThread genRef checkStatus = do
 				Just (Placement _ p, _, _) -> p `seq` pure ()
 				_ -> pure ()
 
-			gts <- takeMVar genRef
-			let gts' = case move of
-			    	Just (Placement _ p, _, _) -> onRootPosition (sOnSubterm psmOverlayL (sTrySetPayload [(p, 0.3)])) gts
-			    	_ -> gts
-			    [threadSpeed', gameSpeed', moveSpeed'] = incSearchIterations <$> [threadSpeed, gameSpeed, moveSpeed]
+			let [threadSpeed', gameSpeed', moveSpeed'] = incSearchIterations <$> [threadSpeed, gameSpeed, moveSpeed]
 			    speeds' = HM.fromList [("thread", threadSpeed), ("game", gameSpeed), ("move", moveSpeed)]
-			    gts'' = onSpeeds (const speeds') gts'
-			putMVar genRef gts''
+
+			gts <- atomically . modifyTVar genRef $ id
+				. onSpeeds (const speeds')
+				. case move of
+				  	Just (Placement _ p, _, _) -> onRootPosition (sOnSubterm psmOverlayL (sTrySetPayload [(p, 0.3)]))
+				  	_ -> id
 
 			checkStatus
 			case HM.size (children t') of

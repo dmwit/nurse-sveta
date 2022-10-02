@@ -41,6 +41,7 @@ import Data.IORef
 import Data.List
 import Data.Monoid
 import Dr.Mario.Model as DM
+import Dr.Mario.STM
 import Dr.Mario.Tomcats (SearchConfiguration(..))
 import GI.Cairo.Render
 import GI.Cairo.Render.Connector
@@ -469,7 +470,7 @@ tmStartThread tm = readIORef (tmDying tm) >>= \case
 		btn <- new Button []
 		lbl <- new Label []
 
-		tsRef <- newMVar (newStable Live)
+		tsRef <- newTVarIO (newStable Live)
 		staTracker <- newTracker
 		let updateDisplay ts = do
 		    	tWhenUpdated staTracker ts $ \s -> do
@@ -479,7 +480,7 @@ tmStartThread tm = readIORef (tmDying tm) >>= \case
 		    			Dying -> set btn [#iconName := "edit-delete", #sensitive := False]
 		    			Dead{} -> set btn [#iconName := "edit-delete", #sensitive := True]
 		    	tvRefresh tv
-		readMVar tsRef >>= updateDisplay
+		readTVarIO tsRef >>= updateDisplay
 
 		#append sta btn
 		#append sta lbl
@@ -489,15 +490,15 @@ tmStartThread tm = readIORef (tmDying tm) >>= \case
 
 		on btn #clicked $ do
 			set btn [#sensitive := False]
-			ts <- takeMVar tsRef
+			ts <- readTVarIO tsRef
 			case sPayload ts of
 				Dead{} -> #remove (tmThreadList tm) top
 				_ -> do
-					putMVar tsRef (sSetPayload Dying ts)
+					atomically $ modifyTVar tsRef (sSetPayload Dying)
 					updateDisplay ts
 
 		timeoutAdd PRIORITY_DEFAULT 30 $ do
-			ts <- readMVar tsRef
+			ts <- readTVarIO tsRef
 			updateDisplay ts
 			case sPayload ts of
 				Dead{} -> do
@@ -510,12 +511,12 @@ tmStartThread tm = readIORef (tmDying tm) >>= \case
 		modifyIORef (tmRunningThreads tm) (btn:)
 		() <$ forkIO (catch
 			(tvCompute tv (tmCheckStatus tsRef))
-			(\e -> modifyMVar_ tsRef (pure . sSetPayload (Dead e)))
+			(atomically . modifyTVar tsRef . sSetPayload . Dead)
 			)
 
-tmCheckStatus :: MVar (Stable ThreadStatus) -> IO ()
+tmCheckStatus :: TVar (Stable ThreadStatus) -> IO ()
 tmCheckStatus tsRef = do
-	ts <- readMVar tsRef
+	ts <- readTVarIO tsRef
 	case sPayload ts of
 		Dying -> throwIO DiedSuccessfully
 		_ -> pure ()
