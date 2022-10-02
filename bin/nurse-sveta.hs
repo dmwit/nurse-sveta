@@ -35,7 +35,7 @@ main = do
 	on app #activate $ do
 		mainRef <- newIORef Nothing
 		top <- new Box [#orientation := OrientationHorizontal]
-		gen <- tmNew "generation" generationThreadView
+		gen <- newThreadManager "generation" generationThreadView
 		let tms = [gen]
 
 		replicateM_ 3 (tmStartThread gen)
@@ -74,11 +74,11 @@ data GenerationThreadState = GenerationThreadState
 newGenerationThreadState :: SearchConfiguration -> GenerationThreadState
 newGenerationThreadState cfg = GenerationThreadState
 	{ summary = SearchSummary
-		{ rootPosition = sNew (PSM (emptyBoard 8 16) Nothing [])
+		{ rootPosition = newStable (PSM (emptyBoard 8 16) Nothing [])
 		, speeds = HM.empty
 		}
 	, requestedConfiguration = cfg
-	, currentConfiguration = sNew cfg
+	, currentConfiguration = newStable cfg
 	}
 
 onRootPosition :: (Stable PlayerStateModel -> Stable PlayerStateModel) -> GenerationThreadState -> GenerationThreadState
@@ -113,14 +113,14 @@ generationThreadView :: IO ThreadView
 generationThreadView = do
 	genRef <- newMVar (newGenerationThreadState initialSearchConfiguration)
 
-	psv <- psvNew (PSM (emptyBoard 8 16) Nothing [])
-	scv <- scvNew initialSearchConfiguration (modifyMVar_ genRef . requestConfiguration)
+	psv <- newPlayerStateView (PSM (emptyBoard 8 16) Nothing [])
+	scv <- newSearchConfigurationView initialSearchConfiguration (modifyMVar_ genRef . requestConfiguration)
 	spd <- new Grid []
 	nfo <- new Box [#orientation := OrientationVertical]
 	top <- new Box [#orientation := OrientationHorizontal]
 
-	psvTracker <- tNew
-	scvTracker <- tNew
+	psvTracker <- newTracker
+	scvTracker <- newTracker
 
 	psvWidget psv >>= #append top
 	scvWidget scv >>= #append nfo

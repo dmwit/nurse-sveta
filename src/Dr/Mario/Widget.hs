@@ -2,34 +2,34 @@
 
 module Dr.Mario.Widget (
 	-- * Raw drawing grid
-	DrawingGrid, dgNew, dgSetRenderer, dgWidget,
+	DrawingGrid, newDrawingGrid, dgSetRenderer, dgWidget,
 	dgSetSize, dgSetWidth, dgSetHeight,
 	dgGetSize, dgGetWidth, dgGetHeight,
 
 	-- * Player state
 	PlayerStateModel(..),
 	psmBoardL, psmLookaheadL, psmOverlayL,
-	PlayerStateView, psvNew, psvWidget,
+	PlayerStateView, newPlayerStateView, psvWidget,
 	psvGet, psvSet,
 	psvModifyM, psvModifyM_, psvModify, psvModify_,
 
 	-- * Search configuration
 	SearchConfigurationView,
-	scvNew, scvWidget, scvSet,
+	newSearchConfigurationView, scvWidget, scvSet,
 
 	-- * Thread management
 	ThreadManager, ThreadView(..),
-	tmNew, tmWidget, tmStartThread, tmDieThen,
+	newThreadManager, tmWidget, tmStartThread, tmDieThen,
 
 	-- * Noticing when things change
 	Stable,
-	sNew,
+	newStable,
 	sPayload,
 	sUpdate, sUpdateM, sSetPayload, sTrySetPayload,
 	sOnSubterm,
 
 	Tracker,
-	tNew, tWhenUpdated,
+	newTracker, tWhenUpdated,
 	) where
 
 import Control.Concurrent
@@ -68,8 +68,8 @@ data DrawingGrid = DG
 --
 -- Uses the math convention for Y coordinates: bigger numbers are higher than
 -- smaller numbers.
-dgNew :: MonadIO m => Double -> Double -> m DrawingGrid
-dgNew w h = do
+newDrawingGrid :: MonadIO m => Double -> Double -> m DrawingGrid
+newDrawingGrid w h = do
 	da <- new DrawingArea []
 	af <- new AspectFrame $ tail [undefined
 		, #xalign := 0.5
@@ -184,9 +184,9 @@ data PlayerStateView = PSV
 	, psvModel :: IORef PlayerStateModel
 	}
 
-psvNew :: MonadIO m => PlayerStateModel -> m PlayerStateView
-psvNew psm = do
-	dg <- dgNew (fromIntegral (DM.width b + 2)) (fromIntegral (DM.height b + 4))
+newPlayerStateView :: MonadIO m => PlayerStateModel -> m PlayerStateView
+newPlayerStateView psm = do
+	dg <- newDrawingGrid (fromIntegral (DM.width b + 2)) (fromIntegral (DM.height b + 4))
 	ref <- liftIO $ newIORef psm
 	dgSetRenderer dg $ liftIO (readIORef ref) >>= psmRender
 	psvUpdateHeightRequest dg psm
@@ -319,8 +319,8 @@ data SearchConfigurationView = SCV
 	, scvIterations :: Label
 	}
 
-scvNew :: SearchConfiguration -> (SearchConfiguration -> IO ()) -> IO SearchConfigurationView
-scvNew sc request = do
+newSearchConfigurationView :: SearchConfiguration -> (SearchConfiguration -> IO ()) -> IO SearchConfigurationView
+newSearchConfigurationView sc request = do
 	grid <- new Grid [#columnSpacing := 7, #rowSpacing := 3]
 	cache <- newIORef (sc, sc)
 
@@ -418,8 +418,8 @@ data ThreadStatus = Live | Dying | Dead SomeException deriving Show
 data DiedSuccessfully = DiedSuccessfully deriving (Eq, Ord, Read, Show, Bounded, Enum)
 instance Exception DiedSuccessfully where displayException _ = "died successfully"
 
-tmNew :: T.Text -> IO ThreadView -> IO ThreadManager
-tmNew nm mkView = do
+newThreadManager :: T.Text -> IO ThreadView -> IO ThreadManager
+newThreadManager nm mkView = do
 	top <- new Box [#orientation := OrientationVertical]
 	lst <- new Box [#orientation := OrientationVertical]
 	scr <- new ScrolledWindow [#child := lst]
@@ -469,8 +469,8 @@ tmStartThread tm = readIORef (tmDying tm) >>= \case
 		btn <- new Button []
 		lbl <- new Label []
 
-		tsRef <- newMVar (sNew Live)
-		staTracker <- tNew
+		tsRef <- newMVar (newStable Live)
+		staTracker <- newTracker
 		let updateDisplay ts = do
 		    	tWhenUpdated staTracker ts $ \s -> do
 		    		set lbl [#label := tshow s]
@@ -527,8 +527,8 @@ data Stable a = Stable
 	, sPayload_ :: a
 	} deriving (Eq, Ord, Read, Show)
 
-sNew :: a -> Stable a
-sNew = Stable (minBound+1)
+newStable :: a -> Stable a
+newStable = Stable (minBound+1)
 
 sPayload :: Stable a -> a
 sPayload = sPayload_
@@ -557,8 +557,8 @@ sOnSubterm lens f sa@(Stable g pa) = if g == g' then sa else Stable g' pa'
 -- | Not thread safe.
 newtype Tracker = Tracker { generationCacheRef :: IORef Int }
 
-tNew :: IO Tracker
-tNew = Tracker <$> newIORef minBound
+newTracker :: IO Tracker
+newTracker = Tracker <$> newIORef minBound
 
 tWhenUpdated :: Tracker -> Stable a -> (a -> IO b) -> IO ()
 tWhenUpdated t s f = do

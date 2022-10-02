@@ -16,7 +16,7 @@ main :: IO ()
 main = do
 	app <- new Application []
 	on app #activate $ do
-		psv <- psvNew (PSM board Nothing [])
+		psv <- newPlayerStateView (PSM board Nothing [])
 		psvWidget psv >>= \w -> set w [#heightRequest := 500]
 		places <- new ListBox [#activateOnSingleClick := True]
 		for_ (sort . HM.toList . unsafeApproxReachable board $ launchPill Blue Red) $ \(pill, move) -> do
