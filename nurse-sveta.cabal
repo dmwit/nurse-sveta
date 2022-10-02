@@ -42,6 +42,7 @@ library
                         , Dr.Mario.Widget
     build-depends:        gi-cairo-connector ^>=0.1
                         , gi-cairo-render ^>=0.1
+                        , gi-glib ^>=2.0
                         , hashable ^>=1.4
                         , tomcats ^>=0.1
                         , vector ^>=0.13
@@ -53,5 +54,4 @@ executable pathfinding-demo
 executable nurse-sveta
     import:             executable
     main-is:            nurse-sveta.hs
-    build-depends:        gi-glib ^>=2.0
-                        , time ^>=1.9
+    build-depends:        time ^>=1.9

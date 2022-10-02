@@ -16,21 +16,41 @@ module Dr.Mario.Widget (
 	-- * Search configuration
 	SearchConfigurationView,
 	scvNew, scvWidget, scvSet,
+
+	-- * Thread management
+	ThreadManager, ThreadView(..),
+	tmNew, tmWidget, tmStartThread, tmDieThen,
+
+	-- * Noticing when things change
+	Stable,
+	sNew,
+	sPayload,
+	sUpdate, sUpdateM, sSetPayload, sTrySetPayload,
+	sOnSubterm,
+
+	Tracker,
+	tNew, tWhenUpdated,
 	) where
 
+import Control.Concurrent
+import Control.Exception
 import Control.Monad
 import Control.Monad.IO.Class
 import Data.Foldable
 import Data.IORef
+import Data.List
 import Data.Monoid
 import Dr.Mario.Model as DM
 import Dr.Mario.Tomcats (SearchConfiguration(..))
 import GI.Cairo.Render
 import GI.Cairo.Render.Connector
+import GI.GLib
 import GI.Gtk as G
+import System.IO
 import Text.Read
 
 import qualified Data.Text as T
+import qualified Data.Text.IO as T
 import qualified GHC.OverloadedLabels as Overload
 
 data DrawingGrid = DG
@@ -376,6 +396,178 @@ scvDisplay scv scReq scCur = do
 		where
 		req = f scReq
 		cur = f scCur
+
+data ThreadManager = ThreadManager
+	{ tmContainer :: Box
+	, tmThreadList :: Box
+	, tmAddThread :: Button
+	, tmRunningThreads :: IORef [Button]
+	, tmDying :: IORef (Maybe (IO ()))
+	, tmThreadDescription :: T.Text
+	, tmFactory :: IO ThreadView
+	}
+
+data ThreadView = ThreadView
+	{ tvWidget :: Widget
+	, tvRefresh :: IO ()
+	, tvCompute :: IO () -> IO ()
+	}
+
+data ThreadStatus = Live | Dying | Dead SomeException deriving Show
+
+data DiedSuccessfully = DiedSuccessfully deriving (Eq, Ord, Read, Show, Bounded, Enum)
+instance Exception DiedSuccessfully where displayException _ = "died successfully"
+
+tmNew :: T.Text -> IO ThreadView -> IO ThreadManager
+tmNew nm mkView = do
+	top <- new Box [#orientation := OrientationVertical]
+	lst <- new Box [#orientation := OrientationVertical]
+	scr <- new ScrolledWindow [#child := lst]
+	lbl <- new Label [#label := nm <> " threads"]
+	add <- new Button $ tail [undefined
+		, #iconName := "list-add"
+		, #halign := AlignCenter
+		]
+	run <- newIORef []
+	die <- newIORef Nothing
+	let tm = ThreadManager top lst add run die nm mkView
+
+	#append top lbl
+	#append top add
+	#append top scr
+	on add #clicked (tmStartThread tm)
+	pure tm
+
+tmWidget :: ThreadManager -> IO Widget
+tmWidget = toWidget . tmContainer
+
+tmDieThen :: ThreadManager -> IO () -> IO ()
+tmDieThen tm report = do
+	set (tmAddThread tm) [#sensitive := False]
+	writeIORef (tmDying tm) (Just report)
+
+	btns <- readIORef (tmRunningThreads tm)
+	traverse_ #activate btns
+	when (null btns) report
+
+-- ╭╴top╶───────────╮
+-- │╭╴sta╶─────────╮│
+-- ││╭╴btn╶╮╭╴lbl╶╮││
+-- ││╰─────╯╰─────╯││
+-- │╰──────────────╯│
+-- │╭╴tvw╶─────────╮│
+-- │╰──────────────╯│
+-- ╰────────────────╯
+tmStartThread :: ThreadManager -> IO ()
+tmStartThread tm = readIORef (tmDying tm) >>= \case
+	Just{} -> T.hPutStrLn stderr $ "WARNING: requested the creation of a new " <> tmThreadDescription tm <> " thread after beginning the shutdown process; ignoring request"
+	Nothing -> do
+		tv <- tmFactory tm
+
+		top <- new Box [#orientation := OrientationVertical]
+		sta <- new Box [#orientation := OrientationHorizontal]
+		btn <- new Button []
+		lbl <- new Label []
+
+		tsRef <- newMVar (sNew Live)
+		staTracker <- tNew
+		let updateDisplay ts = do
+		    	tWhenUpdated staTracker ts $ \s -> do
+		    		set lbl [#label := tshow s]
+		    		case s of
+		    			Live -> set btn [#iconName := "process-stop", #sensitive := True]
+		    			Dying -> set btn [#iconName := "edit-delete", #sensitive := False]
+		    			Dead{} -> set btn [#iconName := "edit-delete", #sensitive := True]
+		    	tvRefresh tv
+		readMVar tsRef >>= updateDisplay
+
+		#append sta btn
+		#append sta lbl
+		#append top sta
+		#append top (tvWidget tv)
+		#append (tmThreadList tm) top
+
+		on btn #clicked $ do
+			set btn [#sensitive := False]
+			ts <- takeMVar tsRef
+			case sPayload ts of
+				Dead{} -> #remove (tmThreadList tm) top
+				_ -> do
+					putMVar tsRef (sSetPayload Dying ts)
+					updateDisplay ts
+
+		timeoutAdd PRIORITY_DEFAULT 30 $ do
+			ts <- readMVar tsRef
+			updateDisplay ts
+			case sPayload ts of
+				Dead{} -> do
+					btns <- delete btn <$> readIORef (tmRunningThreads tm)
+					writeIORef (tmRunningThreads tm) btns
+					when (null btns) (readIORef (tmDying tm) >>= sequence_)
+					pure SOURCE_REMOVE
+				_ -> pure SOURCE_CONTINUE
+
+		modifyIORef (tmRunningThreads tm) (btn:)
+		() <$ forkIO (catch
+			(tvCompute tv (tmCheckStatus tsRef))
+			(\e -> modifyMVar_ tsRef (pure . sSetPayload (Dead e)))
+			)
+
+tmCheckStatus :: MVar (Stable ThreadStatus) -> IO ()
+tmCheckStatus tsRef = do
+	ts <- readMVar tsRef
+	case sPayload ts of
+		Dying -> throwIO DiedSuccessfully
+		_ -> pure ()
+
+-- | A type for tracking the updates to something that doesn't change very often.
+data Stable a = Stable
+	-- this generation is in the sense of epoch/number of steps/etc.
+	{ generation :: {-# UNPACK #-} !Int
+	, sPayload_ :: a
+	} deriving (Eq, Ord, Read, Show)
+
+sNew :: a -> Stable a
+sNew = Stable (minBound+1)
+
+sPayload :: Stable a -> a
+sPayload = sPayload_
+
+sUpdate :: (a -> a) -> Stable a -> Stable a
+sUpdate f (Stable g p) = Stable (g + 1) (f p)
+
+sUpdateM :: (a -> Maybe a) -> Stable a -> Stable a
+sUpdateM f s@(Stable g p) = case f p of
+	Nothing -> s
+	Just p' -> Stable (g+1) p'
+
+sSetPayload :: a -> Stable a -> Stable a
+sSetPayload p s = Stable (generation s + 1) p
+
+sTrySetPayload :: Eq a => a -> Stable a -> Stable a
+sTrySetPayload p s = if p == sPayload s then s else Stable (generation s + 1) p
+
+sOnSubterm :: (a -> (b, b -> a)) -> (Stable b -> Stable b) -> Stable a -> Stable a
+sOnSubterm lens f sa@(Stable g pa) = if g == g' then sa else Stable g' pa'
+	where
+	(pb, mk) = lens pa
+	Stable g' pb' = f (Stable g pb)
+	pa' = mk pb'
+
+-- | Not thread safe.
+newtype Tracker = Tracker { generationCacheRef :: IORef Int }
+
+tNew :: IO Tracker
+tNew = Tracker <$> newIORef minBound
+
+tWhenUpdated :: Tracker -> Stable a -> (a -> IO b) -> IO ()
+tWhenUpdated t s f = do
+	oldGen <- readIORef (generationCacheRef t)
+	when (newGen > oldGen) $ do
+		f (sPayload s)
+		writeIORef (generationCacheRef t) newGen
+	where
+	newGen = generation s
 
 tshow :: Show a => a -> T.Text
 tshow = T.pack . show
