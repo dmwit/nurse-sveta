@@ -18,8 +18,9 @@ module Dr.Mario.Widget (
 	newSearchConfigurationView, scvWidget, scvSet,
 
 	-- * Thread management
-	ThreadManager, ThreadView(..),
+	ThreadManager,
 	newThreadManager, tmWidget, tmStartThread, tmDieThen,
+	ThreadView(..), StatusCheck(..), Affinity(..),
 
 	-- * Noticing when things change
 	Stable,
@@ -406,12 +407,18 @@ data ThreadManager = ThreadManager
 	, tmDying :: IORef (Maybe (IO ()))
 	, tmThreadDescription :: T.Text
 	, tmFactory :: IO ThreadView
+	, tmAffinity :: Affinity
 	}
 
 data ThreadView = ThreadView
 	{ tvWidget :: Widget
 	, tvRefresh :: IO ()
-	, tvCompute :: IO () -> IO ()
+	, tvCompute :: StatusCheck -> IO ()
+	}
+
+data StatusCheck = StatusCheck
+	{ scIO :: IO () -- ^ more efficient, does not block
+	, scSTM :: STM () -- ^ less efficient, blocks until you should die
 	}
 
 data ThreadStatus = Live | Dying | Dead SomeException deriving Show
@@ -419,11 +426,17 @@ data ThreadStatus = Live | Dying | Dead SomeException deriving Show
 data DiedSuccessfully = DiedSuccessfully deriving (Eq, Ord, Read, Show, Bounded, Enum)
 instance Exception DiedSuccessfully where displayException _ = "died successfully"
 
-newThreadManager :: T.Text -> IO ThreadView -> IO ThreadManager
-newThreadManager nm mkView = do
+data Affinity = Green | OS deriving (Bounded, Enum, Eq, Ord, Read, Show)
+
+fork :: Affinity -> IO () -> IO ThreadId
+fork Green = forkIO
+fork OS = forkOS
+
+newThreadManager :: T.Text -> Affinity -> IO ThreadView -> IO ThreadManager
+newThreadManager nm aff mkView = do
 	top <- new Box [#orientation := OrientationVertical]
 	lst <- new Box [#orientation := OrientationVertical]
-	scr <- new ScrolledWindow [#child := lst]
+	scr <- new ScrolledWindow [#child := lst, #propagateNaturalHeight := True, #propagateNaturalWidth := True]
 	lbl <- new Label [#label := nm <> " threads"]
 	add <- new Button $ tail [undefined
 		, #iconName := "list-add"
@@ -431,7 +444,7 @@ newThreadManager nm mkView = do
 		]
 	run <- newIORef []
 	die <- newIORef Nothing
-	let tm = ThreadManager top lst add run die nm mkView
+	let tm = ThreadManager top lst add run die nm mkView aff
 
 	#append top lbl
 	#append top add
@@ -509,17 +522,22 @@ tmStartThread tm = readIORef (tmDying tm) >>= \case
 				_ -> pure SOURCE_CONTINUE
 
 		modifyIORef (tmRunningThreads tm) (btn:)
-		() <$ forkIO (catch
+		() <$ fork (tmAffinity tm) (catch
 			(tvCompute tv (tmCheckStatus tsRef))
 			(atomically . modifyTVar tsRef . sSetPayload . Dead)
 			)
 
-tmCheckStatus :: TVar (Stable ThreadStatus) -> IO ()
-tmCheckStatus tsRef = do
-	ts <- readTVarIO tsRef
-	case sPayload ts of
-		Dying -> throwIO DiedSuccessfully
-		_ -> pure ()
+tmCheckStatus :: TVar (Stable ThreadStatus) -> StatusCheck
+tmCheckStatus tsRef = StatusCheck
+	{ scIO = do
+		ts <- readTVarIO tsRef
+		case sPayload ts of
+			Dying -> throwIO DiedSuccessfully
+			_ -> pure ()
+	, scSTM = do
+		Stable _ Dying <- readTVar tsRef
+		pure ()
+	}
 
 -- | A type for tracking the updates to something that doesn't change very often.
 data Stable a = Stable

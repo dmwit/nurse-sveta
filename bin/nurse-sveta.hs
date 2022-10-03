@@ -13,6 +13,7 @@ import Data.Monoid
 import Data.Time (UTCTime)
 import Dr.Mario.Model
 import Dr.Mario.STM
+import Dr.Mario.STM.BatchProcessor
 import Dr.Mario.Tomcats
 import Dr.Mario.Widget
 import GI.Gtk as G
@@ -33,24 +34,32 @@ import qualified Data.Time as Time
 main :: IO ()
 main = do
 	app <- new Application []
+	inferenceProcedure <- newProcedure 20
 	on app #activate $ do
 		mainRef <- newIORef Nothing
-		top <- new Box [#orientation := OrientationHorizontal]
-		gen <- newThreadManager "generation" generationThreadView
-		let tms = [gen]
+		top <- new Box [#orientation := OrientationHorizontal, #spacing := 10]
 
+		gen <- newThreadManager "generation" Green (generationThreadView inferenceProcedure)
+		inf <- newThreadManager "inference" OS (inferenceThreadView inferenceProcedure)
 		replicateM_ 3 (tmStartThread gen)
+		tmStartThread inf
 		tmWidget gen >>= #append top
+		tmWidget inf >>= #append top
 
 		w <- new Window $ tail [undefined
 			, #title := "Nurse Sveta"
 			, #application := app
 			, #child := top
-			, #defaultWidth := 700
+			, #defaultWidth := 1000
 			, #defaultHeight := 1000
 			, On #closeRequest $ readIORef mainRef >>= \case
 				Just{} -> pure False
 				Nothing -> do
+					-- Don't bother to cleanly shut down the inference thread.
+					-- It doesn't have any resources worth being careful about,
+					-- and stopping its threads can cause search threads to
+					-- block instead of gracefully shutting down.
+					let tms = [gen]
 					writeIORef mainRef (Just (length tms))
 					for_ tms $ \tm -> tmDieThen tm $ readIORef mainRef >>= \case
 						Nothing -> fail "the impossible happened: a thread manager finished dying before thread managers started dying"
@@ -110,8 +119,8 @@ acceptConfiguration gts = gts { currentConfiguration = sTrySetPayload (requested
 -- │       │╰─────╯││
 -- │       ╰───────╯│
 -- ╰────────────────╯
-generationThreadView :: IO ThreadView
-generationThreadView = do
+generationThreadView :: DMEvaluationProcedure -> IO ThreadView
+generationThreadView eval = do
 	genRef <- newTVarIO (newGenerationThreadState initialSearchConfiguration)
 
 	psv <- newPlayerStateView (PSM (emptyBoard 8 16) Nothing [])
@@ -136,7 +145,7 @@ generationThreadView = do
 			renderSpeeds spd (speeds (summary gts))
 			tWhenUpdated psvTracker (rootPosition (summary gts)) (psvSet psv)
 			tWhenUpdated scvTracker (currentConfiguration gts) (scvSet scv)
-		, tvCompute = generationThread genRef
+		, tvCompute = generationThread eval genRef
 		}
 
 renderSpeeds :: Grid -> HashMap T.Text SearchSpeed -> IO ()
@@ -162,15 +171,15 @@ renderSpeeds spd sss = do
 		#addProvider cssCtx cssPrv (fromIntegral STYLE_PROVIDER_PRIORITY_APPLICATION)
 		#attach spd lbl n 0 1 1
 
-generationThread :: TVar GenerationThreadState -> IO () -> IO ()
-generationThread genRef checkStatus = do
+generationThread :: DMEvaluationProcedure -> TVar GenerationThreadState -> StatusCheck -> IO ()
+generationThread eval genRef sc = do
 	g <- createSystemRandom
 	threadSpeed <- newSearchSpeed
 	gameLoop g threadSpeed
 	where
 	gameLoop g threadSpeed = do
 		config <- atomically . stateTVar genRef $ \gts -> (requestedConfiguration gts, acceptConfiguration gts)
-		let params = dmParameters config
+		let params = dmParameters config eval
 		(s, t) <- initialTree params g
 		gameSpeed <- newSearchSpeed
 		moveLoop g config params threadSpeed gameSpeed s t
@@ -206,10 +215,39 @@ generationThread genRef checkStatus = do
 				  	Just (Placement _ p, _, _) -> onRootPosition (sOnSubterm psmOverlayL (sTrySetPayload [(p, 0.3)]))
 				  	_ -> id
 
-			checkStatus
+			scIO sc
 			case HM.size (children t') of
 				0 -> gameLoop g threadSpeed
 				_ -> innerLoop threadSpeed' gameSpeed' moveSpeed' t' (n-1)
+
+
+inferenceThreadView :: DMEvaluationProcedure -> IO ThreadView
+inferenceThreadView eval = do
+	spd <- new Grid []
+	spdWidget <- toWidget spd
+	infRef <- newTVarIO HM.empty
+	pure ThreadView
+		{ tvWidget = spdWidget
+		, tvRefresh = readTVarIO infRef >>= renderSpeeds spd
+		, tvCompute = inferenceThread eval infRef
+		}
+
+inferenceThread :: DMEvaluationProcedure -> TVar (HashMap T.Text SearchSpeed) -> StatusCheck -> IO ()
+inferenceThread eval infRef sc = do
+	batches <- newSearchSpeed
+	positions <- newSearchSpeed
+	go batches positions
+	where
+	go batches positions = do
+		atomically . writeTVar infRef $ HM.fromList [("batches", batches), ("positions", positions)]
+		mn <- atomically
+			$ (Just <$> serviceCallsSTM eval (\as -> flip (,) (length as) <$> traverse dumbEvaluation as))
+			<|> (Nothing <$ scSTM sc)
+		case mn of
+			Just ion -> ion >>= \n -> go
+				(incSearchIterations batches)
+				(positions { searchIterations = searchIterations positions + n })
+			Nothing -> scIO sc
 
 data SearchSpeed = SearchSpeed
 	{ searchStart :: UTCTime

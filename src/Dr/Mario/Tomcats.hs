@@ -2,7 +2,8 @@ module Dr.Mario.Tomcats (
 	DMParameters, dmParameters,
 	initialTree,
 	mcts, descend, unsafeDescend,
-	SearchConfiguration(..),
+	dumbEvaluation,
+	SearchConfiguration(..), DMEvaluationProcedure,
 	Move(..),
 	GameState(..),
 	A0.Statistics(..),
@@ -20,6 +21,7 @@ import Data.IORef
 import Data.Vector (Vector)
 import Dr.Mario.Model
 import Dr.Mario.Pathfinding
+import Dr.Mario.STM.BatchProcessor
 import System.Random.MWC
 import System.IO.Unsafe (unsafeInterleaveIO)
 import Tomcats
@@ -37,6 +39,8 @@ data SearchConfiguration = SearchConfiguration
 	{ c_puct :: Double
 	, iterations :: Int
 	} deriving (Eq, Ord, Read, Show)
+
+type DMEvaluationProcedure = Procedure (GameState, Color, Color) (Double, HashMap PillContent (Vector (Vector Double)))
 
 -- | The 'BoxMove' is ignored for 'Eq', 'Ord', and 'Hashable'.
 data Move = RNG Color Color | Placement BoxMove Pill deriving (Show, Read)
@@ -89,13 +93,13 @@ initialTree params g = do
 	(_, t) <- Tomcats.initialize params s >>= preprocess params s
 	pure (s, t)
 
-dmParameters :: SearchConfiguration -> DMParameters
-dmParameters config = Parameters
+dmParameters :: SearchConfiguration -> DMEvaluationProcedure -> DMParameters
+dmParameters config eval = Parameters
 	{ score = dmScore config
 	, expand = dmExpand
 	, clone = dmClone
 	, play = dmPlay
-	, preprocess = dmPreprocess
+	, preprocess = dmPreprocess eval
 	}
 
 dmScore :: SearchConfiguration -> Move -> A0.Statistics -> A0.Statistics -> Double
@@ -172,15 +176,13 @@ approximateCostModel move pill counts = 0
 -- Any statistics produced here will be combined with the statistics
 -- from the search through the children, then used to update the
 -- ancestors.
-dmPreprocess :: GameState -> Tree A0.Statistics Move -> IO (A0.Statistics, Tree A0.Statistics Move)
-dmPreprocess gs t = if not (RNG Blue Blue `HM.member` unexplored t) then pure (mempty, t) else do
+dmPreprocess :: DMEvaluationProcedure -> GameState -> Tree A0.Statistics Move -> IO (A0.Statistics, Tree A0.Statistics Move)
+dmPreprocess eval gs t = if not (RNG Blue Blue `HM.member` unexplored t) then pure (mempty, t) else do
 	moves <- munsafeApproxReachable (board gs) (launchPill Blue Red)
 	-- doing fromListWith instead of fromList is probably a bit paranoid, but what the hell
 	let symmetricMoves = HM.fromListWith smallerBox [(substPill Blue Blue p, m) | (p, m) <- HM.toList moves]
 	children' <- flip HM.traverseWithKey (unexplored t) $ \(RNG l r) stats -> do
-		evaluationRef <- newEmptyMVar
-		forkIO (dumbEvaluation gs l r >>= putMVar evaluationRef)
-		~(valueEstimate, moveWeights) <- unsafeInterleaveIO (takeMVar evaluationRef)
+		~(valueEstimate, moveWeights) <- unsafeInterleaveIO (call eval (gs, l, r))
 		pure Tree
 			{ statistics = A0.Statistics 1 (A0.priorProbability stats) valueEstimate
 			, children = HM.empty
@@ -209,8 +211,8 @@ dmPreprocess gs t = if not (RNG Blue Blue `HM.member` unexplored t) then pure (m
 -- Given the game state and the colors for the upcoming pill, guess where moves
 -- will be made and how good the final outcome will be. The Vector's are
 -- indexed by (x, y) position of the bottom left.
-dumbEvaluation :: GameState -> Color -> Color -> IO (Double, HashMap PillContent (Vector (Vector Double)))
-dumbEvaluation = \s l r -> do
+dumbEvaluation :: (GameState, Color, Color) -> IO (Double, HashMap PillContent (Vector (Vector Double)))
+dumbEvaluation = \(s, l, r) -> do
 	(stats, _) <- evaluateFinalState s
 	pure (A0.cumulativeValuation stats, HM.fromList
 		[ (PillContent orient bl o, vec)
