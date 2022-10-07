@@ -1,2 +1,2 @@
-packages: . maryodel/haskell tomcats
+packages: . maryodel/haskell tomcats hasktorch/libtorch-ffi hasktorch/libtorch-ffi-helper hasktorch/hasktorch
 haddock-hyperlink-source: True

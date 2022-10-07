@@ -4,3 +4,6 @@
 [submodule "tomcats"]
 	path = tomcats
 	url = https://github.com/dmwit/tomcats
+[submodule "hasktorch"]
+	path = hasktorch
+	url = https://github.com/hasktorch/hasktorch

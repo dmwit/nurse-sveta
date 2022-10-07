@@ -49,9 +49,10 @@ library
                         , gi-cairo-render ^>=0.1
                         , gi-glib ^>=2.0
                         , hashable ^>=1.4
+                        , hasktorch ^>=0.2
                         , stm ^>=2.5.1
                         , tomcats ^>=0.1
-                        , vector ^>=0.13
+                        , vector ^>=0.12
 
 executable pathfinding-demo
     import:             executable
