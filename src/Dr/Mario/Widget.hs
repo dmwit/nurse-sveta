@@ -1,4 +1,4 @@
-{-# Language DataKinds #-} -- not on by default because of how much extra stuff it creates at the type/kind level
+{-# Language DataKinds #-}
 
 module Dr.Mario.Widget (
 	-- * Raw drawing grid

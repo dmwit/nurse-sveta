@@ -19,14 +19,26 @@ common shared
                         , text ^>=1.2
                         , unordered-containers ^>=0.2
     default-language:   Haskell2010
-    default-extensions:   FlexibleInstances
+    default-extensions:   ConstraintKinds
+                        -- we use DataKinds sometimes, but contain its effects
+                        -- to specifically those modules that need it because
+                        -- of how much extra stuff it creates at the type/kind
+                        -- level
+                        , DerivingStrategies
+                        , FlexibleInstances
                         , GADTs
                         , GeneralizedNewtypeDeriving
+                        , KindSignatures
                         , LambdaCase
+                        , MagicHash
                         , MultiParamTypeClasses
                         , OverloadedLabels
                         , OverloadedStrings
                         , RankNTypes
+                        , ScopedTypeVariables
+                        , NoStarIsType
+                        , TypeApplications
+                        , TypeOperators
                         , UndecidableInstances
                         , ViewPatterns
     ghc-options:        -Wno-tabs -O2
@@ -43,6 +55,7 @@ library
     exposed-modules:      Dr.Mario.STM
                         , Dr.Mario.STM.BatchProcessor
                         , Dr.Mario.Tomcats
+                        , Dr.Mario.Torch
                         , Dr.Mario.Widget
     build-depends:        array ^>=0.5
                         , gi-cairo-connector ^>=0.1
