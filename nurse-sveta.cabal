@@ -25,6 +25,7 @@ common shared
                         -- of how much extra stuff it creates at the type/kind
                         -- level
                         , DerivingStrategies
+                        , FlexibleContexts
                         , FlexibleInstances
                         , GADTs
                         , GeneralizedNewtypeDeriving
@@ -66,6 +67,7 @@ library
                         , stm ^>=2.5.1
                         , tomcats ^>=0.1
                         , vector ^>=0.12
+                        , vector-sized ^>=1.5
 
 executable pathfinding-demo
     import:             executable
