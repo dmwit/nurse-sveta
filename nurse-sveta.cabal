@@ -35,10 +35,12 @@ common shared
                         , MultiParamTypeClasses
                         , OverloadedLabels
                         , OverloadedStrings
+                        , PatternSynonyms
                         , RankNTypes
                         , ScopedTypeVariables
                         , NoStarIsType
                         , TypeApplications
+                        , TypeFamilies
                         , TypeOperators
                         , UndecidableInstances
                         , ViewPatterns

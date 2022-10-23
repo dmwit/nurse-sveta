@@ -9,7 +9,8 @@ module Dr.Mario.Torch (
 	StableSquareConvSpec(..), ConstSquareConvSpec, constChansSpec,
 	StableSquareConv, ConstSquareConv,
 	Conv2dReLUInitSpec(..), Conv2dReLUInit,
-	BatchNorm, bnForward,
+	BatchNorm, bnNew, bnForward,
+	unsafeAsTensor,
 	KnownConfig, KnownAndValidRand, BatchNormDTypeIsValid,
 	) where
 
@@ -25,6 +26,10 @@ import Torch.Typed hiding (sqrt)
 import qualified Data.Vector as VU
 import qualified Data.Vector.Sized as VS
 import qualified Torch.Typed as T
+import qualified Torch as TU
+
+unsafeAsTensor :: TU.TensorLike a => a -> Tensor dev dtype shape
+unsafeAsTensor = UnsafeMkTensor . TU.asTensor
 
 newtype Conv2dReLUInitSpec (iChans :: Nat) (oChans :: Nat) (kw :: Nat) (kh :: Nat) (dtype :: DType) (dev :: (DeviceType, Nat)) = Conv2dReLUInitSpec { reluInitLeakage :: Double }
 	deriving (Eq, Ord, Read, Show)
@@ -111,9 +116,28 @@ data BatchNorm c dtype dev = BatchNorm
 	, bnEpsilon :: Tensor dev dtype '[c]
 	}
 
--- TODO: instance Parameterized BatchNorm
--- TODO: a more convenient way of creating a fresh BatchNorm
--- TODO: test bnForward
+infixr 4 :::
+pattern (:::) :: a -> HList as -> HList (a:as)
+pattern a ::: as = HCons (a, as)
+
+instance Parameterized (BatchNorm c dtype dev) where
+	type Parameters (BatchNorm c dtype dev) = [Parameter dev dtype '[c], Parameter dev dtype '[c]]
+	flattenParameters bn = bnWeight bn ::: bnBias bn ::: HNil
+	replaceParameters bn (w ::: b ::: HNil) = bn { bnWeight = w, bnBias = b }
+
+bnNew :: KnownConfig '[c] dtype dev =>
+	-- | momentum (the sensible kind, like all the other NN layers -- e.g. 0.9ish is sensible)
+	Double ->
+	-- | epsilon
+	Double ->
+	IO (BatchNorm c dtype dev)
+bnNew momentum epsilon = pure BatchNorm
+	<*> makeIndependent ones
+	<*> makeIndependent zeros
+	<*> newIORef zeros
+	<*> newIORef zeros
+	<*> pure (expand False (full @'[] momentum))
+	<*> pure (expand False (full @'[] epsilon))
 
 type BatchNormDTypeIsValid dev dtype =
 	( KnownDevice dev
@@ -163,7 +187,7 @@ bnForwardImpl bn training i = if training
 	where
 	compute mu sigma = (((i `sub` mu) `T.div` T.sqrt (sigma `add` bnEpsilon bn)) `mul` toDependent (bnWeight bn)) `add` toDependent (bnBias bn)
 	means = meanDim @0 i
-	vars = sumDim @0 ((i `sub` means)^2)
+	vars = meanDim @0 ((i `sub` means)^2)
 
 bnAbsorb ::
 	KnownDevice dev =>
