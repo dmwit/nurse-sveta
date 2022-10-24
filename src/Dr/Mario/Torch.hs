@@ -142,8 +142,6 @@ bnNew momentum epsilon = pure BatchNorm
 type BatchNormDTypeIsValid dev dtype =
 	( KnownDevice dev
 	, MeanDTypeValidation dev dtype
-	, SumDTypeIsValid dev dtype
-	, SumDType dtype ~ dtype
 	, BasicArithmeticDTypeIsValid dev dtype
 	, StandardFloatingPointDTypeValidation dev dtype
 	)
@@ -163,13 +161,8 @@ bnForward bn training i = unshape <$> bnForwardImpl bn training (shape i) where
 	unshape = transpose @0 @1 . reshape @(c:n:dims) . transpose @0 @1
 
 bnForwardImpl :: forall n c dtype dev.
-	( KnownDevice dev
-	, All KnownNat [n, c]
+	( BatchNormDTypeIsValid dev dtype
 	, AllDimsPositive [n, c]
-	, MeanDTypeValidation dev dtype
-	, SumDTypeIsValid dev dtype, SumDType dtype ~ dtype
-	, BasicArithmeticDTypeIsValid dev dtype
-	, StandardFloatingPointDTypeValidation dev dtype
 	) =>
 	BatchNorm c dtype dev ->
 	Bool ->
