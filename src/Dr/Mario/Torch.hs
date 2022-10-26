@@ -11,22 +11,32 @@ module Dr.Mario.Torch (
 	Conv2dReLUInitSpec(..), Conv2dReLUInit,
 	BatchNorm, bnNew, bnForward,
 	unsafeAsTensor,
-	KnownConfig, KnownAndValidRand, BatchNormDTypeIsValid,
+	KnownConfig, KnownAndValidRand, BatchNormDTypeIsValid, CPU0
 	) where
 
+import Control.Exception
+import Control.Monad
+import Data.Bits
+import Data.Foldable
 import Data.HashMap.Strict (HashMap)
 import Data.IORef
 import Data.Proxy
 import Data.Type.Equality
 import Dr.Mario.Model
+import Dr.Mario.Model.Internal
 import GHC.Exts
 import GHC.TypeLits
 import Torch.Typed hiding (sqrt)
 
 import qualified Data.Vector as VU
+import qualified Data.Vector.Unboxed.Mutable as MVU
 import qualified Data.Vector.Sized as VS
+import qualified Dr.Mario.Model as DM
 import qualified Torch.Typed as T
 import qualified Torch as TU
+import qualified Torch.Layout as TU
+
+type CPU0 = '(CPU, 0)
 
 unsafeAsTensor :: TU.TensorLike a => a -> Tensor dev dtype shape
 unsafeAsTensor = UnsafeMkTensor . TU.asTensor
@@ -224,6 +234,71 @@ data NetInput = NetInput
 	, niLookaheadR :: Color
 	}
 
+class OneHot a where
+	toIndex :: a -> Int
+	fromIndex :: Int -> a
+
+instance OneHot Color where
+	toIndex = fromEnum
+	fromIndex = toEnum
+
+instance OneHot DM.Shape where
+	toIndex = \case
+		Virus -> 0
+		East -> 1
+		West -> 2
+		_ -> 3 -- Disconnected, North, and South all have the same strategic content
+	fromIndex = \case
+		0 -> Virus
+		1 -> East
+		2 -> West
+		3 -> Disconnected
+
+-- It would be really bad to share the return value of zeros across calls to
+-- this function, since we modify it in-place. Hopefully this NoInline pragma
+-- will prevent that.
+{-# NoInline niToTensor #-}
+niToTensor :: forall dev n. (KnownDevice dev, KnownNat n) =>
+	[NetInput] -> IO (Tensor dev 'Double [n, 7, 8, 16], Tensor dev 'Double '[n, 6])
+niToTensor nis = do
+	assert (n == natValI @n) $ "expected " ++ show (natValI @n) ++ " net inputs, but saw " ++ show n
+	tBoard <- evaluate (TU.zeros [n, 7, 8, 16] opts)
+	tLookahead <- evaluate (TU.zeros [n, 6] opts)
+	TU.withTensor tBoard $ \pBoard ->
+		TU.withTensor tLookahead $ \pLookahead ->
+			for_ (zip [0..] nis) $ \(i, ni) -> do
+				assert (mwidth (niBoard ni) == 8 && mheight (niBoard ni) == 16)
+					$ "expected all boards to have size 8x16, but saw a board with size " ++ show (mwidth (niBoard ni)) ++ "x" ++ show (mheight (niBoard ni))
+				let iBoard = i*onehotCount
+				    iLookahead = i*6
+				pokeOne pLookahead (    iLookahead + toIndex (niLookaheadL ni))
+				pokeOne pLookahead (3 + iLookahead + toIndex (niLookaheadR ni))
+				-- IOBoard stores cells in a 1D array with the y coordinate
+				-- varying fastest... just like the tensor we want to make.
+				-- This means we get to reuse the index into that array as an
+				-- index into our tensor. Nice.
+				MVU.iforM_ (mcells (niBoard ni)) $ \j cell -> case cell of
+					Empty -> pure ()
+					Occupied c s -> do
+						-- shiftl x 7 = x * cellCount
+						pokeOne pBoard (iBoard + shiftL (    toIndex c) 7 + j)
+						pokeOne pBoard (iBoard + shiftL (3 + toIndex s) 7 + j)
+	pure (UnsafeMkTensor tBoard, UnsafeMkTensor tLookahead)
+	where
+	pokeOne p i = TU._pokeElemOff p i (1 :: Double)
+	assert b msg = unless b . fail $ "Assertion failure in niToTensor: " ++ msg
+
+	onehotCount, cellCount :: Int
+	onehotCount = 7*cellCount
+	cellCount = 8*16
+
+	n = Prelude.length nis
+	opts = id
+		. TU.withDType Double
+		. TU.withDevice (deviceVal @dev)
+		. TU.withLayout TU.Strided -- this is the default anyway, but let's defend against that changing for some reason
+		$ TU.defaultOpts
+
 -- TODO: ideas for other outputs: what position will the next occurrence of
 -- each kind of pill go? will each position be empty at end of game? maybe
 -- something about what order the viruses are cleared in, or what frame it
@@ -242,7 +317,7 @@ newtype NurseSvetaNetSpec depth filters p dev = NurseSvetaNetSpec { nsLeakage ::
 type PerCell n = Numel [n,8,16]
 
 data NurseSvetaNet depth filters p dev = NurseSvetaNet
-	{ netBoardConvolution :: StableSquareConv 13 filters p 'Double dev
+	{ netBoardConvolution :: StableSquareConv 7 filters p 'Double dev
 	, netInputLinear :: Linear 6 (PerCell filters) 'Double dev
 	, netInputNormalization :: BatchNorm filters 'Double dev
 	, netResiduals :: VS.Vector depth (Residual filters p 'Double dev)
@@ -260,7 +335,7 @@ netForward :: forall n depth filters p dev k.
 	) =>
 	NurseSvetaNet depth filters p dev ->
 	Bool ->
-	Tensor dev 'Double [n, 13, 8, 16] ->
+	Tensor dev 'Double [n, 7, 8, 16] ->
 	Tensor dev 'Double [n, 6] ->
 	IO (Tensor dev 'Double [n, 4, 8, 16], Tensor dev 'Double [n, 4])
 netForward net training board scalars = do
@@ -282,7 +357,7 @@ netDefForward ::
 	) =>
 	NurseSvetaNetDef dev ->
 	Bool ->
-	Tensor dev 'Double [n, 13, 8, 16] ->
+	Tensor dev 'Double [n, 7, 8, 16] ->
 	Tensor dev 'Double [n, 6] ->
 	IO (Tensor dev 'Double [n, 4, 8, 16], Tensor dev 'Double [n, 4])
 netDefForward = netForward
