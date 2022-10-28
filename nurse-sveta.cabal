@@ -19,7 +19,12 @@ common shared
                         , text ^>=1.2
                         , unordered-containers ^>=0.2
     default-language:   Haskell2010
-    default-extensions:   ConstraintKinds
+    default-extensions:
+                        -- we use AllowAmbiguousTypes sometimes, but contain
+                        -- its effects to specifically those modules that need
+                        -- it because ambiguous types very frequently are a
+                        -- genuine bug
+                          ConstraintKinds
                         -- we use DataKinds sometimes, but contain its effects
                         -- to specifically those modules that need it because
                         -- of how much extra stuff it creates at the type/kind
@@ -36,6 +41,7 @@ common shared
                         , OverloadedLabels
                         , OverloadedStrings
                         , PatternSynonyms
+                        , PolyKinds
                         , RankNTypes
                         , ScopedTypeVariables
                         , NoStarIsType
