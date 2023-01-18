@@ -15,6 +15,7 @@ import Dr.Mario.Model
 import Dr.Mario.STM
 import Dr.Mario.STM.BatchProcessor
 import Dr.Mario.Tomcats
+import Dr.Mario.Torch
 import Dr.Mario.Widget
 import GI.Gtk as G
 import Numeric
@@ -33,6 +34,10 @@ import qualified Data.Time as Time
 -- ╰──────────────────────────────╯
 main :: IO ()
 main = do
+	-- On my machine, torch and gtk fight over the GPU. This environment
+	-- variable instructs gtk not to do hardware acceleration -- letting torch
+	-- win the fight.
+	setEnv "GSK_RENDERER" "cairo"
 	app <- new Application []
 	inferenceProcedure <- newProcedure 20
 	on app #activate $ do
@@ -234,17 +239,19 @@ inferenceThreadView eval = do
 
 inferenceThread :: DMEvaluationProcedure -> TVar (HashMap T.Text SearchSpeed) -> StatusCheck -> IO ()
 inferenceThread eval infRef sc = do
+	net <- netSample
 	batches <- newSearchSpeed
 	positions <- newSearchSpeed
-	go batches positions
+	go net batches positions
 	where
-	go batches positions = do
+	go net batches positions = do
 		atomically . writeTVar infRef $ HM.fromList [("batches", batches), ("positions", positions)]
 		mn <- atomically
-			$ (Just <$> serviceCallsSTM eval (\as -> flip (,) (length as) <$> traverse dumbEvaluation as))
+			$ (Just <$> serviceCallsSTM eval (\as -> flip (,) (length as) <$> traverse (netEvaluation net) as))
 			<|> (Nothing <$ scSTM sc)
 		case mn of
 			Just ion -> ion >>= \n -> go
+				net
 				(incSearchIterations batches)
 				(positions { searchIterations = searchIterations positions + n })
 			Nothing -> scIO sc

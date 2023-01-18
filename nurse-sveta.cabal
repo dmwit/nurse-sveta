@@ -2,7 +2,6 @@ cabal-version:      2.4
 name:               nurse-sveta
 version:            0.1.0.0
 synopsis:           Dr. Mario prescribes the pills, but Nurse Sveta is the one who administers them
--- description:
 license:            BSD-3-Clause
 author:             Daniel Wagner
 maintainer:         me@dmwit.com
@@ -43,6 +42,7 @@ library
     exposed-modules:      Dr.Mario.STM
                         , Dr.Mario.STM.BatchProcessor
                         , Dr.Mario.Tomcats
+                        , Dr.Mario.Torch
                         , Dr.Mario.Widget
     build-depends:        array ^>=0.5
                         , gi-cairo-connector ^>=0.1
@@ -52,6 +52,12 @@ library
                         , stm ^>=2.5.1
                         , tomcats ^>=0.1
                         , vector ^>=0.13
+    cxx-sources:        cxxbits/adapter.cpp
+    extra-libraries:    stdc++, c10, torch, torch_cpu
+    -- when building with profiling, ghc passes -Xpreprocessor -DPROFILING to
+    -- the C compiler, which is an issue because libtorch makes an enum with
+    -- PROFILING as an entry
+    cxx-options:        -Xpreprocessor -UPROFILING
 
 executable pathfinding-demo
     import:             executable
