@@ -35,9 +35,12 @@ import qualified Data.Time as Time
 main :: IO ()
 main = do
 	-- On my machine, torch and gtk fight over the GPU. This environment
-	-- variable instructs gtk not to do hardware acceleration -- letting torch
-	-- win the fight.
-	setEnv "GSK_RENDERER" "cairo"
+	-- variable setting instructs gtk not to do hardware acceleration --
+	-- letting torch win the fight.
+	lookupEnv "GSK_RENDERER" >>= \case
+		Nothing -> setEnv "GSK_RENDERER" "cairo"
+		_ -> pure ()
+
 	app <- new Application []
 	inferenceProcedure <- newProcedure 20
 	on app #activate $ do
