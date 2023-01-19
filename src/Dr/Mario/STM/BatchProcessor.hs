@@ -41,7 +41,7 @@ serviceCalls :: Procedure a b -> (forall t. Traversable t => t a -> IO (t b, c))
 serviceCalls proc f = join (atomically (serviceCallsSTM proc f))
 
 -- | Pop all the pending calls and return an IO action that will service them
--- all and reply. Usually you want 'serviceCallsSTM' instead, but since this
+-- all and reply. Usually you want 'serviceCalls' instead, but since this
 -- blocks waiting for at least one request, occasionally you want to be able to
 -- use 'orElse' to short circuit this.
 serviceCallsSTM :: Procedure a b -> (forall t. Traversable t => t a -> IO (t b, c)) -> STM (IO c)
