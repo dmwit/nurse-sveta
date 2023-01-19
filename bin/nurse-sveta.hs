@@ -250,7 +250,7 @@ inferenceThread eval infRef sc = do
 	go net batches positions = do
 		atomically . writeTVar infRef $ HM.fromList [("batches", batches), ("positions", positions)]
 		mn <- atomically
-			$ (Just <$> serviceCallsSTM eval (\as -> flip (,) (length as) <$> traverse (netEvaluation net) as))
+			$ (Just <$> serviceCallsSTM eval (\as -> flip (,) (length as) <$> netEvaluation net as))
 			<|> (Nothing <$ scSTM sc)
 		case mn of
 			Just ion -> ion >>= \n -> go

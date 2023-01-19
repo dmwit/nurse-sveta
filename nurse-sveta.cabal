@@ -18,7 +18,11 @@ common shared
                         , text ^>=1.2
                         , unordered-containers ^>=0.2
     default-language:   Haskell2010
-    default-extensions:   FlexibleInstances
+    default-extensions:
+                        -- we use AllowAmbiguousTypes, but don't enable it by
+                        -- default because in most cases we do not want to
+                        -- create ambiguous types
+                          FlexibleInstances
                         , GADTs
                         , GeneralizedNewtypeDeriving
                         , LambdaCase
@@ -26,6 +30,8 @@ common shared
                         , OverloadedLabels
                         , OverloadedStrings
                         , RankNTypes
+                        , ScopedTypeVariables
+                        , TypeApplications
                         , UndecidableInstances
                         , ViewPatterns
     ghc-options:        -Wno-tabs -O2

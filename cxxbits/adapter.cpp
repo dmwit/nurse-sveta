@@ -1,10 +1,21 @@
 #include <iostream>
 #include <torch/torch.h>
 
-extern "C" { void ffi_demo(); }
+class Net {
+	public:
+		Net() { std::cout << "birthing" << std::endl; }
+		~Net() { std::cout << "dying" << std::endl; }
+	private:
+};
 
-void ffi_demo() {
-	auto opts = torch::device(torch::kCUDA);
-	auto tensor = torch::rand({2, 3}, opts);
-	std::cout << tensor << std::endl;
+extern "C" {
+	Net *sample();
+	void discard(Net *n);
+	void evaluate(Net *n, double *priors, double *valuation, double *scalars, const double *boards, const double *lookaheads);
+}
+
+Net *sample() { return new Net(); }
+void discard(Net *n) { delete n; }
+void evaluate(Net *n, double *priors, double *valuation, double *scalars, const double *boards, const double *lookaheads) {
+	std::cout << "evaluating" << std::endl;
 }
