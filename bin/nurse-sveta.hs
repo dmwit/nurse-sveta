@@ -249,6 +249,7 @@ inferenceThread eval infRef sc = do
 	where
 	go net batches positions = do
 		atomically . writeTVar infRef $ HM.fromList [("batches", batches), ("positions", positions)]
+		-- TODO: double check that this actually dies as requested; should the arguments to (<|>) be reversed?
 		mn <- atomically
 			$ (Just <$> serviceCallsSTM eval (\as -> flip (,) (length as) <$> netEvaluation net as))
 			<|> (Nothing <$ scSTM sc)

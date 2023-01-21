@@ -2,7 +2,7 @@ module Dr.Mario.Tomcats (
 	DMParameters, dmParameters,
 	initialTree,
 	mcts, descend, unsafeDescend,
-	dumbEvaluation,
+	dumbEvaluation, dmFinished,
 	SearchConfiguration(..), DMEvaluationProcedure,
 	Move(..),
 	GameState(..),
@@ -106,14 +106,19 @@ dmScore :: SearchConfiguration -> Move -> A0.Statistics -> A0.Statistics -> Doub
 dmScore _ RNG{} _ stats = -A0.visitCount stats
 dmScore config _ parent child = pucbA0 (c_puct config) (A0.priorProbability child) (A0.visitCount parent) (A0.visitCount child) (A0.cumulativeValuation child)
 
-dmExpand :: GameState -> IO (A0.Statistics, HashMap Move A0.Statistics)
-dmExpand gs = do
+dmFinished :: GameState -> IO Bool
+dmFinished gs = do
 	cellL <- mget (board gs) startingBottomLeftPosition
 	cellR <- mget (board gs) startingOtherPosition
 	remaining <- (originalVirusCount gs-) <$> readIORef (virusesKilled gs)
-	if cellL == Just Empty && cellR == Just Empty && remaining > 0
-	then pure rngExpansion -- this is a bit weird, but in order to share pathfinding, expansion actually happens in the preprocessor
-	else evaluateFinalState gs
+	pure $ cellL /= Just Empty || cellR /= Just Empty || remaining <= 0
+
+dmExpand :: GameState -> IO (A0.Statistics, HashMap Move A0.Statistics)
+dmExpand gs = do
+	finished <- dmFinished gs
+	if finished
+	then evaluateFinalState gs
+	else pure rngExpansion -- this is a bit weird, but in order to share pathfinding, expansion actually happens in the preprocessor
 
 evaluateFinalState :: GameState -> IO (A0.Statistics, HashMap Move A0.Statistics)
 evaluateFinalState gs = flip (,) HM.empty <$> do
@@ -170,12 +175,6 @@ approximateCostModel move pill counts = 0
 	+ 1 - 2*yDelta move -- move vertically
 	+ sum [16*n + 20 | n <- rowsFallen counts] -- fall time + clear animation
 
--- While descending into a game tree during an iteration of 'mcts',
--- 'preprocess' will be used on each node to make arbitrary adjustments
--- to the tree. Implementers should not modify the position provided.
--- Any statistics produced here will be combined with the statistics
--- from the search through the children, then used to update the
--- ancestors.
 dmPreprocess :: DMEvaluationProcedure -> GameState -> Tree A0.Statistics Move -> IO (A0.Statistics, Tree A0.Statistics Move)
 dmPreprocess eval gs t = if not (RNG Blue Blue `HM.member` unexplored t) then pure (mempty, t) else do
 	moves <- munsafeApproxReachable (board gs) (launchPill Blue Red)
