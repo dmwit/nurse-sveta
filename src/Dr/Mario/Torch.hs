@@ -3,6 +3,8 @@
 module Dr.Mario.Torch (netSample, netEvaluation) where
 
 import Control.Monad
+import Control.Monad.State
+import Data.Foldable
 import Data.HashMap.Strict (HashMap)
 import Data.IORef
 import Data.Traversable
@@ -12,6 +14,7 @@ import Dr.Mario.Tomcats
 import Data.Vector (Vector)
 import Foreign
 import Foreign.C.Types
+import System.IO.Unsafe (unsafeInterleaveIO)
 
 import qualified Data.HashMap.Strict as HM
 import qualified Data.Vector as V
@@ -49,11 +52,11 @@ instance OneHot Shape where
 		2 -> West
 		3 -> Disconnected
 
-render :: [(GameState, Color, Color)] -> IO (Ptr CDouble, Ptr CDouble)
-render triples = do
+render :: Traversable t => t (Int, (GameState, Color, Color)) -> IO (Ptr CDouble, Ptr CDouble)
+render itriples = do
 	boards <- mallocZeroArray (n * onehotCount)
 	lookaheads <- mallocZeroArray (n * 2 * indexCount @Color)
-	forZipWithM_ [0..] triples $ \i (GameState { board = b }, l, r) -> do
+	for_ itriples $ \(i, (GameState { board = b }, l, r)) -> do
 		unless (mwidth b == boardWidth && mheight b == boardHeight) . fail $
 			"expected all boards to have size " ++ show boardWidth ++ "x" ++ show boardHeight ++ ", but saw a board with size " ++ show (mwidth b) ++ "x" ++ show (mheight b)
 		let iBoard = i*onehotCount
@@ -71,13 +74,13 @@ render triples = do
 	pure (boards, lookaheads)
 	where
 	n, onehotCount :: Int
-	n = length triples
+	n = length itriples
 	onehotCount = cellSize*cellCount
 	cellSize = indexCount @Color + indexCount @Shape
 
 -- TODO: perhaps we could avoid all this realToFrac stuff by just using CDouble everywhere instead of Double...? I mean why not
-parseForEvaluation :: [(GameState, Color, Color)] -> Ptr CDouble -> Ptr CDouble -> Ptr CDouble -> IO [(Double, HashMap PillContent (Vector (Vector Double)))]
-parseForEvaluation states priors valuation scalars = forZipWithM [0..] states $ \i (_, l, r) -> do
+parseForEvaluation :: Int -> (GameState, Color, Color) -> ForeignPtr CDouble -> ForeignPtr CDouble -> ForeignPtr CDouble -> IO (Double, HashMap PillContent (Vector (Vector Double)))
+parseForEvaluation i (_, l, r) priors_ valuation_ scalars_ = withForeignPtrs (priors_, (valuation_, (scalars_, ()))) $ \(priors, (valuation, (scalars, ()))) -> do
 	v <- realToFrac <$> peekElemOff valuation i
 
 	let iPriors = shiftL i logNumPriors
@@ -91,37 +94,27 @@ parseForEvaluation states priors valuation scalars = forZipWithM [0..] states $ 
 	pure (v, HM.fromList p)
 
 netEvaluation :: Traversable t => Net -> t (GameState, Color, Color) -> IO (t (Double, HashMap PillContent (Vector (Vector Double))))
-netEvaluation (Net net) states = do
-	partiallyEvaluated <- for states $ \state@(gs, _, _) -> do
-		finished <- dmFinished gs
-		if finished
-		then Left <$> dumbEvaluation state
-		else pure (Right state)
-	let needsNet = foldMap (\case Left{} -> []; Right v -> [v]) partiallyEvaluated
-	    n = length needsNet
+netEvaluation (Net net) triples = do
+	[priors, valuation, scalars] <- mallocForeignPtrArrays [shiftL n logNumPriors, n, n * numScalars]
+	-- TODO: can we avoid a ton of allocation here by pooling allocations of each size -- or even just the largest size, per Net, say?
+	(boards, lookaheads) <- render itriples
 
-	-- TODO: can we avoid a ton of allocation here by pooling allocations of each size, per Net, say?
-	priors <- mallocArray (shiftL n logNumPriors)
-	valuation <- mallocArray n
-	scalars <- mallocArray (n * numScalars)
-	(boards, lookaheads) <- render needsNet
+	withForeignPtrs (net, (priors, (valuation, (scalars, ())))) $ \(netPtr, (priorsPtr, (valuationPtr, (scalarsPtr, ())))) ->
+		cxx_evaluate netPtr (fromIntegral n) priorsPtr valuationPtr scalarsPtr boards lookaheads
+	result <- for itriples $ \(i, state) ->
+			-- unsafeInterleaveIO: turns out parseForEvaluation is a
+			-- bottleneck to making foreign calls, so spread its work across
+			-- multiple threads by having the consuming thread perform it
+			-- rather than this one
+			unsafeInterleaveIO (parseForEvaluation i state priors valuation scalars)
 
-	withForeignPtr net $ \netPtr -> cxx_evaluate netPtr (fromIntegral n) priors valuation scalars boards lookaheads
-	resultRef <- parseForEvaluation needsNet priors valuation scalars >>= newIORef
-	fullyEvaluated <- for partiallyEvaluated $ \case
-		Left done -> pure done
-		Right _ -> do
-			result:results <- readIORef resultRef
-			writeIORef resultRef results
-			pure result
-
-	free priors
-	free valuation
-	free scalars
 	free boards
 	free lookaheads
 
-	pure fullyEvaluated
+	pure result
+	where
+	n = length triples
+	itriples = enumerate triples
 
 boardWidth, boardHeight, cellCount, numRotations, numPriors, numScalars :: Int
 logBoardWidth, logBoardHeight, logCellCount, logNumRotations, logNumPriors :: Int
@@ -132,10 +125,22 @@ cellCount = boardWidth*boardHeight; logCellCount = logBoardWidth+logBoardHeight
 numPriors = numRotations*cellCount; logNumPriors = logNumRotations+logCellCount
 numScalars = 3 -- virus clears, pills, frames (in that order)
 
--- the arguments should always have been in this order
-forZipWithM_ :: Applicative f => [a] -> [b] -> (a -> b -> f c) -> f ()
-forZipWithM_ as bs f = zipWithM_ f as bs
+class WithForeignPtrs a where
+	type WithoutForeignPtrs a
+	withForeignPtrs :: a -> (WithoutForeignPtrs a -> IO b) -> IO b
 
+instance WithForeignPtrs () where
+	type WithoutForeignPtrs () = ()
+	withForeignPtrs _ f = f ()
+
+instance WithForeignPtrs b => WithForeignPtrs (ForeignPtr a, b) where
+	type WithoutForeignPtrs (ForeignPtr a, b) = (Ptr a, WithoutForeignPtrs b)
+	withForeignPtrs (fp, fps) f = withForeignPtr fp $ \a -> withForeignPtrs fps $ \b -> f (a, b)
+
+enumerate :: Traversable t => t a -> t (Int, a)
+enumerate t = evalState (traverse (\a -> state (\i -> ((i, a), i+1))) t) 0
+
+-- the arguments should always have been in this order
 forZipWithM :: Applicative f => [a] -> [b] -> (a -> b -> f c) -> f [c]
 forZipWithM as bs f = zipWithM f as bs
 
@@ -144,3 +149,8 @@ mallocZeroArray n = do
 	ptr <- mallocArray n
 	fillBytes ptr 0 (n * sizeOf (undefined :: a))
 	pure ptr
+
+mallocForeignPtrArrays :: Storable a => [Int] -> IO [ForeignPtr a]
+mallocForeignPtrArrays lengths = do
+	base <- mallocForeignPtrArray (sum lengths)
+	pure . init $ scanl plusForeignPtr base lengths
