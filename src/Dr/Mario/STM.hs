@@ -25,6 +25,7 @@ import Control.Exception
 import Control.Monad
 import Control.Monad.Fix
 import Data.Array.MArray
+import Data.Coerce
 
 import Control.Concurrent.STM.TArray (TArray)
 import Control.Concurrent.STM.TMVar (TMVar)
@@ -46,73 +47,93 @@ newtype STM a = Infallible { fallible :: Raw.STM a } deriving
 instance MonadFail STM where fail _ = Infallible Raw.retry
 
 atomically :: STM a -> IO a
-atomically = Raw.atomically . fallible
+atomically = coerceSV Raw.atomically
 
 retry :: STM a
-retry = Infallible Raw.retry
+retry = coerceS Raw.retry
 
 orElse :: STM a -> STM a -> STM a
-orElse (Infallible a) (Infallible a') = Infallible (Raw.orElse a a')
+orElse = coerceSSS Raw.orElse
 
 check :: Bool -> STM ()
-check = Infallible . Raw.check
+check = coerceVS Raw.check
 
 throwSTM :: Exception e => e -> STM a
-throwSTM = Infallible . Raw.throwSTM
+throwSTM = coerceVS Raw.throwSTM
 
 catchSTM :: Exception e => STM a -> (e -> STM a) -> STM a
-catchSTM (Infallible a) f = Infallible $ Raw.catchSTM a (fallible . f)
+catchSTM = coerceSOVSCS Raw.catchSTM
 
 newTVar :: a -> STM (TVar a)
-newTVar = Infallible . Raw.newTVar
+newTVar = coerceVS Raw.newTVar
 
 readTVar :: TVar a -> STM a
-readTVar = Infallible . Raw.readTVar
+readTVar = coerceVS Raw.readTVar
 
 writeTVar :: TVar a -> a -> STM ()
-writeTVar t = Infallible . Raw.writeTVar t
+writeTVar = coerceVVS Raw.writeTVar
 
 modifyTVar :: TVar a -> (a -> a) -> STM ()
-modifyTVar t = Infallible . Raw.modifyTVar t
+modifyTVar = coerceVVS Raw.modifyTVar
 
 modifyTVar' :: TVar a -> (a -> a) -> STM ()
-modifyTVar' t = Infallible . Raw.modifyTVar' t
+modifyTVar' = coerceVVS Raw.modifyTVar'
 
 stateTVar :: TVar s -> (s -> (a, s)) -> STM a
-stateTVar t = Infallible . Raw.stateTVar t
+stateTVar = coerceVVS Raw.stateTVar
 
 swapTVar :: TVar a -> a -> STM a
-swapTVar t = Infallible . Raw.swapTVar t
+swapTVar = coerceVVS Raw.swapTVar
 
 newTMVar :: a -> STM (TMVar a)
-newTMVar = Infallible . Raw.newTMVar
+newTMVar = coerceVS Raw.newTMVar
 
 newEmptyTMVar :: STM (TMVar a)
-newEmptyTMVar = Infallible Raw.newEmptyTMVar
+newEmptyTMVar = coerceS Raw.newEmptyTMVar
 
 takeTMVar :: TMVar a -> STM a
-takeTMVar = Infallible . Raw.takeTMVar
+takeTMVar = coerceVS Raw.takeTMVar
 
 putTMVar :: TMVar a -> a -> STM ()
-putTMVar t = Infallible . Raw.putTMVar t
+putTMVar = coerceVVS Raw.putTMVar
 
 readTMVar :: TMVar a -> STM a
-readTMVar = Infallible . Raw.readTMVar
+readTMVar = coerceVS Raw.readTMVar
 
 writeTMVar :: TMVar a -> a -> STM ()
-writeTMVar t = Infallible . Raw.writeTMVar t
+writeTMVar = coerceVVS Raw.writeTMVar
 
 swapTMVar :: TMVar a -> a -> STM a
-swapTMVar t = Infallible . Raw.swapTMVar t
+swapTMVar = coerceVVS Raw.swapTMVar
 
 tryTakeTMVar :: TMVar a -> STM (Maybe a)
-tryTakeTMVar = Infallible . Raw.tryTakeTMVar
+tryTakeTMVar = coerceVS Raw.tryTakeTMVar
 
 tryPutTMVar :: TMVar a -> a -> STM Bool
-tryPutTMVar t = Infallible . Raw.tryPutTMVar t
+tryPutTMVar = coerceVVS Raw.tryPutTMVar
 
 tryReadTMVar :: TMVar a -> STM (Maybe a)
-tryReadTMVar = Infallible . Raw.tryReadTMVar
+tryReadTMVar = coerceVS Raw.tryReadTMVar
 
 isEmptyTMVar :: TMVar a -> STM Bool
-isEmptyTMVar = Infallible . Raw.isEmptyTMVar
+isEmptyTMVar = coerceVS Raw.isEmptyTMVar
+
+-- convention:
+-- S for an (S)TM action
+-- V for a non-STM (v)ariable
+-- O for an open-parenthesis
+-- C for a close-parenthesis
+
+coerceS :: (Raw.STM a) -> (STM a)
+coerceSV :: (Raw.STM a -> b) -> (STM a -> b)
+coerceVS :: (a -> Raw.STM b) -> (a -> STM b)
+coerceVVS :: (a -> b -> Raw.STM c) -> (a -> b -> STM c)
+coerceSSS :: (Raw.STM a -> Raw.STM b -> Raw.STM c) -> (STM a -> STM b -> STM c)
+coerceSOVSCS :: (Raw.STM a -> (b -> Raw.STM c) -> Raw.STM d) -> (STM a -> (b -> STM c) -> STM d)
+
+coerceS = coerce
+coerceSV = coerce
+coerceVS = coerce
+coerceVVS = coerce
+coerceSSS = coerce
+coerceSOVSCS = coerce
