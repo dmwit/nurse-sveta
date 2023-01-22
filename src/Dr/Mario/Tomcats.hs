@@ -181,7 +181,8 @@ dmPreprocess eval gs t = if not (RNG Blue Blue `HM.member` unexplored t) then pu
 	-- doing fromListWith instead of fromList is probably a bit paranoid, but what the hell
 	let symmetricMoves = HM.fromListWith smallerBox [(substPill Blue Blue p, m) | (p, m) <- HM.toList moves]
 	children' <- flip HM.traverseWithKey (unexplored t) $ \(RNG l r) stats -> do
-		~(valueEstimate, moveWeights) <- unsafeInterleaveIO (call eval (gs, l, r))
+		future <- schedule eval (gs, l, r)
+		~(valueEstimate, moveWeights) <- unsafeInterleaveIO future
 		pure Tree
 			{ statistics = A0.Statistics 1 (A0.priorProbability stats) valueEstimate
 			, children = HM.empty

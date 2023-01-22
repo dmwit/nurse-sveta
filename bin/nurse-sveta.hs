@@ -42,7 +42,7 @@ main = do
 		_ -> pure ()
 
 	app <- new Application []
-	inferenceProcedure <- newProcedure 20
+	inferenceProcedure <- newProcedure 100
 	on app #activate $ do
 		mainRef <- newIORef Nothing
 		top <- new Box [#orientation := OrientationHorizontal, #spacing := 10]

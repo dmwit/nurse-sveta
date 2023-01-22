@@ -54,8 +54,13 @@ serviceCallsSTM (Procedure bf) f = process <$> popAll bf where
 -- finished processing, which includes waiting for the request to be accepted
 -- and waiting for the actual computation to be done on the request.
 call :: Procedure a b -> a -> IO b
-call (Procedure bf) a = do
+call proc a = join (schedule proc a)
+
+-- | Send a request for processing. This immediately returns an 'IO' action
+-- that will block until the request is finished processing.
+schedule :: Procedure a b -> a -> IO (IO b)
+schedule (Procedure bf) a = do
 	v <- newEmptyTMVarIO
 	evaluate a
 	atomically (push (a, v) bf)
-	atomically (takeTMVar v)
+	pure (atomically (takeTMVar v))
