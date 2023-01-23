@@ -20,14 +20,14 @@ import qualified Data.HashMap.Strict as HM
 import qualified Data.Vector as V
 import qualified Data.Vector.Unboxed.Mutable as MV
 
-foreign import ccall "sample" cxx_sample :: IO (Ptr Net)
+foreign import ccall "sample" cxx_sample :: Bool -> IO (Ptr Net)
 foreign import ccall "&discard" cxx_discard :: FunPtr (Ptr Net -> IO ())
 foreign import ccall "evaluate" cxx_evaluate :: Ptr Net -> CInt -> Ptr CDouble -> Ptr CDouble -> Ptr CDouble -> Ptr CDouble -> Ptr CDouble -> IO ()
 
 newtype Net = Net (ForeignPtr Net)
 
-netSample :: IO Net
-netSample = Net <$> (cxx_sample >>= newForeignPtr cxx_discard)
+netSample :: Bool -> IO Net
+netSample training = Net <$> (cxx_sample training >>= newForeignPtr cxx_discard)
 
 class OneHot a where
 	indexCount :: Int
@@ -150,7 +150,10 @@ mallocZeroArray n = do
 	fillBytes ptr 0 (n * sizeOf (undefined :: a))
 	pure ptr
 
+plusForeignPtr' :: forall a. Storable a => ForeignPtr a -> Int -> ForeignPtr a
+plusForeignPtr' ptr n = plusForeignPtr ptr (n * sizeOf (undefined :: a))
+
 mallocForeignPtrArrays :: Storable a => [Int] -> IO [ForeignPtr a]
 mallocForeignPtrArrays lengths = do
 	base <- mallocForeignPtrArray (sum lengths)
-	pure . init $ scanl plusForeignPtr base lengths
+	pure . init $ scanl plusForeignPtr' base lengths

@@ -242,7 +242,7 @@ inferenceThreadView eval = do
 
 inferenceThread :: DMEvaluationProcedure -> TVar (HashMap T.Text SearchSpeed) -> StatusCheck -> IO ()
 inferenceThread eval infRef sc = do
-	net <- netSample
+	net <- netSample False
 	batches <- newSearchSpeed
 	positions <- newSearchSpeed
 	go net batches positions

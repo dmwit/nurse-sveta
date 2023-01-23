@@ -10,6 +10,11 @@ copyright:          2022 Daniel Wagner
 category:           AI
 extra-source-files: CHANGELOG.md
 
+flag debug
+    description: Build with debugging symbols and no optimizations.
+    default:     False
+    manual:      True
+
 common shared
     build-depends:        base ^>=4.14.1.0
                         , gi-gtk ^>=4.0
@@ -35,7 +40,11 @@ common shared
                         , TypeFamilies
                         , UndecidableInstances
                         , ViewPatterns
-    ghc-options:        -Wno-tabs -O2
+    ghc-options:        -Wno-tabs
+    if flag(debug)
+        ghc-options:    -g
+    else
+        ghc-options:    -O2
 
 common executable
     import:             shared
@@ -66,6 +75,10 @@ library
     -- the C compiler, which is an issue because libtorch makes an enum with
     -- PROFILING as an entry
     cxx-options:        -Xpreprocessor -UPROFILING
+    if flag(debug)
+        cxx-options:    -g
+    else
+        cxx-options:    -O3
 
 executable pathfinding-demo
     import:             executable
