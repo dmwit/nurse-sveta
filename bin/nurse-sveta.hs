@@ -3,6 +3,7 @@ module Main where
 import Control.Applicative
 import Control.Concurrent
 import Control.Monad
+import Data.Aeson
 import Data.Fixed
 import Data.Foldable
 import Data.Functor
@@ -19,9 +20,15 @@ import Dr.Mario.Torch
 import Dr.Mario.Widget
 import GI.Gtk as G
 import Numeric
+import System.Directory
 import System.Environment
+import System.Environment.XDG.BaseDir
+import System.FilePath
+import System.IO
 import System.Random.MWC
+import Text.Printf
 
+import qualified Data.ByteString as BS
 import qualified Data.HashMap.Strict as HM
 import qualified Data.Text as T
 import qualified Data.Time as Time
@@ -179,6 +186,15 @@ renderSpeeds spd sss = do
 		#addProvider cssCtx cssPrv (fromIntegral STYLE_PROVIDER_PRIORITY_APPLICATION)
 		#attach spd lbl n 0 1 1
 
+data GameStep = GameStep
+	{ gsMove :: Move
+	, gsRoot :: Statistics
+	, gsChildren :: HashMap Move Statistics
+	} deriving (Eq, Ord, Read, Show)
+
+instance ToJSON GameStep where toJSON gs = toJSON (gsMove gs, gsRoot gs, HM.toList (gsChildren gs))
+instance FromJSON GameStep where parseJSON v = parseJSON v <&> \(m, r, c) -> GameStep m r (HM.fromList c)
+
 generationThread :: DMEvaluationProcedure -> TVar GenerationThreadState -> StatusCheck -> IO ()
 generationThread eval genRef sc = do
 	g <- createSystemRandom
@@ -188,22 +204,25 @@ generationThread eval genRef sc = do
 	gameLoop g threadSpeed = do
 		config <- atomically . stateTVar genRef $ \gts -> (requestedConfiguration gts, acceptConfiguration gts)
 		let params = dmParameters config eval
-		(s, t) <- initialTree params g
+		(s0, t) <- initialTree params g
+		s <- clone params s0
 		gameSpeed <- newSearchSpeed
-		moveLoop g config params threadSpeed gameSpeed s t
+		moveLoop g config params threadSpeed gameSpeed s0 [] s t
 
-	moveLoop g config params threadSpeed gameSpeed s t = do
+	moveLoop g config params threadSpeed gameSpeed s0 history s t = do
 		[l, r] <- map toEnum <$> replicateM 2 (uniformR (0, 2) g)
 		t' <- unsafeDescend params (RNG l r) s t
+		let gs = GameStep (RNG l r) mempty mempty
 		boardSnapshot <- mfreeze (board s)
 		atomically $ modifyTVar genRef (onRootPosition (sSetPayload (PSM boardSnapshot (Just (l, r)) [])))
 		moveSpeed <- newSearchSpeed
-		searchLoop g config params s threadSpeed gameSpeed moveSpeed t' (iterations config)
+		searchLoop g config params s0 (gs:history) s threadSpeed gameSpeed moveSpeed t' (iterations config)
 
-	searchLoop g config params s = innerLoop where
+	searchLoop g config params s0 history s = innerLoop where
 		innerLoop threadSpeed gameSpeed moveSpeed t 0 = descend params visitCount s t >>= \case
-			Nothing -> gameLoop g threadSpeed
-			Just (_, t') -> moveLoop g config params threadSpeed gameSpeed s t'
+			Nothing -> recordGame s0 history >> gameLoop g threadSpeed
+			Just (m, t') -> moveLoop g config params threadSpeed gameSpeed s0 (gs:history) s t' where
+				gs = GameStep m (statistics t) (statistics <$> children t)
 
 		innerLoop threadSpeed gameSpeed moveSpeed t n = do
 			t' <- mcts params s t
@@ -225,9 +244,21 @@ generationThread eval genRef sc = do
 
 			scIO sc
 			case HM.size (children t') of
-				0 -> gameLoop g threadSpeed
+				0 -> recordGame s0 history >> gameLoop g threadSpeed
 				_ -> innerLoop threadSpeed' gameSpeed' moveSpeed' t' (n-1)
 
+-- [PORT] /dev/urandom
+recordGame :: GameState -> [GameStep] -> IO ()
+recordGame gs steps = do
+	b <- mfreeze (board gs)
+	now <- Time.getCurrentTime
+	rand <- BS.foldr (\w s -> printf "%02x" w ++ s) "" <$> withFile "/dev/urandom" ReadMode (\h -> BS.hGet h 8)
+	let date = Time.formatTime Time.defaultTimeLocale "%Y-%m-%d" now
+	    time = Time.formatTime Time.defaultTimeLocale "%T.%q" now
+	    file = printf "%s-%s.json" time rand
+	dir <- getUserDataDir $ "nurse-sveta" </> date
+	createDirectoryIfMissing True dir
+	encodeFile (dir </> file) (b, reverse steps)
 
 inferenceThreadView :: DMEvaluationProcedure -> IO ThreadView
 inferenceThreadView eval = do

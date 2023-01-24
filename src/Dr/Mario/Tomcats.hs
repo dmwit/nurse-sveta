@@ -8,12 +8,15 @@ module Dr.Mario.Tomcats (
 	GameState(..),
 	A0.Statistics(..),
 	Tree(..),
+	clone,
 	maximumOn,
 	) where
 
+import Control.Applicative
 import Control.Concurrent
 import Control.Concurrent.MVar
 import Control.Monad
+import Data.Aeson
 import Data.Bits
 import Data.Hashable
 import Data.HashMap.Strict (HashMap)
@@ -60,6 +63,21 @@ instance Hashable Move where
 	hashWithSalt s = \case
 		RNG c c'         ->            s `hashWithSalt` c `hashWithSalt` c'
 		Placement _ pill -> complement s `hashWithSalt` pill
+
+instance ToJSON Move where
+	toJSON = \case
+		RNG l r -> toJSON [l, r]
+		Placement m p -> toJSON (m, p)
+	toEncoding = \case
+		RNG l r -> toEncoding [l, r]
+		Placement m p -> toEncoding (m, p)
+
+instance FromJSON Move where
+	parseJSON v = parseRNG <|> parsePlacement where
+		parseRNG = do
+			[l, r] <- parseJSON v
+			pure (RNG l r)
+		parsePlacement = uncurry Placement <$> parseJSON v
 
 data GameState = GameState
 	{ board :: IOBoard
