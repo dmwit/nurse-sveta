@@ -5,7 +5,7 @@ import Data.List
 import Data.Maybe
 import Dr.Mario.Model
 import Dr.Mario.Pathfinding
-import Dr.Mario.Widget
+import Nurse.Sveta.Widget
 import GI.Gtk as G
 import System.Environment
 

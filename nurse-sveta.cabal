@@ -56,12 +56,12 @@ common executable
 library
     import:             shared
     hs-source-dirs:     src
-    exposed-modules:      Dr.Mario.STM
-                        , Dr.Mario.STM.BatchProcessor
-                        , Dr.Mario.Tomcats
-                        , Dr.Mario.Torch
-                        , Dr.Mario.Widget
+    exposed-modules:      Nurse.Sveta.STM
+                        , Nurse.Sveta.STM.BatchProcessor
+                        , Nurse.Sveta.Tomcats
+                        , Nurse.Sveta.Torch
                         , Nurse.Sveta.Util
+                        , Nurse.Sveta.Widget
     build-depends:        array ^>=0.5
                         , gi-cairo-connector ^>=0.1
                         , gi-cairo-render ^>=0.1

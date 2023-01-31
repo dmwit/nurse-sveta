@@ -1,16 +1,16 @@
 {-# Language AllowAmbiguousTypes #-}
 
-module Dr.Mario.Torch (netSample, netEvaluation) where
+module Nurse.Sveta.Torch (netSample, netEvaluation) where
 
 import Control.Monad
 import Data.Foldable
 import Data.HashMap.Strict (HashMap)
 import Data.IORef
 import Data.Traversable
+import Data.Vector (Vector)
 import Dr.Mario.Model
 import Dr.Mario.Model.Internal
-import Dr.Mario.Tomcats
-import Data.Vector (Vector)
+import Nurse.Sveta.Tomcats
 import Nurse.Sveta.Util
 import Foreign
 import Foreign.C.Types

@@ -1,4 +1,4 @@
-module Dr.Mario.STM (
+module Nurse.Sveta.STM (
 	-- * STM
 	STM(..),
 	atomically,

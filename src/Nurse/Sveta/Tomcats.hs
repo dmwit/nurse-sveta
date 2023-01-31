@@ -1,4 +1,4 @@
-module Dr.Mario.Tomcats (
+module Nurse.Sveta.Tomcats (
 	DMParameters, dmParameters,
 	initialTree,
 	mcts, descend, unsafeDescend,
@@ -24,7 +24,7 @@ import Data.IORef
 import Data.Vector (Vector)
 import Dr.Mario.Model
 import Dr.Mario.Pathfinding
-import Dr.Mario.STM.BatchProcessor
+import Nurse.Sveta.STM.BatchProcessor
 import System.Random.MWC
 import System.IO.Unsafe (unsafeInterleaveIO)
 import Tomcats

@@ -1,9 +1,9 @@
-module Dr.Mario.STM.BatchProcessor where
+module Nurse.Sveta.STM.BatchProcessor where
 
 import Control.Concurrent
 import Control.Exception
 import Control.Monad
-import Dr.Mario.STM
+import Nurse.Sveta.STM
 
 data BoundedFIFO a = BoundedFIFO
 	{ bound :: Int

@@ -16,14 +16,14 @@ import Data.Maybe
 import Data.Monoid
 import Data.Time (UTCTime)
 import Dr.Mario.Model
-import Dr.Mario.STM
-import Dr.Mario.STM.BatchProcessor
-import Dr.Mario.Tomcats
-import Dr.Mario.Torch
-import Dr.Mario.Widget
 import GI.Gtk as G
 import Numeric
+import Nurse.Sveta.STM
+import Nurse.Sveta.STM.BatchProcessor
+import Nurse.Sveta.Tomcats
+import Nurse.Sveta.Torch
 import Nurse.Sveta.Util
+import Nurse.Sveta.Widget
 import System.Directory
 import System.Environment
 -- TODO: this is now built into the directory package, we should switch to that

@@ -1,6 +1,6 @@
 {-# Language DataKinds #-} -- not on by default because of how much extra stuff it creates at the type/kind level
 
-module Dr.Mario.Widget (
+module Nurse.Sveta.Widget (
 	-- * Raw drawing grid
 	DrawingGrid, newDrawingGrid, dgSetRenderer, dgWidget,
 	dgSetSize, dgSetWidth, dgSetHeight,
@@ -50,12 +50,12 @@ import Data.IORef
 import Data.List
 import Data.Monoid
 import Dr.Mario.Model as DM
-import Dr.Mario.STM
-import Dr.Mario.Tomcats (SearchConfiguration(..))
 import GI.Cairo.Render
 import GI.Cairo.Render.Connector
 import GI.GLib
 import GI.Gtk as G
+import Nurse.Sveta.STM
+import Nurse.Sveta.Tomcats (SearchConfiguration(..))
 import Nurse.Sveta.Util
 import System.IO
 import Text.Read
