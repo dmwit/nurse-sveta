@@ -52,6 +52,7 @@ common executable
     hs-source-dirs:     bin
     build-depends:      nurse-sveta
     ghc-options:        -threaded -rtsopts
+    other-modules:      Util
 
 library
     import:             shared

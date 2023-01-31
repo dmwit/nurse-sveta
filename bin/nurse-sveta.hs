@@ -33,6 +33,7 @@ import System.IO
 import System.IO.Error
 import System.Random.MWC
 import Text.Printf
+import Util
 
 import qualified Data.ByteString as BS
 import qualified Data.HashMap.Strict as HM
@@ -47,13 +48,7 @@ import qualified Data.Time as Time
 -- ╰─────────────────────────────────────╯
 main :: IO ()
 main = do
-	-- On my machine, torch and gtk fight over the GPU. This environment
-	-- variable setting instructs gtk not to do hardware acceleration --
-	-- letting torch win the fight.
-	lookupEnv "GSK_RENDERER" >>= \case
-		Nothing -> setEnv "GSK_RENDERER" "cairo"
-		_ -> pure ()
-
+	torchPlusGtkFix
 	app <- new Application []
 	inferenceProcedure <- newProcedure 100
 	bureaucracyLock <- newMVar newBureaucracyGlobalState
