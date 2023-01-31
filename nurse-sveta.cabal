@@ -61,6 +61,7 @@ library
                         , Dr.Mario.Tomcats
                         , Dr.Mario.Torch
                         , Dr.Mario.Widget
+                        , Nurse.Sveta.Util
     build-depends:        array ^>=0.5
                         , gi-cairo-connector ^>=0.1
                         , gi-cairo-render ^>=0.1

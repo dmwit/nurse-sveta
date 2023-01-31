@@ -2,13 +2,16 @@ module Main where
 
 import Control.Applicative
 import Control.Concurrent
+import Control.Exception
 import Control.Monad
 import Data.Aeson
 import Data.Fixed
 import Data.Foldable
 import Data.Functor
 import Data.HashMap.Strict (HashMap)
+import Data.Int
 import Data.IORef
+import Data.List
 import Data.Maybe
 import Data.Monoid
 import Data.Time (UTCTime)
@@ -20,11 +23,14 @@ import Dr.Mario.Torch
 import Dr.Mario.Widget
 import GI.Gtk as G
 import Numeric
+import Nurse.Sveta.Util
 import System.Directory
 import System.Environment
+-- TODO: this is now built into the directory package, we should switch to that
 import System.Environment.XDG.BaseDir
 import System.FilePath
 import System.IO
+import System.IO.Error
 import System.Random.MWC
 import Text.Printf
 
@@ -33,12 +39,12 @@ import qualified Data.HashMap.Strict as HM
 import qualified Data.Text as T
 import qualified Data.Time as Time
 
--- ╭╴w╶───────────────────────────╮
--- │╭╴top╶───────────────────────╮│
--- ││╭╴gen╶╮╭╴inf╶╮╭╴trn╶╮╭╴rep╶╮││
--- ││╰─────╯╰─────╯╰─────╯╰─────╯││
--- │╰────────────────────────────╯│
--- ╰──────────────────────────────╯
+-- ╭╴w╶──────────────────────────────────╮
+-- │╭╴top╶──────────────────────────────╮│
+-- ││╭╴gen╶╮╭╴inf╶╮╭╴bur╶╮╭╴trn╶╮╭╴rep╶╮││
+-- ││╰─────╯╰─────╯╰─────╯╰─────╯╰─────╯││
+-- │╰───────────────────────────────────╯│
+-- ╰─────────────────────────────────────╯
 main :: IO ()
 main = do
 	-- On my machine, torch and gtk fight over the GPU. This environment
@@ -50,16 +56,20 @@ main = do
 
 	app <- new Application []
 	inferenceProcedure <- newProcedure 100
+	bureaucracyLock <- newMVar newBureaucracyGlobalState
 	on app #activate $ do
 		mainRef <- newIORef Nothing
 		top <- new Box [#orientation := OrientationHorizontal, #spacing := 10]
 
 		gen <- newThreadManager "generation" Green (generationThreadView inferenceProcedure)
 		inf <- newThreadManager "inference" OS (inferenceThreadView inferenceProcedure)
+		bur <- newThreadManager "bureaucracy" Green (bureaucracyThreadView bureaucracyLock)
 		replicateM_ 3 (tmStartThread gen)
 		tmStartThread inf
+		tmStartThread bur
 		tmWidget gen >>= #append top
 		tmWidget inf >>= #append top
+		tmWidget bur >>= #append top
 
 		w <- new Window $ tail [undefined
 			, #title := "Nurse Sveta"
@@ -173,18 +183,7 @@ renderSpeeds spd sss = do
 	    Ap (ZipList columns) = HM.foldMapWithKey column sss
 	unless (HM.null sss) $ zipWithM_ updateLabel [0..] (T.unlines <$> columns)
 	where
-	updateLabel n t = #getChildAt spd n 0 >>= \case
-		Just w -> castTo Label w >>= \case
-			Just lbl -> set lbl [#label := t]
-			Nothing -> #remove spd w >> mkLabel n t
-		Nothing -> mkLabel n t
-	mkLabel n t = do
-		lbl <- new Label [#label := t, #justify := JustificationRight, #cssClasses := ["mono"]]
-		cssPrv <- new CssProvider []
-		#loadFromData cssPrv ".mono { font-family: \"monospace\"; }"
-		cssCtx <- #getStyleContext lbl
-		#addProvider cssCtx cssPrv (fromIntegral STYLE_PROVIDER_PRIORITY_APPLICATION)
-		#attach spd lbl n 0 1 1
+	updateLabel n t = gridUpdateLabelAt spd n 0 t (numericLabel t)
 
 data GameStep = GameStep
 	{ gsMove :: Move
@@ -221,8 +220,16 @@ generationThread eval genRef sc = do
 	searchLoop g config params s0 history s = innerLoop where
 		innerLoop threadSpeed gameSpeed moveSpeed t 0 = descend params visitCount s t >>= \case
 			Nothing -> recordGame s0 history >> gameLoop g threadSpeed
-			Just (m, t') -> moveLoop g config params threadSpeed gameSpeed s0 (gs:history) s t' where
-				gs = GameStep m (statistics t) (statistics <$> children t)
+			Just (m, t') -> do
+				-- it's important that we allow game trees to get garbage
+				-- collected, so these `evaluate`s are about making sure we
+				-- aren't holding a reference to a full game tree
+				--
+				-- in particular, HashMap's fmap doesn't do the thing
+				stats <- evaluate (statistics t)
+				childStats <- traverse (evaluate . statistics) (children t)
+				let gs = GameStep m stats childStats
+				moveLoop g config params threadSpeed gameSpeed s0 (gs:history) s t'
 
 		innerLoop threadSpeed gameSpeed moveSpeed t n = do
 			t' <- mcts params s t
@@ -253,10 +260,8 @@ recordGame gs steps = do
 	b <- mfreeze (board gs)
 	now <- Time.getCurrentTime
 	rand <- BS.foldr (\w s -> printf "%02x" w ++ s) "" <$> withFile "/dev/urandom" ReadMode (\h -> BS.hGet h 8)
-	let date = Time.formatTime Time.defaultTimeLocale "%Y-%m-%d" now
-	    time = Time.formatTime Time.defaultTimeLocale "%T.%q" now
-	    file = printf "%s-%s.json" time rand
-	dir <- getUserDataDir $ "nurse-sveta" </> date
+	dir <- getUserDataDir $ "nurse-sveta" </> "games" </> "pending"
+	let file = show now ++ "-" ++ rand <.> "json"
 	createDirectoryIfMissing True dir
 	encodeFile (dir </> file) (b, reverse steps)
 
@@ -289,6 +294,178 @@ inferenceThread eval infRef sc = do
 				(incSearchIterations batches)
 				(positions { searchIterations = searchIterations positions + n })
 			Nothing -> scIO sc
+
+data BureaucracyGlobalState = BureaucracyGlobalState
+	{ bgsLastGame :: Maybe FilePath
+	, bgsLastTensor :: HashMap T.Text Integer
+	} deriving (Eq, Ord, Read, Show)
+
+newBureaucracyGlobalState :: BureaucracyGlobalState
+newBureaucracyGlobalState = BureaucracyGlobalState
+	{ bgsLastGame = Nothing
+	, bgsLastTensor = HM.empty
+	}
+
+data BureaucracyThreadState = BureaucracyThreadState
+	{ btsGamesProcessed :: HashMap T.Text Integer
+	, btsTensorsProcessed :: HashMap T.Text Integer
+	, btsRequestedSplit :: ValidationSplit
+	, btsCurrentSplit :: ValidationSplit
+	, btsLatestGlobal :: BureaucracyGlobalState
+	} deriving (Eq, Ord, Read, Show)
+
+newBureaucracyThreadState :: ValidationSplit -> BureaucracyThreadState
+newBureaucracyThreadState vs = BureaucracyThreadState
+	{ btsGamesProcessed = HM.empty
+	, btsTensorsProcessed = HM.empty
+	, btsRequestedSplit = vs
+	, btsCurrentSplit = vs
+	, btsLatestGlobal = newBureaucracyGlobalState
+	}
+
+btsRequestedSplitL :: BureaucracyThreadState -> (ValidationSplit, ValidationSplit -> BureaucracyThreadState)
+btsRequestedSplitL bts = (btsRequestedSplit bts, \vs -> bts { btsRequestedSplit = vs })
+
+initialValidationSplit :: ValidationSplit
+initialValidationSplit = newValidationSplit [("train", 8), ("test", 1), ("validate", 1)]
+
+-- ╭─ top ─────╮
+-- │╭─ vsv ───╮│
+-- │╰─────────╯│
+-- │╭─ glg ───╮│
+-- │╰─────────╯│
+-- │╭─ int ───╮│
+-- ││╭─ glt ─╮││
+-- ││╰───────╯││
+-- ││╭─ tgp ─╮││
+-- ││╰───────╯││
+-- ││╭─ ttp ─╮││
+-- ││╰───────╯││
+-- │╰─────────╯│
+-- ╰───────────╯
+bureaucracyThreadView :: MVar BureaucracyGlobalState -> IO ThreadView
+bureaucracyThreadView lock = do
+	burRef <- newTVarIO (newStable (newBureaucracyThreadState initialValidationSplit))
+	tracker <- newTracker
+
+	top <- new Box [#orientation := OrientationVertical, #spacing := 3]
+	vsv <- newValidationSplitView initialValidationSplit $ atomically . modifyTVar burRef . sOnSubterm btsRequestedSplitL . sTrySetPayload
+	glg <- descriptionLabel "<initializing>"
+	int <- new Grid []
+	glt <- newSumView int 0 "tensors available to other threads"
+	tgp <- newSumView int 1 "games processed by this thread"
+	ttp <- newSumView int 2 "tensors processed by this thread"
+
+	vsvWidget vsv >>= #append top
+	#append top glg
+	#append top int
+
+	topWidget <- toWidget top
+	pure ThreadView
+		{ tvWidget = topWidget
+		, tvRefresh = do
+			sbts <- readTVarIO burRef
+			tWhenUpdated tracker sbts $ \bts -> do
+				vsvSet vsv (btsCurrentSplit bts)
+				set glg [#label := case bgsLastGame (btsLatestGlobal bts) of
+					Nothing -> "no games processed yet\n"
+					Just fp -> "latest game known to be processed was\n" <> T.pack fp
+					]
+				updateSumView glt (bgsLastTensor (btsLatestGlobal bts))
+				updateSumView tgp (btsGamesProcessed bts)
+				updateSumView ttp (btsTensorsProcessed bts)
+		, tvCompute = bureaucracyThread lock burRef
+		}
+
+bureaucracyThread :: MVar BureaucracyGlobalState -> TVar (Stable BureaucracyThreadState) -> StatusCheck -> IO a
+bureaucracyThread lock status sc = do
+	dir <- getUserDataDir $ "nurse-sveta"
+	forever $ do
+		bts <- sPayload <$> readTVarIO status
+		bgs <- modifyMVar lock $ \bgs -> do
+			pending <- catch (listDirectory (dir </> "games" </> "pending")) $ \e ->
+				if isDoesNotExistError e then pure [] else throw e
+			for_ pending $ \fp -> do
+				category <- dirEncode . T.unpack <$> vsSample (btsCurrentSplit bts)
+				-- TODO
+				putStrLn $ "maybe we should process " ++ fp ++ " for " ++ category
+				createDirectoryIfMissing True (dir </> "tensors" </> category)
+				createDirectoryIfMissing True (dir </> "games" </> "processed" </> category)
+				renameFile (dir </> "games" </> "pending" </> fp)
+				           (dir </> "games" </> "processed" </> category </> fp)
+			let bgs' = case sortBy (flip compare) pending of
+			           	[] -> bgs
+			           	lastGame:_ -> bgs { bgsLastGame = Just lastGame }
+			pure (bgs', bgs')
+		atomically . modifyTVar status . sTryUpdate $ \bts -> bts
+			{ btsCurrentSplit = btsRequestedSplit bts
+			, btsLatestGlobal = bgs
+			}
+		-- TODO: comms from other threads to tell us when to try again
+		threadDelay 1000000
+		scIO sc
+
+newSumView :: Grid -> Int32 -> T.Text -> IO Grid
+newSumView parent i description = do
+	lbl <- descriptionLabel description
+	child <- new Grid [#columnSpacing := 7]
+	#attach parent lbl   0 (2*i)   2 1
+	#attach parent child 1 (2*i+1) 1 1
+	pure child
+
+updateSumView :: Grid -> HashMap T.Text Integer -> IO ()
+updateSumView grid ns = do
+	HM.traverseWithKey updateSumViewRow (enumerate ns)
+	updateSumViewRow "total" (-1, totalI)
+	where
+	totalI = sum ns
+	totalD = fromInteger totalI :: Double
+	updateSumViewRow t (y_, n) = do
+		gridUpdateLabelAt grid 0 y t (descriptionLabel t)
+		gridUpdateLabelAt grid 1 y nt (numericLabel nt)
+		gridUpdateLabelAt grid 2 y percent (numericLabel percent)
+		where
+		y = y_ + 1
+		nt = tshow n
+		percent = if totalI == 0
+			then "100%"
+			else tshow (round (fromIntegral n / totalD)) <> "%"
+
+gridGetLabelAt :: Grid -> Int32 -> Int32 -> IO Label -> IO Label
+gridGetLabelAt grid x y factory = #getChildAt grid x y >>= \case
+	Just w -> castTo Label w >>= \case
+		Just lbl -> pure lbl
+		Nothing -> #remove grid w >> mkLabel
+	Nothing -> mkLabel
+	where
+	mkLabel = do
+		lbl <- factory
+		#attach grid lbl x y 1 1
+		pure lbl
+
+gridUpdateLabelAt :: Grid -> Int32 -> Int32 -> T.Text -> IO Label -> IO ()
+gridUpdateLabelAt grid x y t factory = do
+	lbl <- gridGetLabelAt grid x y factory
+	set lbl [#label := t]
+
+descriptionLabel :: T.Text -> IO Label
+descriptionLabel t = new Label [#label := t, #halign := AlignStart]
+
+numericLabel :: T.Text -> IO Label
+numericLabel t = do
+	lbl <- new Label [#label := t, #justify := JustificationRight, #cssClasses := ["mono"]]
+	cssPrv <- new CssProvider []
+	#loadFromData cssPrv ".mono { font-family: \"monospace\"; }"
+	cssCtx <- #getStyleContext lbl
+	#addProvider cssCtx cssPrv (fromIntegral STYLE_PROVIDER_PRIORITY_APPLICATION)
+	pure lbl
+
+dirEncode :: String -> FilePath
+dirEncode = concatMap $ \case
+	'/'  -> "zs"
+	'\\' -> "zb"
+	'z'  -> "zz"
+	c    -> [c]
 
 data SearchSpeed = SearchSpeed
 	{ searchStart :: UTCTime

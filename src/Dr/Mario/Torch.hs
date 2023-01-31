@@ -3,7 +3,6 @@
 module Dr.Mario.Torch (netSample, netEvaluation) where
 
 import Control.Monad
-import Control.Monad.State
 import Data.Foldable
 import Data.HashMap.Strict (HashMap)
 import Data.IORef
@@ -12,6 +11,7 @@ import Dr.Mario.Model
 import Dr.Mario.Model.Internal
 import Dr.Mario.Tomcats
 import Data.Vector (Vector)
+import Nurse.Sveta.Util
 import Foreign
 import Foreign.C.Types
 import System.IO.Unsafe (unsafeInterleaveIO)
@@ -136,9 +136,6 @@ instance WithForeignPtrs () where
 instance WithForeignPtrs b => WithForeignPtrs (ForeignPtr a, b) where
 	type WithoutForeignPtrs (ForeignPtr a, b) = (Ptr a, WithoutForeignPtrs b)
 	withForeignPtrs (fp, fps) f = withForeignPtr fp $ \a -> withForeignPtrs fps $ \b -> f (a, b)
-
-enumerate :: Traversable t => t a -> t (Int, a)
-enumerate t = evalState (traverse (\a -> state (\i -> ((i, a), i+1))) t) 0
 
 -- the arguments should always have been in this order
 forZipWithM :: Applicative f => [a] -> [b] -> (a -> b -> f c) -> f [c]

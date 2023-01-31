@@ -17,6 +17,12 @@ module Dr.Mario.Widget (
 	SearchConfigurationView,
 	newSearchConfigurationView, scvWidget, scvSet,
 
+	-- * Train\/test\/validation split
+	ValidationSplit,
+	newValidationSplit, vsSet, vsGet, vsSample,
+	ValidationSplitView,
+	newValidationSplitView, vsvWidget, vsvSet,
+
 	-- * Thread management
 	ThreadManager,
 	newThreadManager, tmWidget, tmStartThread, tmDieThen,
@@ -26,7 +32,7 @@ module Dr.Mario.Widget (
 	Stable,
 	newStable,
 	sPayload,
-	sUpdate, sUpdateM, sSetPayload, sTrySetPayload,
+	sUpdate, sUpdateM, sTryUpdate, sSetPayload, sTrySetPayload,
 	sOnSubterm,
 
 	Tracker,
@@ -38,6 +44,8 @@ import Control.Exception
 import Control.Monad
 import Control.Monad.IO.Class
 import Data.Foldable
+import Data.Functor
+import Data.HashMap.Strict (HashMap)
 import Data.IORef
 import Data.List
 import Data.Monoid
@@ -48,9 +56,11 @@ import GI.Cairo.Render
 import GI.Cairo.Render.Connector
 import GI.GLib
 import GI.Gtk as G
+import Nurse.Sveta.Util
 import System.IO
 import Text.Read
 
+import qualified Data.HashMap.Strict as HM
 import qualified Data.Text as T
 import qualified Data.Text.IO as T
 import qualified GHC.OverloadedLabels as Overload
@@ -399,6 +409,95 @@ scvDisplay scv scReq scCur = do
 		req = f scReq
 		cur = f scCur
 
+data ValidationSplit = ValidationSplit
+	{ vsSum :: Double
+	, vsSplit :: HashMap T.Text Double
+	} deriving (Eq, Ord, Read, Show)
+
+unsafeNewValidationSplit :: HashMap T.Text Double -> ValidationSplit
+unsafeNewValidationSplit split = ValidationSplit { vsSum = sum split, vsSplit = split }
+
+newValidationSplit :: [(T.Text, Double)] -> ValidationSplit
+newValidationSplit split
+	| any ((<=0) . snd) split = error "newValidationSplit: initial split must contain only positive numbers"
+	| null split = error "newValidationSplit: initial split must contain at least one category"
+	| otherwise = unsafeNewValidationSplit (HM.fromListWith (+) split)
+
+vsSample :: ValidationSplit -> IO T.Text
+vsSample _ = pure "train" -- TODO
+
+vsSet :: T.Text -> Double -> ValidationSplit -> ValidationSplit
+vsSet category weight vs = case compare weight 0 of
+	LT -> vs
+	EQ | HM.null split -> vs
+	   | otherwise -> unsafeNewValidationSplit split
+	   where split = HM.delete category (vsSplit vs)
+	GT -> unsafeNewValidationSplit (HM.insert category weight (vsSplit vs))
+
+vsGet :: ValidationSplit -> T.Text -> Double
+vsGet vs category = HM.findWithDefault 0 category (vsSplit vs)
+
+-- TODO: there's so much shared code here between ValidationSplitView and
+-- SearchConfigurationView, we should really think about a way to DRY
+data ValidationSplitView = VSV
+	{ vsvTop :: Grid
+	, vsvCache :: IORef (ValidationSplit, ValidationSplit)
+	, vsvLabels :: HashMap T.Text Label -- TODO: UI for adding and deleting categories
+	}
+
+newValidationSplitView :: ValidationSplit -> (ValidationSplit -> IO ()) -> IO ValidationSplitView
+newValidationSplitView vs request = do
+	grid <- new Grid [#columnSpacing := 7, #rowSpacing := 3]
+	cache <- newIORef (vs, vs)
+	triples <- flip HM.traverseWithKey (enumerate (vsSplit vs)) $ \category (i, weight) -> do
+		title <- mkLabel category
+		editor <- new Entry [#inputPurpose := InputPurposeNumber]
+		buffer <- G.get editor #buffer
+		let text = tshow weight
+		set buffer [#text := text]
+		display <- mkLabel text
+
+		#attach grid title   0 i 1 1
+		#attach grid editor  1 i 1 1
+		#attach grid display 2 i 1 1
+
+		pure (editor, buffer, display)
+
+	let vsv = VSV
+	    	{ vsvTop = grid
+	    	, vsvCache = cache
+	    	, vsvLabels = triples <&> \(_, _, display) -> display
+	    	}
+
+	flip HM.traverseWithKey triples $ \category (editor, buffer, _) -> on editor #activate $ do
+		text <- G.get buffer #text
+		for_ (tread text) $ \weight -> do
+			(vsReq, vsCur) <- readIORef cache
+			let vsReq' = vsSet category weight vsReq
+			request vsReq'
+			writeIORef cache (vsReq', vsCur)
+			vsvDisplay vsv vsReq' vsCur
+
+	pure vsv
+	where
+	mkLabel t = new Label [#label := t, #halign := AlignStart]
+
+vsvWidget :: ValidationSplitView -> IO Widget
+vsvWidget = toWidget . vsvTop
+
+vsvSet :: ValidationSplitView -> ValidationSplit -> IO ()
+vsvSet vsv vsCur = do
+	(vsReq, _) <- readIORef (vsvCache vsv)
+	writeIORef (vsvCache vsv) (vsReq, vsCur)
+	vsvDisplay vsv vsReq vsCur
+
+-- | If you see this documentation, please report a bug.
+vsvDisplay :: ValidationSplitView -> ValidationSplit -> ValidationSplit -> IO ()
+vsvDisplay vsv vsReq vsCur = (()<$) . flip HM.traverseWithKey (vsvLabels vsv) $ \category lbl -> do
+	let req = vsGet vsReq category
+	    cur = vsGet vsCur category
+	set lbl [#label := tshow cur <> if req == cur then mempty else " ( will change to " <> tshow req <> " soon)"]
+
 data ThreadManager = ThreadManager
 	{ tmContainer :: Box
 	, tmThreadList :: Box
@@ -559,6 +658,9 @@ sUpdateM :: (a -> Maybe a) -> Stable a -> Stable a
 sUpdateM f s@(Stable g p) = case f p of
 	Nothing -> s
 	Just p' -> Stable (g+1) p'
+
+sTryUpdate :: Eq a => (a -> a) -> Stable a -> Stable a
+sTryUpdate f s = sTrySetPayload (f (sPayload s)) s
 
 sSetPayload :: a -> Stable a -> Stable a
 sSetPayload p s = Stable (generation s + 1) p
