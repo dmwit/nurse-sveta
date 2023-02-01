@@ -1,8 +1,9 @@
 module Nurse.Sveta.Tomcats (
 	DMParameters, dmParameters,
-	initialTree,
+	GameStateSeed(..), initialTree,
 	mcts, descend, unsafeDescend,
-	dumbEvaluation, dmFinished,
+	evaluateFinalState, dumbEvaluation,
+	dmFinished, dmPlay,
 	SearchConfiguration(..), DMEvaluationProcedure,
 	Move(..),
 	GameState(..),
@@ -18,9 +19,11 @@ import Control.Concurrent.MVar
 import Control.Monad
 import Data.Aeson
 import Data.Bits
+import Data.Functor
 import Data.Hashable
 import Data.HashMap.Strict (HashMap)
 import Data.IORef
+import Data.Monoid
 import Data.Vector (Vector)
 import Dr.Mario.Model
 import Dr.Mario.Pathfinding
@@ -87,25 +90,39 @@ data GameState = GameState
 
 type DMParameters = Parameters IO Double A0.Statistics Move GameState
 
--- note to self: when the NES does it, it generates the pill sequence first,
--- then the board
-initialState :: GenIO -> IO GameState
-initialState g = do
-	level <- uniformRM (0, 20) g
-	seed <- uniformRM (2, maxBound) g
-	b <- mrandomBoard seed level
-	vk <- newIORef 0
-	pu <- newIORef 0
-	fp <- newIORef 0
-	pure GameState
-		{ board = b
-		, virusesKilled = vk
-		, pillsUsed = pu
-		, framesPassed = fp
-		, originalVirusCount = 4*(level + 1)
-		}
+class GameStateSeed a where initialState :: a -> IO GameState
 
-initialTree :: DMParameters -> GenIO -> IO (GameState, Tree A0.Statistics Move)
+instance Gen a ~ GenIO => GameStateSeed (Gen a) where
+	-- note to self: when the NES does it, it generates the pill sequence first,
+	-- then the board
+	initialState g = do
+		level <- uniformRM (0, 20) g
+		seed <- uniformRM (2, maxBound) g
+		b <- mrandomBoard seed level
+		vk <- newIORef 0
+		pu <- newIORef 0
+		fp <- newIORef 0
+		pure GameState
+			{ board = b
+			, virusesKilled = vk
+			, pillsUsed = pu
+			, framesPassed = fp
+			, originalVirusCount = 4*(level + 1)
+			}
+
+instance GameStateSeed Board where
+	initialState b = pure GameState
+		<*> thaw b
+		<*> newIORef 0
+		<*> newIORef 0
+		<*> newIORef 0
+		<*> (pure . getSum . ofoldMap countViruses) b
+		where
+		countViruses = \case
+			Occupied _ Virus -> 1
+			_ -> 0
+
+initialTree :: GameStateSeed a => DMParameters -> a -> IO (GameState, Tree A0.Statistics Move)
 initialTree params g = do
 	s <- initialState g
 	(_, t) <- Tomcats.initialize params s >>= preprocess params s
@@ -135,11 +152,11 @@ dmExpand :: GameState -> IO (A0.Statistics, HashMap Move A0.Statistics)
 dmExpand gs = do
 	finished <- dmFinished gs
 	if finished
-	then evaluateFinalState gs
+	then evaluateFinalState gs <&> \points -> (A0.Statistics 1 0 points, HM.empty)
 	else pure rngExpansion -- this is a bit weird, but in order to share pathfinding, expansion actually happens in the preprocessor
 
-evaluateFinalState :: GameState -> IO (A0.Statistics, HashMap Move A0.Statistics)
-evaluateFinalState gs = flip (,) HM.empty <$> do
+evaluateFinalState :: GameState -> IO Double
+evaluateFinalState gs = do
 	clearedViruses <- readIORef (virusesKilled gs)
 	pills <- readIORef (pillsUsed gs)
 	frames <- readIORef (framesPassed gs)
@@ -151,8 +168,7 @@ evaluateFinalState gs = flip (,) HM.empty <$> do
 	    finishPoints = conditionally 1
 	    clearPoints = (fromIntegral clearedViruses / fromIntegral orig)**0.5
 	    speedPoints = conditionally $ 1 - (fromIntegral frames / fromIntegral (shiftL orig 9))**0.5
-	    points = (finishPoints + clearPoints + speedPoints) / 3
-	pure (A0.Statistics 1 0 points)
+	pure $ (finishPoints + clearPoints + speedPoints) / 3
 
 rngExpansion :: (A0.Statistics, HashMap Move A0.Statistics)
 rngExpansion = (mempty, HM.fromList [(RNG l r, A0.Statistics 0 (1/9) 0) | [l, r] <- replicateM 2 [minBound .. maxBound]])
@@ -231,8 +247,8 @@ dmPreprocess eval gs t = if not (RNG Blue Blue `HM.member` unexplored t) then pu
 -- indexed by (x, y) position of the bottom left.
 dumbEvaluation :: (GameState, Color, Color) -> IO (Double, HashMap PillContent (Vector (Vector Double)))
 dumbEvaluation = \(s, l, r) -> do
-	(stats, _) <- evaluateFinalState s
-	pure (A0.cumulativeValuation stats, HM.fromList
+	points <- evaluateFinalState s
+	pure (points, HM.fromList
 		[ (PillContent orient bl o, vec)
 		| orient <- [Horizontal, Vertical]
 		, (bl, o) <- [(l, r), (r, l)]

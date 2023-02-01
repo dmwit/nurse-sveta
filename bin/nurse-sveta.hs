@@ -70,7 +70,7 @@ main = do
 			, #title := "Nurse Sveta"
 			, #application := app
 			, #child := top
-			, #defaultWidth := 1000
+			, #defaultWidth := 1500
 			, #defaultHeight := 1000
 			, On #closeRequest $ readIORef mainRef >>= \case
 				Just{} -> pure False
@@ -292,13 +292,13 @@ inferenceThread eval infRef sc = do
 
 data BureaucracyGlobalState = BureaucracyGlobalState
 	{ bgsLastGame :: Maybe FilePath
-	, bgsLastTensor :: HashMap T.Text Integer
+	, bgsNextTensor :: HashMap T.Text Integer
 	} deriving (Eq, Ord, Read, Show)
 
 newBureaucracyGlobalState :: BureaucracyGlobalState
 newBureaucracyGlobalState = BureaucracyGlobalState
 	{ bgsLastGame = Nothing
-	, bgsLastTensor = HM.empty
+	, bgsNextTensor = HM.empty
 	}
 
 data BureaucracyThreadState = BureaucracyThreadState
@@ -320,6 +320,9 @@ newBureaucracyThreadState vs = BureaucracyThreadState
 
 btsRequestedSplitL :: BureaucracyThreadState -> (ValidationSplit, ValidationSplit -> BureaucracyThreadState)
 btsRequestedSplitL bts = (btsRequestedSplit bts, \vs -> bts { btsRequestedSplit = vs })
+
+btsUpdate :: TVar (Stable BureaucracyThreadState) -> (BureaucracyThreadState -> BureaucracyThreadState) -> IO ()
+btsUpdate status = atomically . modifyTVar status . sTryUpdate
 
 initialValidationSplit :: ValidationSplit
 initialValidationSplit = newValidationSplit [("train", 8), ("test", 1), ("validate", 1)]
@@ -366,7 +369,7 @@ bureaucracyThreadView lock = do
 					Nothing -> "no games processed yet\n"
 					Just fp -> "latest game known to be processed was\n" <> T.pack fp
 					]
-				updateSumView glt (bgsLastTensor (btsLatestGlobal bts))
+				updateSumView glt (bgsNextTensor (btsLatestGlobal bts))
 				updateSumView tgp (btsGamesProcessed bts)
 				updateSumView ttp (btsTensorsProcessed bts)
 		, tvCompute = bureaucracyThread lock burRef
@@ -376,29 +379,81 @@ bureaucracyThread :: MVar BureaucracyGlobalState -> TVar (Stable BureaucracyThre
 bureaucracyThread lock status sc = do
 	dir <- getUserDataDir $ "nurse-sveta"
 	forever $ do
-		bts <- sPayload <$> readTVarIO status
-		bgs <- modifyMVar lock $ \bgs -> do
-			pending <- catch (listDirectory (dir </> "games" </> "pending")) $ \e ->
+		-- TODO: is this really doing the right thing if gameFileToTensorFiles throws an exception? seems like probably not?
+		modifyMVar_ lock $ \bgs -> do
+			pending <- catch (listDirectory (dir </> subdirectory GamesPending "")) $ \e ->
 				if isDoesNotExistError e then pure [] else throw e
-			for_ pending $ \fp -> do
-				category <- dirEncode . T.unpack <$> vsSample (btsCurrentSplit bts)
-				-- TODO
-				putStrLn $ "maybe we should process " ++ fp ++ " for " ++ category
-				createDirectoryIfMissing True (dir </> "tensors" </> category)
-				createDirectoryIfMissing True (dir </> "games" </> "processed" </> category)
-				renameFile (dir </> "games" </> "pending" </> fp)
-				           (dir </> "games" </> "processed" </> category </> fp)
-			let bgs' = case sortBy (flip compare) pending of
-			           	[] -> bgs
-			           	lastGame:_ -> bgs { bgsLastGame = Just lastGame }
-			pure (bgs', bgs')
-		atomically . modifyTVar status . sTryUpdate $ \bts -> bts
-			{ btsCurrentSplit = btsRequestedSplit bts
-			, btsLatestGlobal = bgs
-			}
+			btsUpdate status $ \bts -> bts { btsLatestGlobal = bgs }
+			traverse_ (gameFileToTensorFiles status dir) (sort pending)
+			btsLatestGlobal . sPayload <$> readTVarIO status
+		btsUpdate status $ \bts -> bts { btsCurrentSplit = btsRequestedSplit bts }
 		-- TODO: comms from other threads to tell us when to try again
 		threadDelay 1000000
 		scIO sc
+
+gameFileToTensorFiles :: TVar (Stable BureaucracyThreadState) -> FilePath -> FilePath -> IO ()
+gameFileToTensorFiles status dir fp = recallGame dir fp >>= \case
+	Nothing -> do
+		relocate dir fp GamesPending GamesParseError
+		btsUpdate status $ \bts -> bts
+			{ btsLatestGlobal = (btsLatestGlobal bts)
+				{ bgsLastGame = Just fp
+				}
+			}
+	Just (board, steps) -> do
+		bts <- sPayload <$> readTVarIO status
+		categoryT <- vsSample (btsCurrentSplit bts)
+		let category = dirEncode (T.unpack categoryT)
+		    bgs = btsLatestGlobal bts
+		firstTensor <- asum [empty
+			, maybe empty pure $ HM.lookup categoryT (bgsNextTensor bgs)
+			, maybe empty (pure . succ) =<< decodeFileStrict' (dir </> subdirectory (Tensors category) latestTensorFilename)
+			, pure 0
+			]
+
+		finalState <- initialState board
+		traverse_ (dmPlay finalState . gsMove) steps
+
+		-- TODO: write some tensor files
+		putStrLn $ "maybe we should process " ++ fp ++ " for " ++ category
+
+		relocate dir fp GamesPending (GamesProcessed category)
+		let n = toInteger (length steps)
+		createDirectoryIfMissing True (dir </> subdirectory (Tensors category) "")
+		encodeFile (dir </> subdirectory (Tensors category) latestTensorFilename) (firstTensor + n - 1)
+		btsUpdate status $ \bts -> bts
+			{ btsLatestGlobal = BureaucracyGlobalState
+				{ bgsLastGame = Just fp
+				, bgsNextTensor = HM.insert categoryT (firstTensor + n) (bgsNextTensor (btsLatestGlobal bts))
+				}
+			, btsGamesProcessed = HM.insertWith (+) categoryT 1 (btsGamesProcessed bts)
+			, btsTensorsProcessed = HM.insertWith (+) categoryT n (btsTensorsProcessed bts)
+			}
+
+recallGame :: FilePath -> FilePath -> IO (Maybe (Board, [GameStep]))
+recallGame dir fp = decodeFileStrict' (dir </> subdirectory GamesPending fp)
+
+data Directory
+	= GamesPending
+	| GamesProcessed FilePath
+	| GamesParseError
+	| Tensors FilePath
+	deriving (Eq, Ord, Read, Show)
+
+subdirectory :: Directory -> FilePath -> FilePath
+subdirectory dir fp = case dir of
+	GamesPending            -> "games" </> "pending" </> fp
+	GamesProcessed category -> "games" </> "processed" </> category </> fp
+	GamesParseError         -> "games" </> "parse-error"
+	Tensors category        -> "tensors" </> category </> fp
+
+relocate :: FilePath -> FilePath -> Directory -> Directory -> IO ()
+relocate root fp from to = do
+	createDirectoryIfMissing True (root </> subdirectory to "")
+	renameFile (root </> subdirectory from fp) (root </> subdirectory to fp)
+
+latestTensorFilename :: FilePath
+latestTensorFilename = "latest.json"
 
 newSumView :: Grid -> Int32 -> T.Text -> IO Grid
 newSumView parent i description = do
@@ -424,7 +479,7 @@ updateSumView grid ns = do
 		nt = tshow n
 		percent = if totalI == 0
 			then "100%"
-			else tshow (round (fromIntegral n / totalD)) <> "%"
+			else tshow (round (100 * fromIntegral n / totalD)) <> "%"
 
 gridGetLabelAt :: Grid -> Int32 -> Int32 -> IO Label -> IO Label
 gridGetLabelAt grid x y factory = #getChildAt grid x y >>= \case
@@ -456,11 +511,15 @@ numericLabel t = do
 	pure lbl
 
 dirEncode :: String -> FilePath
-dirEncode = concatMap $ \case
-	'/'  -> "zs"
-	'\\' -> "zb"
-	'z'  -> "zz"
-	c    -> [c]
+dirEncode "" = "q"
+dirEncode s = go s where
+	go = \case
+		[] -> []
+		'/' :s -> "qs" ++ go s
+		'\\':s -> "qb" ++ go s
+		'q' :s@(c:_) -> (if c `elem` ("sbq" :: String) then "qq" else "q") ++ go s
+		"q" -> "qq"
+		c:s -> c:go s
 
 data SearchSpeed = SearchSpeed
 	{ searchStart :: UTCTime
