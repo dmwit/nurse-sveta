@@ -209,8 +209,11 @@ dmPlay gs = \case
 	Placement path pill -> mplace (board gs) pill >>= \case
 		Nothing -> pure ()
 		Just counts ->  do
-			modifyIORef (virusesKilled gs) (clears counts +)
-			modifyIORef (framesPassed gs) (approximateCostModel path pill counts +)
+			-- defensive programming: these should naturally get forced during
+			-- position evaluation, but why take the risk? let's just keep the
+			-- thunk depth low
+			modifyIORef' (virusesKilled gs) (clears counts +)
+			modifyIORef' (framesPassed gs) (approximateCostModel path pill counts +)
 
 yCosts :: V.Vector Int
 yCosts = V.fromList [undefined, undefined, 44, 42, 41, 41, 39, 39, 37, 37, 35, 35, 33, 34, 34, 34]
