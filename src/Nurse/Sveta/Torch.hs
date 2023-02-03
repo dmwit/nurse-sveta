@@ -80,8 +80,16 @@ render itriples = do
 
 -- TODO: perhaps we could avoid all this realToFrac stuff by just using CDouble everywhere instead of Double...? I mean why not
 parseForEvaluation :: Int -> (GameState, Color, Color) -> ForeignPtr CDouble -> ForeignPtr CDouble -> ForeignPtr CDouble -> IO (Double, HashMap PillContent (Vector (Vector Double)))
-parseForEvaluation i (_, l, r) priors_ valuation_ scalars_ = withForeignPtrs (priors_, (valuation_, (scalars_, ()))) $ \(priors, (valuation, (scalars, ()))) -> do
-	v <- realToFrac <$> peekElemOff valuation i
+parseForEvaluation i (gs, l, r) priors_ bernoulli_ scalars_ = withForeignPtrs (priors_, (bernoulli_, (scalars_, ()))) $ \(priors, (bernoulli, (scalars, ()))) -> do
+	-- TODO: when the net does a sigmoid, just trust it to return a number between 0 and 1
+	pWin <- min 1 . max 0 . realToFrac <$> peekElemOff bernoulli iBernoulli
+	virusesPast <- readIORef (virusesKilled gs)
+	framesPast <- readIORef (framesPassed gs)
+	virusesFuture <- realToFrac <$> peekElemOff scalars iScalars
+	framesFuture <- realToFrac <$> peekElemOff scalars (iScalars+2)
+	let orig = originalVirusCount gs
+	    v =      pWin  * winningValuation orig (fromIntegral framesPast + framesFuture)
+	      + (1 - pWin) * losingValuation  orig (clampCleared orig (fromIntegral virusesPast + virusesFuture))
 
 	let iPriors = shiftL i logNumPriors
 	p <- forZipWithM [0..numRotations-1] (iterate (`rotateContent` Clockwise) (PillContent Horizontal l r)) $ \numRots pc -> do
@@ -92,21 +100,34 @@ parseForEvaluation i (_, l, r) priors_ valuation_ scalars_ = withForeignPtrs (pr
 		pure (pc, v)
 
 	pure (v, HM.fromList p)
+	where
+	iBernoulli = shiftL i logNumBernoullis
+	iPriors = shiftL i logNumPriors
+	iScalars = i*numScalars
 
 netEvaluation :: Traversable t => Net -> t (GameState, Color, Color) -> IO (t (Double, HashMap PillContent (Vector (Vector Double))))
 netEvaluation (Net net) triples = do
-	[priors, valuation, scalars] <- mallocForeignPtrArrays [shiftL n logNumPriors, n, n * numScalars]
+	[priors, bernoulli, scalars] <- mallocForeignPtrArrays [shiftL n logNumPriors, shiftL n logNumBernoullis, n * numScalars]
 	-- TODO: can we avoid a ton of allocation here by pooling allocations of each size -- or even just the largest size, per Net, say?
 	(boards, lookaheads) <- render itriples
 
-	withForeignPtrs (net, (priors, (valuation, (scalars, ())))) $ \(netPtr, (priorsPtr, (valuationPtr, (scalarsPtr, ())))) ->
-		cxx_evaluate netPtr (fromIntegral n) priorsPtr valuationPtr scalarsPtr boards lookaheads
+	withForeignPtrs (net, (priors, (bernoulli, (scalars, ())))) $ \(netPtr, (priorsPtr, (bernoulliPtr, (scalarsPtr, ())))) ->
+		cxx_evaluate netPtr (fromIntegral n) priorsPtr bernoulliPtr scalarsPtr boards lookaheads
 	result <- for itriples $ \(i, state) ->
-			-- unsafeInterleaveIO: turns out parseForEvaluation is a
-			-- bottleneck to making foreign calls, so spread its work across
-			-- multiple threads by having the consuming thread perform it
-			-- rather than this one
-			unsafeInterleaveIO (parseForEvaluation i state priors valuation scalars)
+			-- unsafeInterleaveIO: turns out parseForEvaluation is a bottleneck
+			-- to making foreign calls, so spread its work across multiple
+			-- threads by having the consuming thread perform it rather than
+			-- this one.
+			--
+			-- It is... a little bit subtle that this is safe, due to reading
+			-- IORefs in parseForEvaluation. I'm pretty sure it is with the way
+			-- we are currently searching trees -- namely, cloning the root
+			-- GameState and modifying the clone just long enough to reach a
+			-- position to evaluate, then throwing it away. All the
+			-- modification will be done by the time we call netEvaluation,
+			-- then it will be thrown away, hence the IORefs won't ever be
+			-- modified again.
+			unsafeInterleaveIO (parseForEvaluation i state priors bernoulli scalars)
 
 	free boards
 	free lookaheads
@@ -116,13 +137,14 @@ netEvaluation (Net net) triples = do
 	n = length triples
 	itriples = enumerate triples
 
-boardWidth, boardHeight, cellCount, numRotations, numPriors, numScalars :: Int
-logBoardWidth, logBoardHeight, logCellCount, logNumRotations, logNumPriors :: Int
+boardWidth, boardHeight, cellCount, numRotations, numPriors, numBernoullis, numScalars :: Int
+logBoardWidth, logBoardHeight, logCellCount, logNumRotations, logNumPriors, logNumBernoullis :: Int
 boardWidth = 8; logBoardWidth = 3
 boardHeight = 16; logBoardHeight = 4
 numRotations = 4; logNumRotations = 2
 cellCount = boardWidth*boardHeight; logCellCount = logBoardWidth+logBoardHeight
 numPriors = numRotations*cellCount; logNumPriors = logNumRotations+logCellCount
+numBernoullis = 1; logNumBernoullis = 0
 numScalars = 3 -- virus clears, pills, frames (in that order)
 
 class WithForeignPtrs a where

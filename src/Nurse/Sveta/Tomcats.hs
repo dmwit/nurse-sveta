@@ -3,6 +3,7 @@ module Nurse.Sveta.Tomcats (
 	GameStateSeed(..), initialTree,
 	mcts, descend, unsafeDescend,
 	evaluateFinalState, dumbEvaluation,
+	winningValuation, losingValuation, clampCleared,
 	dmFinished, dmPlay,
 	SearchConfiguration(..), DMEvaluationProcedure,
 	Move(..),
@@ -84,7 +85,7 @@ instance FromJSON Move where
 
 data GameState = GameState
 	{ board :: IOBoard
-	, virusesKilled, pillsUsed, framesPassed :: IORef Int
+	, virusesKilled, framesPassed :: IORef Int
 	, originalVirusCount :: Int
 	}
 
@@ -100,12 +101,10 @@ instance Gen a ~ GenIO => GameStateSeed (Gen a) where
 		seed <- uniformRM (2, maxBound) g
 		b <- mrandomBoard seed level
 		vk <- newIORef 0
-		pu <- newIORef 0
 		fp <- newIORef 0
 		pure GameState
 			{ board = b
 			, virusesKilled = vk
-			, pillsUsed = pu
 			, framesPassed = fp
 			, originalVirusCount = 4*(level + 1)
 			}
@@ -113,7 +112,6 @@ instance Gen a ~ GenIO => GameStateSeed (Gen a) where
 instance GameStateSeed Board where
 	initialState b = pure GameState
 		<*> thaw b
-		<*> newIORef 0
 		<*> newIORef 0
 		<*> newIORef 0
 		<*> (pure . getSum . ofoldMap countViruses) b
@@ -155,20 +153,39 @@ dmExpand gs = do
 	then evaluateFinalState gs <&> \points -> (A0.Statistics 1 0 points, HM.empty)
 	else pure rngExpansion -- this is a bit weird, but in order to share pathfinding, expansion actually happens in the preprocessor
 
+-- score: 0 or  1/3 for finishing
+--        up to 1/3 for each virus cleared; want the bot to learn early that clearing is good, so reward heavily for the first few viruses
+--        up to 1/3 for clearing quickly if you win; the quicker you get, the harder it is to get quicker, so increase the reward more quickly when it's fast
+
+-- | Assign a value to a winning board, given how many viruses the board
+-- started with and how many frames it took. The frame count is clamped on your
+-- behalf, so don't worry if it's negative or outrageously large or whatever.
+winningValuation :: Int -> Double -> Double
+winningValuation viruses frames_ = 1 - penalty / 3 where
+	penalty = min 1 (frames / maxFrames)**0.5
+	frames = max 1 frames_
+	maxFrames = fromIntegral (shiftL viruses 9)
+
+-- | Assign a value to a losing board, given how many viruses the board started
+-- with and how many were cleared. You are responsible for clamping the clear
+-- count if it might be out of range; see also 'clampCleared'.
+losingValuation :: Int -> Double -> Double
+losingValuation orig cleared = (cleared / fromIntegral orig)**0.5 / 3
+
+-- | Given the original number of viruses on a board and a claimed number of
+-- clears, clamp the claimed clears to be positive and at most the original
+-- number. Useful as a preprocessing step before calling 'losingValuation'.
+clampCleared :: Int -> Double -> Double
+clampCleared orig = max 0 . min (fromIntegral orig)
+
 evaluateFinalState :: GameState -> IO Double
 evaluateFinalState gs = do
 	clearedViruses <- readIORef (virusesKilled gs)
-	pills <- readIORef (pillsUsed gs)
 	frames <- readIORef (framesPassed gs)
-	-- score: 0 or  1/3 for finishing
-	--        up to 1/3 for each virus cleared; want the bot to learn early that clearing is good, so reward heavily for the first few viruses
-	--        up to 1/3 for clearing quickly if you win; the quicker you get, the harder it is to get quicker, so increase the reward more quickly when it's fast
-	let orig = originalVirusCount gs
-	    conditionally = if clearedViruses == orig then id else const 0
-	    finishPoints = conditionally 1
-	    clearPoints = (fromIntegral clearedViruses / fromIntegral orig)**0.5
-	    speedPoints = conditionally $ 1 - (fromIntegral frames / fromIntegral (shiftL orig 9))**0.5
-	pure $ (finishPoints + clearPoints + speedPoints) / 3
+	let origViruses = originalVirusCount gs
+	pure $ if clearedViruses == origViruses
+		then winningValuation origViruses (fromIntegral frames)
+		else losingValuation  origViruses (fromIntegral clearedViruses)
 
 rngExpansion :: (A0.Statistics, HashMap Move A0.Statistics)
 rngExpansion = (mempty, HM.fromList [(RNG l r, A0.Statistics 0 (1/9) 0) | [l, r] <- replicateM 2 [minBound .. maxBound]])
@@ -177,7 +194,6 @@ dmClone :: GameState -> IO GameState
 dmClone gs = pure GameState
 	<*> cloneBoard (board gs)
 	<*> cloneIORef (virusesKilled gs)
-	<*> cloneIORef (pillsUsed gs)
 	<*> cloneIORef (framesPassed gs)
 	<*> pure (originalVirusCount gs)
 
@@ -194,7 +210,6 @@ dmPlay gs = \case
 		Nothing -> pure ()
 		Just counts ->  do
 			modifyIORef (virusesKilled gs) (clears counts +)
-			modifyIORef (pillsUsed gs) succ
 			modifyIORef (framesPassed gs) (approximateCostModel path pill counts +)
 
 yCosts :: V.Vector Int
@@ -242,8 +257,8 @@ dmPreprocess eval gs t = if not (RNG Blue Blue `HM.member` unexplored t) then pu
 		Red -> r
 		Yellow -> error "The impossible happened in Dr.Mario.Tomcats.dmPreprocess: pathfinding on a blue-red pill resulted in placing a yellow pill half."
 
--- Given the game state and the colors for the upcoming pill, guess where moves
--- will be made and how good the final outcome will be. The Vector's are
+-- | Given the game state and the colors for the upcoming pill, guess where
+-- moves will be made and how good the final outcome will be. The Vector's are
 -- indexed by (x, y) position of the bottom left.
 dumbEvaluation :: (GameState, Color, Color) -> IO (Double, HashMap PillContent (Vector (Vector Double)))
 dumbEvaluation = \(s, l, r) -> do
