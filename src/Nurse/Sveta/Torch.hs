@@ -89,7 +89,7 @@ parseForEvaluation i (gs, l, r) priors_ bernoulli_ scalars_ = withForeignPtrs (p
 	framesFuture <- realToFrac <$> peekElemOff scalars (iScalars+2)
 	let orig = originalVirusCount gs
 	    v =      pWin  * winningValuation orig (fromIntegral framesPast + framesFuture)
-	      + (1 - pWin) * losingValuation  orig (clampCleared orig (fromIntegral virusesPast + virusesFuture))
+	      + (1 - pWin) *  losingValuation orig (clampCleared orig (fromIntegral virusesPast + virusesFuture))
 
 	let iPriors = shiftL i logNumPriors
 	p <- forZipWithM [0..numRotations-1] (iterate (`rotateContent` Clockwise) (PillContent Horizontal l r)) $ \numRots pc -> do
