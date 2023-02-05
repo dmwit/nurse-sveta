@@ -250,10 +250,6 @@ dmPreprocess eval gs t = if not (RNG Blue Blue `HM.member` unexplored t) then pu
 	let childStats = (foldMap A0.statistics children') { A0.priorProbability = 0 }
 	pure (childStats, t { statistics = statistics t <> childStats, children = children', unexplored = HM.empty })
 	where
-	visited = A0.visitCount (statistics t) > 0
-	rngChild = RNG Blue Blue `HM.member` children t
-	rngUnex = RNG Blue Blue `HM.member` unexplored t
-
 	substPill l r p = p { content = substPillContent l r (content p) }
 	substPillContent l r pc = pc { bottomLeftColor = substColor l r (bottomLeftColor pc), otherColor = substColor l r (otherColor pc) }
 	substColor l r = \case
