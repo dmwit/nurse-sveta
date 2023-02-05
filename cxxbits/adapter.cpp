@@ -53,12 +53,12 @@ struct Batch {
 		auto doubleOptions = torch::TensorOptions().dtype(torch::kF64);
 		auto charOptions   = torch::TensorOptions().dtype(torch::kU8);
 
-		auto priors     = torch::empty({n, NUM_ROTATIONS, BOARD_WIDTH, BOARD_HEIGHT}, doubleOptions);
-		auto reachable  = torch::empty({n, NUM_ROTATIONS, BOARD_WIDTH, BOARD_HEIGHT}, charOptions  );
-		auto bernoullis = torch::empty({n, NUM_BERNOULLIS}                          , charOptions  );
-		auto scalars    = torch::empty({n, NUM_SCALARS}                             , doubleOptions);
-		auto board      = torch::empty({n, CELL_SIZE, BOARD_WIDTH, BOARD_HEIGHT}    , charOptions  );
-		auto lookahead  = torch::empty({n, CELL_SIZE, BOARD_WIDTH, BOARD_HEIGHT}    , charOptions  );
+		priors     = torch::empty({n, NUM_ROTATIONS, BOARD_WIDTH, BOARD_HEIGHT}, doubleOptions);
+		reachable  = torch::empty({n, NUM_ROTATIONS, BOARD_WIDTH, BOARD_HEIGHT}, charOptions  );
+		bernoullis = torch::empty({n, NUM_BERNOULLIS}                          , charOptions  );
+		scalars    = torch::empty({n, NUM_SCALARS}                             , doubleOptions);
+		board      = torch::empty({n, CELL_SIZE, BOARD_WIDTH, BOARD_HEIGHT}    , charOptions  );
+		lookahead  = torch::empty({n, LOOKAHEAD_SIZE}                          , charOptions  );
 	}
 
 	void to_gpu() {
@@ -143,8 +143,22 @@ void save_example(char *path, double *priors, char *reachable, char *bernoullis,
 }
 
 Batch *load_batch(char **path, int n) {
-	// TODO
-	return NULL;
+	Batch *batch = new Batch(n);
+	torch::serialize::InputArchive archive;
+	torch::Tensor priors, reachable, bernoullis, scalars, board, lookahead;
+
+	for(int i = 0; i < n; i++) {
+		archive.load_from(path[i], c10::optional<torch::Device>(torch::kCPU));
+		archive.read("priors"    , priors    , true); batch->priors    .index_put_({i , "..."}, priors    );
+		archive.read("reachable" , reachable , true); batch->reachable .index_put_({i , "..."}, reachable );
+		archive.read("bernoullis", bernoullis, true); batch->bernoullis.index_put_({i , "..."}, bernoullis);
+		archive.read("scalars"   , scalars   , true); batch->scalars   .index_put_({i , "..."}, scalars   );
+		archive.read("board"     , board     , true); batch->board     .index_put_({i , "..."}, board     );
+		archive.read("lookahead" , lookahead , true); batch->lookahead .index_put_({i , "..."}, lookahead );
+	}
+
+	batch->to_gpu();
+	return batch;
 }
 
 void discard_batch(Batch *batch) { delete batch; }
