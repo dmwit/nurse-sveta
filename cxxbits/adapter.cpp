@@ -132,12 +132,12 @@ void save_example(char *path, double *priors, char *reachable, char *bernoullis,
 	auto lookahead_tensor = torch::from_blob(lookahead, {LOOKAHEAD_SIZE}, [](void *){}, charOptions);
 
 	torch::serialize::OutputArchive archive;
-	archive.write("priors", priors_tensor, true);
-	archive.write("reachable", reachable_tensor, true);
+	archive.write("priors"    ,     priors_tensor, true);
+	archive.write("reachable" ,  reachable_tensor, true);
 	archive.write("bernoullis", bernoullis_tensor, true);
-	archive.write("scalars", scalars_tensor, true);
-	archive.write("board", board_tensor, true);
-	archive.write("lookahead", lookahead_tensor, true);
+	archive.write("scalars"   ,    scalars_tensor, true);
+	archive.write("board"     ,      board_tensor, true);
+	archive.write("lookahead" ,  lookahead_tensor, true);
 
 	archive.save_to(path);
 }
