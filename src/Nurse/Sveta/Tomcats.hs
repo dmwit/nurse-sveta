@@ -85,7 +85,7 @@ instance FromJSON Move where
 
 data GameState = GameState
 	{ board :: IOBoard
-	, virusesKilled, framesPassed :: IORef Int
+	, virusesKilled, pillsUsed, framesPassed :: IORef Int
 	, originalVirusCount :: Int
 	}
 
@@ -101,10 +101,12 @@ instance Gen a ~ GenIO => GameStateSeed (Gen a) where
 		seed <- uniformRM (2, maxBound) g
 		b <- mrandomBoard seed level
 		vk <- newIORef 0
+		pu <- newIORef 0
 		fp <- newIORef 0
 		pure GameState
 			{ board = b
 			, virusesKilled = vk
+			, pillsUsed = pu
 			, framesPassed = fp
 			, originalVirusCount = 4*(level + 1)
 			}
@@ -114,11 +116,8 @@ instance GameStateSeed Board where
 		<*> thaw b
 		<*> newIORef 0
 		<*> newIORef 0
-		<*> (pure . getSum . ofoldMap countViruses) b
-		where
-		countViruses = \case
-			Occupied _ Virus -> 1
-			_ -> 0
+		<*> newIORef 0
+		<*> pure (countViruses b)
 
 initialTree :: GameStateSeed a => DMParameters -> a -> IO (GameState, Tree A0.Statistics Move)
 initialTree params g = do
@@ -194,6 +193,7 @@ dmClone :: GameState -> IO GameState
 dmClone gs = pure GameState
 	<*> cloneBoard (board gs)
 	<*> cloneIORef (virusesKilled gs)
+	<*> cloneIORef (pillsUsed gs)
 	<*> cloneIORef (framesPassed gs)
 	<*> pure (originalVirusCount gs)
 
@@ -213,6 +213,7 @@ dmPlay gs = \case
 			-- position evaluation, but why take the risk? let's just keep the
 			-- thunk depth low
 			modifyIORef' (virusesKilled gs) (clears counts +)
+			modifyIORef' (pillsUsed gs) succ
 			modifyIORef' (framesPassed gs) (approximateCostModel path pill counts +)
 
 yCosts :: V.Vector Int

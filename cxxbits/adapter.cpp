@@ -1,4 +1,3 @@
-#include <iostream>
 #include <torch/torch.h>
 
 const int64_t BOARD_WIDTH = 8;
@@ -47,6 +46,36 @@ torch::Tensor NetImpl::forward(const torch::Tensor &boards, const torch::Tensor&
 	return linear_output;
 }
 
+struct Batch {
+	torch::Tensor priors, reachable, bernoullis, scalars, board, lookahead;
+
+	Batch(int n) {
+		auto doubleOptions = torch::TensorOptions().dtype(torch::kF64);
+		auto charOptions   = torch::TensorOptions().dtype(torch::kU8);
+
+		auto priors     = torch::empty({n, NUM_ROTATIONS, BOARD_WIDTH, BOARD_HEIGHT}, doubleOptions);
+		auto reachable  = torch::empty({n, NUM_ROTATIONS, BOARD_WIDTH, BOARD_HEIGHT}, charOptions  );
+		auto bernoullis = torch::empty({n, NUM_BERNOULLIS}                          , charOptions  );
+		auto scalars    = torch::empty({n, NUM_SCALARS}                             , doubleOptions);
+		auto board      = torch::empty({n, CELL_SIZE, BOARD_WIDTH, BOARD_HEIGHT}    , charOptions  );
+		auto lookahead  = torch::empty({n, CELL_SIZE, BOARD_WIDTH, BOARD_HEIGHT}    , charOptions  );
+	}
+
+	void to_gpu() {
+		priors     = priors    .to(torch::kCUDA);
+		reachable  = reachable .to(torch::kCUDA);
+		bernoullis = bernoullis.to(torch::kCUDA);
+		scalars    = scalars   .to(torch::kCUDA);
+		board      = board     .to(torch::kCUDA);
+		lookahead  = lookahead .to(torch::kCUDA);
+
+		reachable  = reachable .to(torch::kF64);
+		bernoullis = bernoullis.to(torch::kF64);
+		board      = board     .to(torch::kF64);
+		lookahead  = lookahead .to(torch::kF64);
+	}
+};
+
 void tensorcpy(double *out, torch::Tensor &in, int64_t *start, int64_t len) {
 	if(in.dtype() != torch::kF64) throw 0;
 	// TODO: is it safe to inline the definition of contig_in, or will that
@@ -57,20 +86,23 @@ void tensorcpy(double *out, torch::Tensor &in, int64_t *start, int64_t len) {
 }
 
 extern "C" {
-	Net *sample(bool training);
-	void discard(Net *net);
-	void evaluate(Net *net, int n, double *priors, double *bernoullis, double *scalars, double *boards, double *lookaheads);
+	Net *sample_net(bool training);
+	void discard_net(Net *net);
+	void evaluate_net(Net *net, int n, double *priors, double *bernoullis, double *scalars, double *boards, double *lookaheads);
+	void save_example(char *path, double *priors, char *reachable, char *bernoullis, double *scalars, char *board, char *lookahead);
+	Batch *load_batch(char **path, int n);
+	void discard_batch(Batch *batch);
 }
 
-Net *sample(bool training) { return new Net(training); }
-void discard(Net *net) { delete net; }
+Net *sample_net(bool training) { return new Net(training); }
+void discard_net(Net *net) { delete net; }
 
 // priors: [n, 4, 8, 16]
 // bernoullis: [n]
 // scalars: [n, 3]
 // boards: [n, 7, 8, 16]
 // lookaheads: [n, 6]
-void evaluate(Net *net, int n, double *priors, double *bernoullis, double *scalars, double *boards, double *lookaheads) {
+void evaluate_net(Net *net, int n, double *priors, double *bernoullis, double *scalars, double *boards, double *lookaheads) {
 	auto inputOptions = torch::TensorOptions().dtype(torch::kF64);
 	auto boards_tensor = torch::from_blob(boards, {n, CELL_SIZE, BOARD_WIDTH, BOARD_HEIGHT}, [](void *v){}, inputOptions).to(torch::kCUDA);
 	auto lookaheads_tensor = torch::from_blob(lookaheads, {n, LOOKAHEAD_SIZE}, [](void *v){}, inputOptions).to(torch::kCUDA);
@@ -81,3 +113,38 @@ void evaluate(Net *net, int n, double *priors, double *bernoullis, double *scala
 	tensorcpy(bernoullis, output_tensor, &start, NUM_BERNOULLIS);
 	tensorcpy(scalars,    output_tensor, &start, NUM_SCALARS);
 }
+
+// priors: [4, 8, 16]
+// reachable: [4, 8, 16]
+// bernoullis: [1]
+// scalars: [3]
+// board: [7, 8, 16]
+// lookahead: [6]
+void save_example(char *path, double *priors, char *reachable, char *bernoullis, double *scalars, char *board, char *lookahead) {
+	auto doubleOptions = torch::TensorOptions().dtype(torch::kF64);
+	auto charOptions   = torch::TensorOptions().dtype(torch::kU8);
+
+	auto priors_tensor = torch::from_blob(priors, {NUM_ROTATIONS, BOARD_WIDTH, BOARD_HEIGHT}, [](void *){}, doubleOptions);
+	auto reachable_tensor = torch::from_blob(reachable, {NUM_ROTATIONS, BOARD_WIDTH, BOARD_HEIGHT}, [](void *){}, charOptions);
+	auto bernoullis_tensor = torch::from_blob(bernoullis, {NUM_BERNOULLIS}, [](void *){}, charOptions);
+	auto scalars_tensor = torch::from_blob(scalars, {NUM_SCALARS}, [](void *){}, doubleOptions);
+	auto board_tensor = torch::from_blob(board, {CELL_SIZE, BOARD_WIDTH, BOARD_HEIGHT}, [](void *){}, charOptions);
+	auto lookahead_tensor = torch::from_blob(lookahead, {LOOKAHEAD_SIZE}, [](void *){}, charOptions);
+
+	torch::serialize::OutputArchive archive;
+	archive.write("priors", priors_tensor, true);
+	archive.write("reachable", reachable_tensor, true);
+	archive.write("bernoullis", bernoullis_tensor, true);
+	archive.write("scalars", scalars_tensor, true);
+	archive.write("board", board_tensor, true);
+	archive.write("lookahead", lookahead_tensor, true);
+
+	archive.save_to(path);
+}
+
+Batch *load_batch(char **path, int n) {
+	// TODO
+	return NULL;
+}
+
+void discard_batch(Batch *batch) { delete batch; }

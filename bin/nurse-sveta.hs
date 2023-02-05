@@ -180,15 +180,6 @@ renderSpeeds spd sss = do
 	where
 	updateLabel n t = gridUpdateLabelAt spd n 0 t (numericLabel t)
 
-data GameStep = GameStep
-	{ gsMove :: Move
-	, gsRoot :: Statistics
-	, gsChildren :: HashMap Move Statistics
-	} deriving (Eq, Ord, Read, Show)
-
-instance ToJSON GameStep where toJSON gs = toJSON (gsMove gs, gsRoot gs, HM.toList (gsChildren gs))
-instance FromJSON GameStep where parseJSON v = parseJSON v <&> \(m, r, c) -> GameStep m r (HM.fromList c)
-
 generationThread :: DMEvaluationProcedure -> TVar GenerationThreadState -> StatusCheck -> IO ()
 generationThread eval genRef sc = do
 	g <- createSystemRandom
@@ -223,7 +214,8 @@ generationThread eval genRef sc = do
 				-- in particular, HashMap's fmap doesn't do the thing
 				stats <- evaluate (statistics t)
 				childStats <- traverse (evaluate . statistics) (children t)
-				let gs = GameStep m stats childStats
+				unexploredStats <- traverse evaluate (unexplored t)
+				let gs = GameStep m stats (childStats `HM.union` unexploredStats)
 				moveLoop g config params threadSpeed gameSpeed s0 (gs:history) s t'
 
 		innerLoop threadSpeed gameSpeed moveSpeed t n = do
@@ -400,7 +392,7 @@ gameFileToTensorFiles status dir fp = recallGame dir fp >>= \case
 				{ bgsLastGame = Just fp
 				}
 			}
-	Just (board, steps) -> do
+	Just history -> do
 		bts <- sPayload <$> readTVarIO status
 		categoryT <- vsSample (btsCurrentSplit bts)
 		let category = dirEncode (T.unpack categoryT)
@@ -411,15 +403,11 @@ gameFileToTensorFiles status dir fp = recallGame dir fp >>= \case
 			, pure 0
 			]
 
-		finalState <- initialState board
-		traverse_ (dmPlay finalState . gsMove) steps
-
-		-- TODO: write some tensor files
-		putStrLn $ "maybe we should process " ++ fp ++ " for " ++ category
+		let tdir = dir </> subdirectory (Tensors category) ""
+		createDirectoryIfMissing True tdir
+		n <- saveTensors tdir firstTensor history
 
 		relocate dir fp GamesPending (GamesProcessed category)
-		let n = toInteger (length steps)
-		createDirectoryIfMissing True (dir </> subdirectory (Tensors category) "")
 		encodeFile (dir </> subdirectory (Tensors category) latestTensorFilename) (firstTensor + n - 1)
 		btsUpdate status $ \bts -> bts
 			{ btsLatestGlobal = BureaucracyGlobalState

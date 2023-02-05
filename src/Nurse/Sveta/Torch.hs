@@ -1,9 +1,11 @@
 {-# Language AllowAmbiguousTypes #-}
 
-module Nurse.Sveta.Torch (netSample, netEvaluation) where
+module Nurse.Sveta.Torch (GameStep(..), netSample, netEvaluation, saveTensors) where
 
 import Control.Monad
+import Data.Aeson
 import Data.Foldable
+import Data.Functor
 import Data.HashMap.Strict (HashMap)
 import Data.IORef
 import Data.Traversable
@@ -13,21 +15,25 @@ import Dr.Mario.Model.Internal
 import Nurse.Sveta.Tomcats
 import Nurse.Sveta.Util
 import Foreign
+import Foreign.C.String
 import Foreign.C.Types
+import System.FilePath
+import System.IO
 import System.IO.Unsafe (unsafeInterleaveIO)
 
 import qualified Data.HashMap.Strict as HM
 import qualified Data.Vector as V
 import qualified Data.Vector.Unboxed.Mutable as MV
 
-foreign import ccall "sample" cxx_sample :: Bool -> IO (Ptr Net)
-foreign import ccall "&discard" cxx_discard :: FunPtr (Ptr Net -> IO ())
-foreign import ccall "evaluate" cxx_evaluate :: Ptr Net -> CInt -> Ptr CDouble -> Ptr CDouble -> Ptr CDouble -> Ptr CDouble -> Ptr CDouble -> IO ()
+foreign import ccall "sample_net" cxx_sample_net :: Bool -> IO (Ptr Net)
+foreign import ccall "&discard_net" cxx_discard_net :: FunPtr (Ptr Net -> IO ())
+foreign import ccall "evaluate_net" cxx_evaluate_net :: Ptr Net -> CInt -> Ptr CDouble -> Ptr CDouble -> Ptr CDouble -> Ptr CDouble -> Ptr CDouble -> IO ()
+foreign import ccall "save_example" cxx_save_example :: CString -> Ptr CDouble -> Ptr CChar -> Ptr CChar -> Ptr CDouble -> Ptr CChar -> Ptr CChar -> IO ()
 
 newtype Net = Net (ForeignPtr Net)
 
 netSample :: Bool -> IO Net
-netSample training = Net <$> (cxx_sample training >>= newForeignPtr cxx_discard)
+netSample training = Net <$> (cxx_sample_net training >>= newForeignPtr cxx_discard_net)
 
 class OneHot a where
 	indexCount :: Int
@@ -52,33 +58,37 @@ instance OneHot Shape where
 		2 -> West
 		3 -> Disconnected
 
+renderLookahead :: (Num a, Storable a) => Ptr a -> Color -> Color -> IO ()
+renderLookahead lookahead l r = do
+	pokeElemOff lookahead (toIndex l                    ) 1
+	pokeElemOff lookahead (toIndex r + indexCount @Color) 1
+
+renderBoard :: (Num a, Storable a) => Ptr a -> IOBoard -> IO ()
+renderBoard board b = do
+	unless (mwidth b == boardWidth && mheight b == boardHeight) . fail $
+		"expected all boards to have size " ++ show boardWidth ++ "x" ++ show boardHeight ++ ", but saw a board with size " ++ show (mwidth b) ++ "x" ++ show (mheight b)
+	-- IOBoard stores cells in a 1D array with the y coordinate varying
+	-- fastest, just like the tensor we want to make. This means we get to
+	-- reuse the index into that array as an index into our array. Nice.
+	MV.iforM_ (mcells b) $ \j -> \case
+		Empty -> pure ()
+		Occupied c s -> do
+			pokeElemOff board (shiftL (                    toIndex c) logCellCount + j) 1
+			pokeElemOff board (shiftL (indexCount @Color + toIndex s) logCellCount + j) 1
+
 render :: Traversable t => t (Int, (GameState, Color, Color)) -> IO (Ptr CDouble, Ptr CDouble)
 render itriples = do
-	boards <- mallocZeroArray (n * onehotCount)
-	lookaheads <- mallocZeroArray (n * 2 * indexCount @Color)
+	boards <- mallocZeroArray (n * boardSize)
+	lookaheads <- mallocZeroArray (n * lookaheadSize)
 	for_ itriples $ \(i, (GameState { board = b }, l, r)) -> do
-		unless (mwidth b == boardWidth && mheight b == boardHeight) . fail $
-			"expected all boards to have size " ++ show boardWidth ++ "x" ++ show boardHeight ++ ", but saw a board with size " ++ show (mwidth b) ++ "x" ++ show (mheight b)
-		let iBoard = i*onehotCount
-		    iLookahead = i*indexCount @Color*2
-		pokeElemOff lookaheads (                    iLookahead + toIndex l) 1
-		pokeElemOff lookaheads (indexCount @Color + iLookahead + toIndex r) 1
-		-- IOBoard stores cells in a 1D array with the y coordinate varying
-		-- fastest, just like the tensor we want to make. This means we get to
-		-- reuse the index into that array as an index into our array. Nice.
-		MV.iforM_ (mcells b) $ \j -> \case
-			Empty -> pure ()
-			Occupied c s -> do
-				pokeElemOff boards (iBoard + shiftL (                    toIndex c) logCellCount + j) 1
-				pokeElemOff boards (iBoard + shiftL (indexCount @Color + toIndex s) logCellCount + j) 1
+		renderBoard     (plusArray boards     (i*    boardSize)) b
+		renderLookahead (plusArray lookaheads (i*lookaheadSize)) l r
 	pure (boards, lookaheads)
 	where
-	n, onehotCount :: Int
 	n = length itriples
-	onehotCount = cellSize*cellCount
-	cellSize = indexCount @Color + indexCount @Shape
 
--- TODO: perhaps we could avoid all this realToFrac stuff by just using CDouble everywhere instead of Double...? I mean why not
+-- It looks like there's a lot of realToFrac calls in this code, but it doesn't
+-- matter, because rewrite rules throw them away.
 parseForEvaluation :: Int -> (GameState, Color, Color) -> ForeignPtr CDouble -> ForeignPtr CDouble -> ForeignPtr CDouble -> IO (Double, HashMap PillContent (Vector (Vector Double)))
 parseForEvaluation i (gs, l, r) priors_ bernoulli_ scalars_ = withForeignPtrs (priors_, (bernoulli_, (scalars_, ()))) $ \(priors, (bernoulli, (scalars, ()))) -> do
 	-- TODO: when the net does a sigmoid, just trust it to return a number between 0 and 1
@@ -112,7 +122,7 @@ netEvaluation (Net net) triples = do
 	(boards, lookaheads) <- render itriples
 
 	withForeignPtrs (net, (priors, (bernoulli, (scalars, ())))) $ \(netPtr, (priorsPtr, (bernoulliPtr, (scalarsPtr, ())))) ->
-		cxx_evaluate netPtr (fromIntegral n) priorsPtr bernoulliPtr scalarsPtr boards lookaheads
+		cxx_evaluate_net netPtr (fromIntegral n) priorsPtr bernoulliPtr scalarsPtr boards lookaheads
 	result <- for itriples $ \(i, state) ->
 			-- unsafeInterleaveIO: turns out parseForEvaluation is a bottleneck
 			-- to making foreign calls, so spread its work across multiple
@@ -137,12 +147,95 @@ netEvaluation (Net net) triples = do
 	n = length triples
 	itriples = enumerate triples
 
-boardWidth, boardHeight, cellCount, numRotations, numPriors, numBernoullis, numScalars :: Int
+data GameStep = GameStep
+	{ gsMove :: Move
+	, gsRoot :: Statistics
+	, gsChildren :: HashMap Move Statistics
+	} deriving (Eq, Ord, Read, Show)
+
+instance ToJSON GameStep where toJSON gs = toJSON (gsMove gs, gsRoot gs, HM.toList (gsChildren gs))
+instance FromJSON GameStep where parseJSON v = parseJSON v <&> \(m, r, c) -> GameStep m r (HM.fromList c)
+
+-- | Arguments: directory to save tensors in; an index; and the game record.
+-- They will be saved in files named @<i>.nst@, @<i+1>.nst@, etc., up to
+-- @<i+di-1>.nst@, with @i@ being the second argument and @di@ being the return
+-- value.
+saveTensors :: FilePath -> Integer -> (Board, [GameStep]) -> IO Integer
+saveTensors dir i0 (b0, steps) = do
+	currentState <- initialState b0
+
+	finalState <- initialState b0
+	traverse_ (dmPlay finalState . gsMove) steps
+	vkFinal <- readIORef (virusesKilled finalState)
+	puFinal <- readIORef (pillsUsed finalState)
+	fpFinal <- readIORef (framesPassed finalState)
+
+	priors <- mallocArray numPriors
+	reachable <- mallocArray numPriors
+	bernoullis <- mallocArray numBernoullis
+	scalars <- mallocArray numScalars
+	cells <- mallocArray boardSize
+	lookahead <- mallocArray lookaheadSize
+
+	pokeElemOff bernoullis 0 (if vkFinal >= originalVirusCount finalState then 1 else 0)
+
+	let loop i rots [] = pure (i-i0)
+	    loop i rots (gs:gss) = case gsMove gs of
+	    	RNG l r -> do
+	    		zeroArray lookaheadSize lookahead
+	    		renderLookahead lookahead l r
+	    		-- dmPlay doesn't do anything, but we call it anyway to defend
+	    		-- against that changing in the future
+	    		go i . HM.fromListWith (++) $ zipWith
+	    			(\iRot pc -> (pc, [iRot]))
+	    			[0..3]
+	    			(iterate (`rotateContent` Clockwise) (PillContent startingOrientation l r))
+	    	Placement bm pill -> do
+	    		zeroArray boardSize cells
+	    		renderBoard cells (board currentState)
+
+	    		zeroArray numPriors reachable
+	    		zeroArray numPriors priors -- probably not needed, but defensive programming
+	    		-- for double pills, we put half the probability mass in each of the two rotations that give the same result
+	    		let scaling = fromIntegral (length rots) / (max 1 (fromIntegral (sum (length <$> rots)) * visitCount (gsRoot gs)))
+	    		flip HM.traverseWithKey (gsChildren gs) $ \move stats -> case move of
+	    			RNG{} -> hPutStrLn stderr "WARNING: ignoring RNG move that is a sibling of a Placement move"
+	    			Placement bm' pill' -> for_ (HM.findWithDefault [] (content pill') rots) $ \iRot -> do
+	    				let pos = bottomLeftPosition pill'
+	    				    j = shiftL iRot logCellCount + shiftL (x pos) logBoardHeight + y pos
+	    				pokeElemOff reachable j 1
+	    				-- TODO: temperature, maybe? (don't forget to fix scaling appropriately)
+	    				pokeElemOff priors    j (realToFrac (scaling * visitCount stats))
+
+	    		for_ [(0, virusesKilled, vkFinal), (1, pillsUsed, puFinal), (2, framesPassed, fpFinal)] $ \(j, ioRef, final) -> do
+	    			current <- readIORef (ioRef currentState)
+	    			pokeElemOff scalars j (fromIntegral (final - current))
+
+	    		-- [N]urse [S]veta [t]ensor
+	    		withCString (dir </> show i <.> "nst") $ \path ->
+	    			cxx_save_example path priors reachable bernoullis scalars cells lookahead
+	    		go (i+1) rots
+	    	where go i' rots' = dmPlay currentState (gsMove gs) >> loop i' rots' gss
+
+	di <- loop i0 HM.empty steps
+
+	free priors
+	free reachable
+	free bernoullis
+	free scalars
+	free cells
+	free lookahead
+
+	pure di
+
+boardWidth, boardHeight, cellCount, boardSize, lookaheadSize, numRotations, numPriors, numBernoullis, numScalars :: Int
 logBoardWidth, logBoardHeight, logCellCount, logNumRotations, logNumPriors, logNumBernoullis :: Int
 boardWidth = 8; logBoardWidth = 3
 boardHeight = 16; logBoardHeight = 4
 numRotations = 4; logNumRotations = 2
 cellCount = boardWidth*boardHeight; logCellCount = logBoardWidth+logBoardHeight
+boardSize = (indexCount @Shape + indexCount @Color)*cellCount
+lookaheadSize = 2*indexCount @Color
 numPriors = numRotations*cellCount; logNumPriors = logNumRotations+logCellCount
 numBernoullis = 1; logNumBernoullis = 0
 numScalars = 3 -- virus clears, pills, frames (in that order)
@@ -163,14 +256,20 @@ instance WithForeignPtrs b => WithForeignPtrs (ForeignPtr a, b) where
 forZipWithM :: Applicative f => [a] -> [b] -> (a -> b -> f c) -> f [c]
 forZipWithM as bs f = zipWithM f as bs
 
-mallocZeroArray :: forall a. Storable a => Int -> IO (Ptr a)
-mallocZeroArray n = do
-	ptr <- mallocArray n
-	fillBytes ptr 0 (n * sizeOf (undefined :: a))
-	pure ptr
+mallocZeroArray :: Storable a => Int -> IO (Ptr a)
+mallocZeroArray n = mallocArray n >>= zeroArray n
 
-plusForeignPtr' :: forall a. Storable a => ForeignPtr a -> Int -> ForeignPtr a
-plusForeignPtr' ptr n = plusForeignPtr ptr (n * sizeOf (undefined :: a))
+zeroArray :: Storable a => Int -> Ptr a -> IO (Ptr a)
+zeroArray n ptr = ptr <$ fillBytes ptr 0 (arraySize ptr n)
+
+plusForeignPtr' :: Storable a => ForeignPtr a -> Int -> ForeignPtr a
+plusForeignPtr' ptr n = plusForeignPtr ptr (arraySize ptr n)
+
+plusArray :: Storable a => Ptr a -> Int -> Ptr a
+plusArray ptr n = plusPtr ptr (arraySize ptr n)
+
+arraySize :: forall a ptr. Storable a => ptr a -> Int -> Int
+arraySize ptr n = n * sizeOf (undefined :: a)
 
 mallocForeignPtrArrays :: Storable a => [Int] -> IO [ForeignPtr a]
 mallocForeignPtrArrays lengths = do
