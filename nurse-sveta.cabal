@@ -84,7 +84,7 @@ library
     else
         cxx-options:    -O3
 
-executable pathfinding-demo
+executable nurse-sveta-pathfinding-demo
     import:             executable
     main-is:            pathfinding-demo.hs
 
@@ -95,3 +95,9 @@ executable nurse-sveta
                         , directory ^>=1.3
                         , xdg-basedir ^>=0.2
                         , time ^>=1.9
+
+executable nurse-sveta-reset-state
+    import:             executable
+    main-is:            reset-state.hs
+    build-depends:        directory ^>=1.3
+                        , xdg-basedir ^>=0.2
