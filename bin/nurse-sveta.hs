@@ -40,12 +40,18 @@ import qualified Data.HashMap.Strict as HM
 import qualified Data.Text as T
 import qualified Data.Time as Time
 
--- ╭╴w╶──────────────────────────────────╮
--- │╭╴top╶──────────────────────────────╮│
--- ││╭╴gen╶╮╭╴inf╶╮╭╴bur╶╮╭╴trn╶╮╭╴rep╶╮││
--- ││╰─────╯╰─────╯╰─────╯╰─────╯╰─────╯││
--- │╰───────────────────────────────────╯│
--- ╰─────────────────────────────────────╯
+-- ╭╴w╶──────────────────────╮
+-- │╭╴top╶──────────────────╮│
+-- ││╭╴gen╶╮╭╴txt╶──╮╭╴rep╶╮││
+-- ││╰─────╯│╭╴inf╶╮│╰─────╯││
+-- ││       │╰─────╯│       ││
+-- ││       │╭╴bur╶╮│       ││
+-- ││       │╰─────╯│       ││
+-- ││       │╭╴trn╶╮│       ││
+-- ││       │╰─────╯│       ││
+-- ││       ╰───────╯       ││
+-- │╰───────────────────────╯│
+-- ╰─────────────────────────╯
 main :: IO ()
 main = do
 	torchPlusGtkFix
@@ -55,16 +61,21 @@ main = do
 	on app #activate $ do
 		mainRef <- newIORef Nothing
 		top <- new Box [#orientation := OrientationHorizontal, #spacing := 10]
+		txt <- new Box [#orientation := OrientationVertical]
 
 		gen <- newThreadManager "generation" Green (generationThreadView inferenceProcedure)
 		inf <- newThreadManager "inference" OS (inferenceThreadView inferenceProcedure)
 		bur <- newThreadManager "bureaucracy" Green (bureaucracyThreadView bureaucracyLock)
+		trn <- newThreadManager "training" OS trainingThreadView
 		replicateM_ 3 (tmStartThread gen)
 		tmStartThread inf
 		tmStartThread bur
+		tmStartThread trn
 		tmWidget gen >>= #append top
-		tmWidget inf >>= #append top
-		tmWidget bur >>= #append top
+		tmWidget inf >>= #append txt
+		tmWidget bur >>= #append txt
+		tmWidget trn >>= #append txt
+		#append top txt
 
 		w <- new Window $ tail [undefined
 			, #title := "Nurse Sveta"
@@ -247,10 +258,9 @@ recordGame gs steps = do
 	b <- mfreeze (board gs)
 	now <- Time.getCurrentTime
 	rand <- BS.foldr (\w s -> printf "%02x" w ++ s) "" <$> withFile "/dev/urandom" ReadMode (\h -> BS.hGet h 8)
-	dir <- getUserDataDir $ "nurse-sveta" </> "games" </> "pending"
-	let file = show now ++ "-" ++ rand <.> "json"
-	createDirectoryIfMissing True dir
-	encodeFile (dir </> file) (b, reverse steps)
+	dir <- getUserDataDir "nurse-sveta"
+	path <- prepareFile dir GamesPending $ show now ++ "-" ++ rand <.> "json"
+	encodeFile path (b, reverse steps)
 
 inferenceThreadView :: DMEvaluationProcedure -> IO ThreadView
 inferenceThreadView eval = do
@@ -319,20 +329,20 @@ btsUpdate status = atomically . modifyTVar status . sTryUpdate
 initialValidationSplit :: ValidationSplit
 initialValidationSplit = newValidationSplit [("train", 8), ("test", 1), ("validate", 1)]
 
--- ╭─ top ─────╮
--- │╭─ vsv ───╮│
--- │╰─────────╯│
--- │╭─ glg ───╮│
--- │╰─────────╯│
--- │╭─ int ───╮│
--- ││╭─ glt ─╮││
--- ││╰───────╯││
--- ││╭─ tgp ─╮││
--- ││╰───────╯││
--- ││╭─ ttp ─╮││
--- ││╰───────╯││
--- │╰─────────╯│
--- ╰───────────╯
+-- ╭╴top╶────╮
+-- │╭╴vsv╶──╮│
+-- │╰───────╯│
+-- │╭╴glg╶──╮│
+-- │╰───────╯│
+-- │╭╴int╶──╮│
+-- ││╭╴glt╶╮││
+-- ││╰─────╯││
+-- ││╭╴tgp╶╮││
+-- ││╰─────╯││
+-- ││╭╴ttp╶╮││
+-- ││╰─────╯││
+-- │╰───────╯│
+-- ╰─────────╯
 bureaucracyThreadView :: MVar BureaucracyGlobalState -> IO ThreadView
 bureaucracyThreadView lock = do
 	burRef <- newTVarIO (newStable (newBureaucracyThreadState initialValidationSplit))
@@ -340,7 +350,7 @@ bureaucracyThreadView lock = do
 
 	top <- new Box [#orientation := OrientationVertical, #spacing := 3]
 	vsv <- newValidationSplitView initialValidationSplit $ atomically . modifyTVar burRef . sOnSubterm btsRequestedSplitL . sTrySetPayload
-	glg <- descriptionLabel "<initializing>"
+	glg <- descriptionLabel "<initializing>\n"
 	int <- new Grid []
 	glt <- newSumView int 0 "tensors available to other threads"
 	tgp <- newSumView int 1 "games processed by this thread"
@@ -403,9 +413,8 @@ gameFileToTensorFiles status dir fp = recallGame dir fp >>= \case
 			, pure 0
 			]
 
-		let tdir = dir </> subdirectory (Tensors category) ""
-		createDirectoryIfMissing True tdir
-		n <- saveTensors tdir firstTensor history
+		path <- prepareFile dir (Tensors category) ""
+		n <- saveTensors path firstTensor history
 
 		relocate dir fp GamesPending (GamesProcessed category)
 		encodeFile (dir </> subdirectory (Tensors category) latestTensorFilename) (firstTensor + n - 1)
@@ -437,11 +446,20 @@ subdirectory dir fp = case dir of
 
 relocate :: FilePath -> FilePath -> Directory -> Directory -> IO ()
 relocate root fp from to = do
-	createDirectoryIfMissing True (root </> subdirectory to "")
-	renameFile (root </> subdirectory from fp) (root </> subdirectory to fp)
+	path <- prepareFile root to fp
+	renameFile (root </> subdirectory from fp) path
+
+prepareFile :: FilePath -> Directory -> FilePath -> IO FilePath
+prepareFile root dir fp = (subdir </> fp) <$ createDirectoryIfMissing True subdir where
+	subdir = root </> subdirectory dir ""
 
 latestTensorFilename :: FilePath
 latestTensorFilename = "latest.json"
+
+readLatestTensor :: FilePath -> FilePath -> IO (Maybe Integer)
+readLatestTensor root category = catch
+	(decodeFileStrict' (root </> subdirectory (Tensors category) latestTensorFilename))
+	(\e -> if isDoesNotExistError e then pure Nothing else throwIO e)
 
 newSumView :: Grid -> Int32 -> T.Text -> IO Grid
 newSumView parent i description = do
@@ -468,6 +486,40 @@ updateSumView grid ns = do
 		percent = if totalI == 0
 			then "100%"
 			else tshow (round (100 * fromIntegral n / totalD)) <> "%"
+
+trainingThreadView :: IO ThreadView
+trainingThreadView = do
+	lbl <- new Label []
+	lblWidget <- toWidget lbl
+	ref <- newTVarIO (0, 1/0)
+	pure ThreadView
+		{ tvWidget = lblWidget
+		, tvRefresh = readTVarIO ref >>= \(iterations, loss) -> set lbl [#label := tshow iterations <> " / " <> tshow loss]
+		, tvCompute = trainingThread ref
+		}
+
+-- TODO: do we have a stall condition to kill the AI if it survives too long without making progress?
+-- TODO: make learning rate, batch size, and how many recent tensors to draw from configurable
+trainingThread :: TVar (Integer, Double) -> StatusCheck -> IO ()
+trainingThread ref sc = do
+	net <- netSample True
+	gen <- createSystemRandom
+	dir <- getUserDataDir $ "nurse-sveta"
+	let readLatestTensorLoop = readLatestTensor dir category >>= \case
+	    	Nothing -> scIO sc >> threadDelay 1000000 >> readLatestTensorLoop
+	    	Just n -> pure n
+	    loop i = do
+	    	latestTensor <- readLatestTensorLoop
+	    	let earliestTensor = max 0 (latestTensor - 5000)
+	    	batchIndices <- replicateM 100 (uniformRM (earliestTensor, latestTensor) gen)
+	    	batch <- batchLoad [dir </> subdirectory (Tensors category) (show ix <.> "nst") | ix <- batchIndices]
+	    	loss <- netTrain net batch
+	    	atomically (writeTVar ref (i, loss))
+	    	scIO sc
+	    	loop (i+1)
+	loop 0
+	where
+	category = "train"
 
 gridGetLabelAt :: Grid -> Int32 -> Int32 -> IO Label -> IO Label
 gridGetLabelAt grid x y factory = #getChildAt grid x y >>= \case

@@ -1,6 +1,6 @@
 {-# Language AllowAmbiguousTypes #-}
 
-module Nurse.Sveta.Torch (GameStep(..), netSample, netEvaluation, saveTensors) where
+module Nurse.Sveta.Torch (GameStep(..), netSample, netEvaluation, netTrain, batchLoad, saveTensors) where
 
 import Control.Monad
 import Data.Aeson
@@ -27,13 +27,21 @@ import qualified Data.Vector.Unboxed.Mutable as MV
 
 foreign import ccall "sample_net" cxx_sample_net :: Bool -> IO (Ptr Net)
 foreign import ccall "&discard_net" cxx_discard_net :: FunPtr (Ptr Net -> IO ())
-foreign import ccall "evaluate_net" cxx_evaluate_net :: Ptr Net -> CInt -> Ptr CDouble -> Ptr CDouble -> Ptr CDouble -> Ptr CDouble -> Ptr CDouble -> IO ()
+foreign import ccall "evaluate_net" cxx_evaluate_net :: Ptr Net -> CInt -> Ptr CDouble -> Ptr CDouble -> Ptr CDouble -> Ptr CChar -> Ptr CChar -> IO ()
 foreign import ccall "save_example" cxx_save_example :: CString -> Ptr CDouble -> Ptr CChar -> Ptr CChar -> Ptr CDouble -> Ptr CChar -> Ptr CChar -> IO ()
+foreign import ccall "load_batch" cxx_load_batch :: Ptr CString -> CInt -> IO (Ptr Batch)
+foreign import ccall "&discard_batch" cxx_discard_batch :: FunPtr (Ptr Batch -> IO ())
+foreign import ccall "train_net" cxx_train_net :: Ptr Net -> Ptr Batch -> IO CDouble
 
 newtype Net = Net (ForeignPtr Net)
+newtype Batch = Batch (ForeignPtr Batch)
 
 netSample :: Bool -> IO Net
 netSample training = Net <$> (cxx_sample_net training >>= newForeignPtr cxx_discard_net)
+
+batchLoad :: [FilePath] -> IO Batch
+batchLoad paths = withMany withCString paths $ flip withArrayLen $ \n cpaths ->
+	Batch <$> (cxx_load_batch cpaths (fromIntegral n) >>= newForeignPtr cxx_discard_batch)
 
 class OneHot a where
 	indexCount :: Int
@@ -58,12 +66,12 @@ instance OneHot Shape where
 		2 -> West
 		3 -> Disconnected
 
-renderLookahead :: (Num a, Storable a) => Ptr a -> Color -> Color -> IO ()
+renderLookahead :: Ptr CChar -> Color -> Color -> IO ()
 renderLookahead lookahead l r = do
 	pokeElemOff lookahead (toIndex l                    ) 1
 	pokeElemOff lookahead (toIndex r + indexCount @Color) 1
 
-renderBoard :: (Num a, Storable a) => Ptr a -> IOBoard -> IO ()
+renderBoard :: Ptr CChar -> IOBoard -> IO ()
 renderBoard board b = do
 	unless (mwidth b == boardWidth && mheight b == boardHeight) . fail $
 		"expected all boards to have size " ++ show boardWidth ++ "x" ++ show boardHeight ++ ", but saw a board with size " ++ show (mwidth b) ++ "x" ++ show (mheight b)
@@ -76,7 +84,7 @@ renderBoard board b = do
 			pokeElemOff board (shiftL (                    toIndex c) logCellCount + j) 1
 			pokeElemOff board (shiftL (indexCount @Color + toIndex s) logCellCount + j) 1
 
-render :: Traversable t => t (Int, (GameState, Color, Color)) -> IO (Ptr CDouble, Ptr CDouble)
+render :: Traversable t => t (Int, (GameState, Color, Color)) -> IO (Ptr CChar, Ptr CChar)
 render itriples = do
 	boards <- mallocZeroArray (n * boardSize)
 	lookaheads <- mallocZeroArray (n * lookaheadSize)
@@ -227,6 +235,10 @@ saveTensors dir i0 (b0, steps) = do
 	free lookahead
 
 	pure di
+
+netTrain :: Net -> Batch -> IO Double
+netTrain (Net net_) (Batch batch_) = withForeignPtrs (net_, (batch_, ())) $ \(net, (batch, ())) ->
+	realToFrac <$> cxx_train_net net batch
 
 boardWidth, boardHeight, cellCount, boardSize, lookaheadSize, numRotations, numPriors, numBernoullis, numScalars :: Int
 logBoardWidth, logBoardHeight, logCellCount, logNumRotations, logNumPriors, logNumBernoullis :: Int
