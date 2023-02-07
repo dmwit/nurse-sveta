@@ -1,6 +1,6 @@
 {-# Language AllowAmbiguousTypes #-}
 
-module Nurse.Sveta.Torch (GameStep(..), netSample, netEvaluation, netTrain, batchLoad, saveTensors) where
+module Nurse.Sveta.Torch (GameStep(..), netSample, netEvaluation, netTrain, batchLoad, saveTensors, newOptimizer) where
 
 import Control.Monad
 import Data.Aeson
@@ -31,10 +31,13 @@ foreign import ccall "evaluate_net" cxx_evaluate_net :: Ptr Net -> CInt -> Ptr C
 foreign import ccall "save_example" cxx_save_example :: CString -> Ptr CDouble -> Ptr CChar -> Ptr CChar -> Ptr CDouble -> Ptr CChar -> Ptr CChar -> IO ()
 foreign import ccall "load_batch" cxx_load_batch :: Ptr CString -> CInt -> IO (Ptr Batch)
 foreign import ccall "&discard_batch" cxx_discard_batch :: FunPtr (Ptr Batch -> IO ())
-foreign import ccall "train_net" cxx_train_net :: Ptr Net -> Ptr Batch -> IO CDouble
+foreign import ccall "train_net" cxx_train_net :: Ptr Net -> Ptr Optimizer -> Ptr Batch -> IO CDouble
+foreign import ccall "connect_optimizer" cxx_connect_optimizer :: Ptr Net -> IO (Ptr Optimizer)
+foreign import ccall "&discard_optimizer" cxx_discard_optimizer :: FunPtr (Ptr Optimizer -> IO ())
 
 newtype Net = Net (ForeignPtr Net)
 newtype Batch = Batch (ForeignPtr Batch)
+newtype Optimizer = Optimizer (ForeignPtr Optimizer)
 
 netSample :: Bool -> IO Net
 netSample training = Net <$> (cxx_sample_net training >>= newForeignPtr cxx_discard_net)
@@ -42,6 +45,10 @@ netSample training = Net <$> (cxx_sample_net training >>= newForeignPtr cxx_disc
 batchLoad :: [FilePath] -> IO Batch
 batchLoad paths = withMany withCString paths $ flip withArrayLen $ \n cpaths ->
 	Batch <$> (cxx_load_batch cpaths (fromIntegral n) >>= newForeignPtr cxx_discard_batch)
+
+newOptimizer :: Net -> IO Optimizer
+newOptimizer (Net net_) = withForeignPtr net_ $ \net -> Optimizer <$>
+	(cxx_connect_optimizer net >>= newForeignPtr cxx_discard_optimizer)
 
 class OneHot a where
 	indexCount :: Int
@@ -123,6 +130,7 @@ parseForEvaluation i (gs, l, r) priors_ bernoulli_ scalars_ = withForeignPtrs (p
 	iPriors = shiftL i logNumPriors
 	iScalars = i*numScalars
 
+-- TODO: I wonder if we could improve throughput by pushing the rendering into the generation thread, like we did with the parsing
 netEvaluation :: Traversable t => Net -> t (GameState, Color, Color) -> IO (t (Double, HashMap PillContent (Vector (Vector Double))))
 netEvaluation (Net net) triples = do
 	[priors, bernoulli, scalars] <- mallocForeignPtrArrays [shiftL n logNumPriors, shiftL n logNumBernoullis, n * numScalars]
@@ -236,9 +244,9 @@ saveTensors dir i0 (b0, steps) = do
 
 	pure di
 
-netTrain :: Net -> Batch -> IO Double
-netTrain (Net net_) (Batch batch_) = withForeignPtrs (net_, (batch_, ())) $ \(net, (batch, ())) ->
-	realToFrac <$> cxx_train_net net batch
+netTrain :: Net -> Optimizer -> Batch -> IO Double
+netTrain (Net net_) (Optimizer optim_) (Batch batch_) = withForeignPtrs (net_, (batch_, (optim_, ()))) $ \(net, (batch, (optim, ()))) ->
+	realToFrac <$> cxx_train_net net optim batch
 
 boardWidth, boardHeight, cellCount, boardSize, lookaheadSize, numRotations, numPriors, numBernoullis, numScalars :: Int
 logBoardWidth, logBoardHeight, logCellCount, logNumRotations, logNumPriors, logNumBernoullis :: Int

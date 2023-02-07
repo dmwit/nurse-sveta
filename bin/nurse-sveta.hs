@@ -503,6 +503,7 @@ trainingThreadView = do
 trainingThread :: TVar (Integer, Double) -> StatusCheck -> IO ()
 trainingThread ref sc = do
 	net <- netSample True
+	sgd <- newOptimizer net
 	gen <- createSystemRandom
 	dir <- getUserDataDir $ "nurse-sveta"
 	let readLatestTensorLoop = readLatestTensor dir category >>= \case
@@ -513,7 +514,7 @@ trainingThread ref sc = do
 	    	let earliestTensor = max 0 (latestTensor - 5000)
 	    	batchIndices <- replicateM 100 (uniformRM (earliestTensor, latestTensor) gen)
 	    	batch <- batchLoad [dir </> subdirectory (Tensors category) (show ix <.> "nst") | ix <- batchIndices]
-	    	loss <- netTrain net batch
+	    	loss <- netTrain net sgd batch
 	    	atomically (writeTVar ref (i, loss))
 	    	scIO sc
 	    	loop (i+1)

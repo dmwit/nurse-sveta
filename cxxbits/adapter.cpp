@@ -237,13 +237,42 @@ NetOutput NetImpl::forward(const NetInput &in) {
 	len = NUM_ROTATIONS*NUM_CELLS; out.priors     = linear_out.index({torch::indexing::Slice(), torch::indexing::Slice(start, start + len)}); start += len;
 	len = NUM_BERNOULLIS         ; out.bernoullis = linear_out.index({torch::indexing::Slice(), torch::indexing::Slice(start, start + len)}); start += len;
 	len = NUM_SCALARS            ; out.scalars    = linear_out.index({torch::indexing::Slice(), torch::indexing::Slice(start, start + len)}); start += len;
-	out.priors = out.priors.reshape({n, NUM_ROTATIONS, BOARD_WIDTH, BOARD_HEIGHT});
+	out.priors = out.priors.reshape({n, NUM_ROTATIONS, BOARD_WIDTH, BOARD_HEIGHT}).exp();
+	out.bernoullis = out.bernoullis.sigmoid();
 
 	return out;
 }
 
+torch::Tensor compute_loss(const NetOutput &correct_out, const torch::Tensor &reachable, const NetOutput &net_out) {
+	const int n = correct_out.priors.size(0);
+	auto opts = torch::TensorOptions().dtype(torch::kF64).device(torch::kCUDA);
+	auto loss = torch::zeros({}, opts);
+	// Kullback-Leibler divergence for priors
+	auto scaled_priors = net_out.priors / (reachable*net_out.priors).sum({1,2,3}, true);
+	// correct_out.priors can have zeros (e.g. everywhere reachable is zero),
+	// which leads to -inf's after the log, which leads to nan's in the
+	// gradients. I also tried clamping after the log, but the nan's show up
+	// even after multiplying by reachable to screen off the effect of the
+	// incoming zeros.
+	loss += (correct_out.priors * (correct_out.priors.clamp_min(1e-20) / scaled_priors).log() * reachable).sum();
+	// cross-entropy loss for bernoullis
+	auto bs = net_out.bernoullis.clamp(1e-10, 1-1e-10);
+	loss -= (correct_out.bernoullis * bs.log() + (1 - correct_out.bernoullis) * (1 - bs).log()).sum();
+	// squared-error loss for scalars
+	// this is about 1e8 times as big as the bernoullis terms when training
+	// starts; other than that there's no real reason to believe 1e8 is the
+	// right factor here
+	loss += (net_out.scalars - correct_out.scalars).square().sum() / 1e8;
+	loss /= n;
+	return loss;
+}
+
+torch::Tensor compute_loss(Net &net, const Batch &batch) {
+	return compute_loss(batch.out, batch.reachable, net->forward(batch.in));
+}
+
 void tensorcpy(double *out, torch::Tensor &in) {
-	if(in.dtype() != torch::kF64) throw 0;
+	if(in.dtype() != torch::kF64 || in.device() != torch::kCPU) throw 0;
 	int64_t len = 1;
 	for(int i = 0; i < in.dim(); i++) len *= in.size(i);
 
@@ -260,7 +289,9 @@ extern "C" {
 	void save_example(char *path, double *priors, char *reachable, char *bernoullis, double *scalars, char *board, char *lookahead);
 	Batch *load_batch(char **path, int n);
 	void discard_batch(Batch *batch);
-	double train_net(Net *net, Batch *batch);
+	double train_net(Net *net, torch::optim::SGD *optim, Batch *batch);
+	torch::optim::SGD *connect_optimizer(Net *net);
+	void discard_optimizer(torch::optim::SGD *optim);
 }
 
 Net *sample_net(bool training) {
@@ -319,7 +350,17 @@ Batch *load_batch(char **path, int n) {
 
 void discard_batch(Batch *batch) { delete batch; }
 
-double train_net(Net *net, Batch *batch) {
-	// TODO
-	return 1e10;
+double train_net(Net *net, torch::optim::SGD *optim, Batch *batch) {
+	optim->zero_grad();
+	auto loss = compute_loss(*net, *batch).to(torch::kCPU);
+	loss.backward();
+	optim->step();
+	return *loss.data_ptr<double>();
 }
+
+torch::optim::SGD *connect_optimizer(Net *net) {
+	// TODO: allow setting SGD parameters like momentum, learning rate, etc.
+	return new torch::optim::SGD((**net).parameters(), 0.00001);
+}
+
+void discard_optimizer(torch::optim::SGD *optim) { delete optim; }
