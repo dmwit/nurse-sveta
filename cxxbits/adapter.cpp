@@ -14,9 +14,10 @@ struct TensorSketch {
 	torch::Device dev;
 	torch::ScalarType ty;
 	std::vector<int> dims;
+	bool grad;
 
 	TensorSketch(torch::Tensor t)
-		: dev(t.device()), ty(t.scalar_type())
+		: dev(t.device()), ty(t.scalar_type()), grad(t.requires_grad())
 	{
 		for(int i = 0; i < t.dim(); i++) dims.push_back(t.size(i));
 	}
@@ -29,7 +30,7 @@ std::ostream &operator<<(std::ostream &o, const TensorSketch sketch) {
 		for(int i = 1; i < sketch.dims.size(); i++)
 			o << ", " << sketch.dims[i];
 	}
-	return o << "]@" << sketch.dev;
+	return o << "]@" << sketch.dev << (sketch.grad?"+":"-");
 }
 
 struct NetInput {
