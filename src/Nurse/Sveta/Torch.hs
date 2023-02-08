@@ -32,23 +32,50 @@ foreign import ccall "save_example" cxx_save_example :: CString -> Ptr CDouble -
 foreign import ccall "load_batch" cxx_load_batch :: Ptr CString -> CInt -> IO (Ptr Batch)
 foreign import ccall "&discard_batch" cxx_discard_batch :: FunPtr (Ptr Batch -> IO ())
 foreign import ccall "train_net" cxx_train_net :: Ptr Net -> Ptr Optimizer -> Ptr Batch -> IO CDouble
+foreign import ccall "save_net" cxx_save_net :: Ptr Net -> Ptr Optimizer -> CString -> IO ()
+foreign import ccall "load_net" cxx_load_net :: CString -> Ptr (Ptr Net) -> Ptr (Ptr Optimizer) -> IO ()
 foreign import ccall "connect_optimizer" cxx_connect_optimizer :: Ptr Net -> IO (Ptr Optimizer)
 foreign import ccall "&discard_optimizer" cxx_discard_optimizer :: FunPtr (Ptr Optimizer -> IO ())
 
-newtype Net = Net (ForeignPtr Net)
-newtype Batch = Batch (ForeignPtr Batch)
-newtype Optimizer = Optimizer (ForeignPtr Optimizer)
+newtype Net = Net (ForeignPtr Net) deriving CWrapper
+newtype Batch = Batch (ForeignPtr Batch) deriving CWrapper
+newtype Optimizer = Optimizer (ForeignPtr Optimizer) deriving CWrapper
+
+mkNet :: Ptr Net -> IO Net
+mkNet ptr = Net <$> newForeignPtr cxx_discard_net ptr
+
+mkBatch :: Ptr Batch -> IO Batch
+mkBatch ptr = Batch <$> newForeignPtr cxx_discard_batch ptr
+
+mkOptimizer :: Ptr Optimizer -> IO Optimizer
+mkOptimizer ptr = Optimizer <$> newForeignPtr cxx_discard_optimizer ptr
 
 netSample :: Bool -> IO Net
-netSample training = Net <$> (cxx_sample_net training >>= newForeignPtr cxx_discard_net)
+netSample = cxx_sample_net >=> mkNet
 
 batchLoad :: [FilePath] -> IO Batch
-batchLoad paths = withMany withCString paths $ flip withArrayLen $ \n cpaths ->
-	Batch <$> (cxx_load_batch cpaths (fromIntegral n) >>= newForeignPtr cxx_discard_batch)
+batchLoad paths = withUnwrapped (WCS <$> paths) $ flip withArrayLen $ \n cpaths ->
+	cxx_load_batch cpaths (fromIntegral n) >>= mkBatch
 
 newOptimizer :: Net -> IO Optimizer
-newOptimizer (Net net_) = withForeignPtr net_ $ \net -> Optimizer <$>
-	(cxx_connect_optimizer net >>= newForeignPtr cxx_discard_optimizer)
+newOptimizer net_ = withUnwrapped net_ $ cxx_connect_optimizer >=> mkOptimizer
+
+netSave :: Net -> Optimizer -> FilePath -> IO ()
+netSave net_ optim_ fp = withUnwrapped (net_, (optim_, WCS fp)) $ \(net, (optim, cfp)) ->
+	cxx_save_net net optim cfp
+
+netLoadForInference :: FilePath -> IO Net
+netLoadForInference path = withUnwrapped (WCS path) $ \cpath -> do
+	netPtr <- malloc
+	cxx_load_net cpath netPtr nullPtr
+	peek netPtr >>= mkNet
+
+netLoadForTraining :: FilePath -> IO (Net, Optimizer)
+netLoadForTraining path = withUnwrapped (WCS path) $ \cpath -> do
+	netPtr <- malloc
+	optimPtr <- malloc
+	cxx_load_net cpath netPtr optimPtr
+	liftM2 (,) (peek netPtr >>= mkNet) (peek optimPtr >>= mkOptimizer)
 
 class OneHot a where
 	indexCount :: Int
@@ -105,7 +132,7 @@ render itriples = do
 -- It looks like there's a lot of realToFrac calls in this code, but it doesn't
 -- matter, because rewrite rules throw them away.
 parseForEvaluation :: Int -> (GameState, Color, Color) -> ForeignPtr CDouble -> ForeignPtr CDouble -> ForeignPtr CDouble -> IO (Double, HashMap PillContent (Vector (Vector Double)))
-parseForEvaluation i (gs, l, r) priors_ bernoulli_ scalars_ = withForeignPtrs (priors_, (bernoulli_, (scalars_, ()))) $ \(priors, (bernoulli, (scalars, ()))) -> do
+parseForEvaluation i (gs, l, r) priors_ bernoulli_ scalars_ = withUnwrapped (priors_, (bernoulli_, scalars_)) $ \(priors, (bernoulli, scalars)) -> do
 	-- TODO: when the net does a sigmoid, just trust it to return a number between 0 and 1
 	pWin <- min 1 . max 0 . realToFrac <$> peekElemOff bernoulli iBernoulli
 	virusesPast <- readIORef (virusesKilled gs)
@@ -137,7 +164,7 @@ netEvaluation (Net net) triples = do
 	-- TODO: can we avoid a ton of allocation here by pooling allocations of each size -- or even just the largest size, per Net, say?
 	(boards, lookaheads) <- render itriples
 
-	withForeignPtrs (net, (priors, (bernoulli, (scalars, ())))) $ \(netPtr, (priorsPtr, (bernoulliPtr, (scalarsPtr, ())))) ->
+	withUnwrapped (net, (priors, (bernoulli, scalars))) $ \(netPtr, (priorsPtr, (bernoulliPtr, scalarsPtr))) ->
 		cxx_evaluate_net netPtr (fromIntegral n) priorsPtr bernoulliPtr scalarsPtr boards lookaheads
 	result <- for itriples $ \(i, state) ->
 			-- unsafeInterleaveIO: turns out parseForEvaluation is a bottleneck
@@ -245,7 +272,7 @@ saveTensors dir i0 (b0, steps) = do
 	pure di
 
 netTrain :: Net -> Optimizer -> Batch -> IO Double
-netTrain (Net net_) (Optimizer optim_) (Batch batch_) = withForeignPtrs (net_, (batch_, (optim_, ()))) $ \(net, (batch, (optim, ()))) ->
+netTrain net_ optim_ batch_ = withUnwrapped (net_, (batch_, optim_)) $ \(net, (batch, optim)) ->
 	realToFrac <$> cxx_train_net net optim batch
 
 boardWidth, boardHeight, cellCount, boardSize, lookaheadSize, numRotations, numPriors, numBernoullis, numScalars :: Int
@@ -260,17 +287,30 @@ numPriors = numRotations*cellCount; logNumPriors = logNumRotations+logCellCount
 numBernoullis = 1; logNumBernoullis = 0
 numScalars = 3 -- virus clears, pills, frames (in that order)
 
-class WithForeignPtrs a where
-	type WithoutForeignPtrs a
-	withForeignPtrs :: a -> (WithoutForeignPtrs a -> IO b) -> IO b
+class CWrapper a where
+	type Unwrapped a
+	withUnwrapped :: a -> (Unwrapped a -> IO b) -> IO b
 
-instance WithForeignPtrs () where
-	type WithoutForeignPtrs () = ()
-	withForeignPtrs _ f = f ()
+instance CWrapper (ForeignPtr a) where
+	type Unwrapped (ForeignPtr a) = Ptr a
+	withUnwrapped = withForeignPtr
 
-instance WithForeignPtrs b => WithForeignPtrs (ForeignPtr a, b) where
-	type WithoutForeignPtrs (ForeignPtr a, b) = (Ptr a, WithoutForeignPtrs b)
-	withForeignPtrs (fp, fps) f = withForeignPtr fp $ \a -> withForeignPtrs fps $ \b -> f (a, b)
+instance CWrapper () where
+	type Unwrapped () = ()
+	withUnwrapped _ f = f ()
+
+instance (CWrapper a, CWrapper b) => CWrapper (a, b) where
+	type Unwrapped (a, b) = (Unwrapped a, Unwrapped b)
+	withUnwrapped (wa, wb) f = withUnwrapped wa $ \a -> withUnwrapped wb $ \b -> f (a, b)
+
+instance CWrapper a => CWrapper [a] where
+	type Unwrapped [a] = [Unwrapped a]
+	withUnwrapped = withMany withUnwrapped
+
+newtype WrappedCString = WCS String
+instance CWrapper WrappedCString where
+	type Unwrapped WrappedCString = CString
+	withUnwrapped (WCS s) = withCString s
 
 -- the arguments should always have been in this order
 forZipWithM :: Applicative f => [a] -> [b] -> (a -> b -> f c) -> f [c]

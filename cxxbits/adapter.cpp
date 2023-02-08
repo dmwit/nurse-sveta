@@ -285,6 +285,8 @@ void tensorcpy(double *out, torch::Tensor &in) {
 
 extern "C" {
 	Net *sample_net(bool training);
+	void save_net(Net *net, torch::optim::SGD *optim, char *path);
+	void load_net(char *path, Net **net, torch::optim::SGD **optim);
 	void discard_net(Net *net);
 	void evaluate_net(Net *net, int n, double *priors, double *bernoullis, double *scalars, char *boards, char *lookaheads);
 	void save_example(char *path, double *priors, char *reachable, char *bernoullis, double *scalars, char *board, char *lookahead);
@@ -302,6 +304,31 @@ Net *sample_net(bool training) {
 	return net;
 }
 void discard_net(Net *net) { delete net; }
+
+void save_net(Net *net, torch::optim::SGD *optim, char *path) {
+	torch::serialize::OutputArchive archive;
+	(**net).save(archive);
+	optim->save(archive);
+	archive.save_to(path);
+}
+
+void load_net(char *path, Net **netptr, torch::optim::SGD **optimptr) {
+	torch::serialize::InputArchive archive;
+	archive.load_from(path);
+
+	*netptr = new Net();
+	auto net = **netptr;
+	net->load(archive);
+	if(optimptr == NULL) {
+		net->train(false);
+	} else {
+		net->train(true);
+		// the learning rate is going to be immediately overwritten, so use
+		// whatever, e.g. 0.001
+		*optimptr = new torch::optim::SGD(net->parameters(), 0.1);
+		(**optimptr).load(archive);
+	}
+}
 
 // priors: [n, 4, 8, 16]
 // bernoullis: [n, 1]

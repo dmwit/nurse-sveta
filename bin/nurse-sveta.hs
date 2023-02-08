@@ -517,6 +517,7 @@ trainingThreadView = do
 
 -- TODO: do we have a stall condition to kill the AI if it survives too long without making progress?
 -- TODO: make learning rate, batch size, and how many recent tensors to draw from configurable
+-- TODO: perhaps instead of a flat recent tensor count, we should do exponential discounting!
 trainingThread :: TVar (SearchSpeed, Double) -> StatusCheck -> IO ()
 trainingThread ref sc = do
 	net <- netSample True
