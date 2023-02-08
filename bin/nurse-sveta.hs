@@ -489,18 +489,35 @@ updateSumView grid ns = do
 
 trainingThreadView :: IO ThreadView
 trainingThreadView = do
-	lbl <- new Label []
-	lblWidget <- toWidget lbl
-	ref <- newTVarIO (0, 1/0)
+	top <- new Box [#orientation := OrientationVertical]
+	lob <- new Box [#orientation := OrientationHorizontal]
+	lod <- descriptionLabel "loss: "
+	lov <- numericLabel "Infinity"
+	spd <- new Grid []
+
+	#append top lob
+	#append lob lod
+	#append lob lov
+	#append top spd
+
+	ss0 <- newSearchSpeed
+	ref <- newTVarIO (ss0, 1/0)
+	let refresh = do
+	    	(ss, loss) <- readTVarIO ref
+	    	set lov [#label := T.pack (printf "%7.3f" loss)]
+	    	renderSpeeds spd (HM.singleton "iterations" ss)
+	refresh
+
+	topWidget <- toWidget top
 	pure ThreadView
-		{ tvWidget = lblWidget
-		, tvRefresh = readTVarIO ref >>= \(iterations, loss) -> set lbl [#label := tshow iterations <> " / " <> tshow loss]
+		{ tvWidget = topWidget
+		, tvRefresh = refresh
 		, tvCompute = trainingThread ref
 		}
 
 -- TODO: do we have a stall condition to kill the AI if it survives too long without making progress?
 -- TODO: make learning rate, batch size, and how many recent tensors to draw from configurable
-trainingThread :: TVar (Integer, Double) -> StatusCheck -> IO ()
+trainingThread :: TVar (SearchSpeed, Double) -> StatusCheck -> IO ()
 trainingThread ref sc = do
 	net <- netSample True
 	sgd <- newOptimizer net
@@ -515,7 +532,7 @@ trainingThread ref sc = do
 	    	batchIndices <- replicateM 100 (uniformRM (earliestTensor, latestTensor) gen)
 	    	batch <- batchLoad [dir </> subdirectory (Tensors category) (show ix <.> "nst") | ix <- batchIndices]
 	    	loss <- netTrain net sgd batch
-	    	atomically (writeTVar ref (i, loss))
+	    	atomically (modifyTVar ref (\(ss, _) -> (incSearchIterations ss, loss)))
 	    	scIO sc
 	    	loop (i+1)
 	loop 0
