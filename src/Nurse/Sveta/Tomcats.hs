@@ -217,7 +217,7 @@ dmPlay gs = \case
 			modifyIORef' (framesPassed gs) (approximateCostModel path pill counts +)
 
 yCosts :: V.Vector Int
-yCosts = V.fromList [undefined, undefined, 44, 42, 41, 41, 39, 39, 37, 37, 35, 35, 33, 34, 34, 34]
+yCosts = V.fromList [47 {- TODO -}, 46 {- TODO -}, 44, 42, 41, 41, 39, 39, 37, 37, 35, 35, 33, 34, 34, 34]
 
 -- TODO: figure out the exact cost model for the NES, then move that into maryodel
 -- TODO: don't count fall time after the last clear
