@@ -462,7 +462,7 @@ bureaucracyThread lock status sc = do
 		-- TODO: is this really doing the right thing if gameFileToTensorFiles throws an exception? seems like probably not?
 		modifyMVar_ lock $ \bgs -> do
 			pending <- catch (listDirectory (dir </> subdirectory GamesPending "")) $ \e ->
-				if isDoesNotExistError e then pure [] else throw e
+				if isDoesNotExistError e || isAlreadyInUseError e then pure [] else throw e
 			btsUpdate status $ \bts -> bts { btsLatestGlobal = bgs }
 			traverse_ (gameFileToTensorFiles status dir) (sort pending)
 			btsLatestGlobal . sPayload <$> readTVarIO status
@@ -539,7 +539,7 @@ latestFilename = "latest.json"
 readLatestTensor :: FilePath -> FilePath -> IO (Maybe Integer)
 readLatestTensor root category = catch
 	(decodeFileStrict' (root </> subdirectory (Tensors category) latestFilename))
-	(\e -> if isDoesNotExistError e then pure Nothing else throwIO e)
+	(\e -> if isDoesNotExistError e || isAlreadyInUseError e then pure Nothing else throwIO e)
 
 newSumView :: Grid -> Int32 -> T.Text -> IO Grid
 newSumView parent i description = do
