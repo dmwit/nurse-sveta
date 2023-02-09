@@ -1,6 +1,13 @@
 {-# Language AllowAmbiguousTypes #-}
 
-module Nurse.Sveta.Torch (GameStep(..), netSample, netEvaluation, netTrain, batchLoad, saveTensors, newOptimizer) where
+module Nurse.Sveta.Torch (
+	Net, netSample, netEvaluation, netTrain,
+	netSave, netLoadForInference, netLoadForTraining,
+	Optimizer, newOptimizer,
+	Batch, batchLoad,
+	GameStep(..), saveTensors,
+	)
+	where
 
 import Control.Monad
 import Data.Aeson
@@ -158,7 +165,7 @@ parseForEvaluation i (gs, l, r) priors_ bernoulli_ scalars_ = withUnwrapped (pri
 	iScalars = i*numScalars
 
 -- TODO: I wonder if we could improve throughput by pushing the rendering into the generation thread, like we did with the parsing
-netEvaluation :: Traversable t => Net -> t (GameState, Color, Color) -> IO (t (Double, HashMap PillContent (Vector (Vector Double))))
+netEvaluation :: Traversable t => Net -> t (GameState, Color, Color) -> IO (t DetailedEvaluation)
 netEvaluation net_ triples = do
 	[priors_, bernoulli_, scalars_] <- mallocForeignPtrArrays [shiftL n logNumPriors, shiftL n logNumBernoullis, n * numScalars]
 	-- TODO: can we avoid a ton of allocation here by pooling allocations of each size -- or even just the largest size, per Net, say?

@@ -2,7 +2,7 @@ module Nurse.Sveta.Tomcats (
 	DMParameters, dmParameters,
 	GameStateSeed(..), initialTree,
 	mcts, descend, unsafeDescend,
-	evaluateFinalState, dumbEvaluation,
+	evaluateFinalState, DetailedEvaluation, dumbEvaluation,
 	winningValuation, losingValuation, clampCleared,
 	dmFinished, dmPlay,
 	SearchConfiguration(..), DMEvaluationProcedure,
@@ -258,10 +258,12 @@ dmPreprocess eval gs t = if not (RNG Blue Blue `HM.member` unexplored t) then pu
 		Red -> r
 		Yellow -> error "The impossible happened in Dr.Mario.Tomcats.dmPreprocess: pathfinding on a blue-red pill resulted in placing a yellow pill half."
 
+type DetailedEvaluation = (Double, HashMap PillContent (Vector (Vector Double)))
+
 -- | Given the game state and the colors for the upcoming pill, guess where
 -- moves will be made and how good the final outcome will be. The Vector's are
 -- indexed by (x, y) position of the bottom left.
-dumbEvaluation :: (GameState, Color, Color) -> IO (Double, HashMap PillContent (Vector (Vector Double)))
+dumbEvaluation :: (GameState, Color, Color) -> IO DetailedEvaluation
 dumbEvaluation = \(s, l, r) -> do
 	points <- evaluateFinalState s
 	pure (points, HM.fromList

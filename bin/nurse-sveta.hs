@@ -56,17 +56,19 @@ main :: IO ()
 main = do
 	torchPlusGtkFix
 	app <- new Application []
-	inferenceProcedure <- newProcedure 100
-	bureaucracyLock <- newMVar newBureaucracyGlobalState
 	on app #activate $ do
+		inferenceProcedure <- newProcedure 100
+		bureaucracyLock <- newMVar newBureaucracyGlobalState
+		netUpdate <- newTVarIO Nothing
 		mainRef <- newIORef Nothing
+
 		top <- new Box [#orientation := OrientationHorizontal, #spacing := 10]
 		txt <- new Box [#orientation := OrientationVertical]
 
 		gen <- newThreadManager "generation" Green (generationThreadView inferenceProcedure)
-		inf <- newThreadManager "inference" OS (inferenceThreadView inferenceProcedure)
+		inf <- newThreadManager "inference" OS (inferenceThreadView inferenceProcedure netUpdate)
 		bur <- newThreadManager "bureaucracy" Green (bureaucracyThreadView bureaucracyLock)
-		trn <- newThreadManager "training" OS trainingThreadView
+		trn <- newThreadManager "training" OS (trainingThreadView netUpdate)
 		replicateM_ 3 (tmStartThread gen)
 		tmStartThread inf
 		tmStartThread bur
@@ -90,7 +92,7 @@ main = do
 					-- It doesn't have any resources worth being careful about,
 					-- and stopping its threads can cause search threads to
 					-- block instead of gracefully shutting down.
-					let tms = [gen]
+					let tms = [gen, bur, trn]
 					writeIORef mainRef (Just (length tms))
 					for_ tms $ \tm -> tmDieThen tm $ readIORef mainRef >>= \case
 						Nothing -> fail "the impossible happened: a thread manager finished dying before thread managers started dying"
@@ -116,7 +118,7 @@ newGenerationThreadState :: SearchConfiguration -> GenerationThreadState
 newGenerationThreadState cfg = GenerationThreadState
 	{ summary = SearchSummary
 		{ rootPosition = newStable (PSM (emptyBoard 8 16) Nothing [])
-		, speeds = HM.empty
+		, speeds = []
 		}
 	, requestedConfiguration = cfg
 	, currentConfiguration = newStable cfg
@@ -126,7 +128,7 @@ onRootPosition :: (Stable PlayerStateModel -> Stable PlayerStateModel) -> Genera
 onRootPosition f gts = gts { summary = s { rootPosition = f (rootPosition s) } } where
 	s = summary gts
 
-onSpeeds :: (HashMap T.Text SearchSpeed -> HashMap T.Text SearchSpeed) -> GenerationThreadState -> GenerationThreadState
+onSpeeds :: ([(T.Text, SearchSpeed)] -> [(T.Text, SearchSpeed)]) -> GenerationThreadState -> GenerationThreadState
 onSpeeds f gts = gts { summary = s { speeds = f (speeds s) } } where
 	s = summary gts
 
@@ -140,7 +142,7 @@ requestConfiguration :: SearchConfiguration -> GenerationThreadState -> Generati
 requestConfiguration sc gts = gts { requestedConfiguration = sc }
 
 acceptConfiguration :: GenerationThreadState -> GenerationThreadState
-acceptConfiguration gts = gts { currentConfiguration = sTrySetPayload (requestedConfiguration gts) (currentConfiguration gts) }
+acceptConfiguration gts = gts { currentConfiguration = sTrySet (requestedConfiguration gts) (currentConfiguration gts) }
 
 -- ╭╴top╶───────────╮
 -- │╭╴psv╶╮╭╴nfo╶──╮│
@@ -179,15 +181,15 @@ generationThreadView eval = do
 		, tvCompute = generationThread eval genRef
 		}
 
-renderSpeeds :: Grid -> HashMap T.Text SearchSpeed -> IO ()
+renderSpeeds :: Grid -> [(T.Text, SearchSpeed)] -> IO ()
 renderSpeeds spd sss = do
 	now <- Time.getCurrentTime
-	let column nm ss = Ap . ZipList . map (:[]) $ [nm, ": ", tshow (searchIterations ss), " positions/", ms, "s = ", T.justifyRight 5 ' ' . tshow . round $ rate, " positions/s"] where
+	let row (nm, ss) = [nm, ": ", tshow (searchIterations ss), " positions/", ms, "s = ", T.justifyRight 5 ' ' . tshow . round $ rate, " positions/s"] where
 	    	dt = realToFrac . Time.diffUTCTime now . searchStart $ ss :: Double
 	    	ms = T.pack (showFFloat (Just 1) (realToFrac dt) "")
 	    	rate = fromIntegral (searchIterations ss) / dt
-	    Ap (ZipList columns) = HM.foldMapWithKey column sss
-	unless (HM.null sss) $ zipWithM_ updateLabel [0..] (T.unlines <$> columns)
+	    columns = transpose (map row sss)
+	unless (null sss) $ zipWithM_ updateLabel [0..] (T.unlines <$> columns)
 	where
 	updateLabel n t = gridUpdateLabelAt spd n 0 t (numericLabel t)
 
@@ -210,7 +212,7 @@ generationThread eval genRef sc = do
 		t' <- unsafeDescend params (RNG l r) s t
 		let gs = GameStep (RNG l r) mempty mempty
 		boardSnapshot <- mfreeze (board s)
-		atomically $ modifyTVar genRef (onRootPosition (sSetPayload (PSM boardSnapshot (Just (l, r)) [])))
+		atomically $ modifyTVar genRef (onRootPosition (sSet (PSM boardSnapshot (Just (l, r)) [])))
 		moveSpeed <- newSearchSpeed
 		searchLoop g config params s0 (gs:history) s threadSpeed gameSpeed moveSpeed t' (iterations config)
 
@@ -238,13 +240,13 @@ generationThread eval genRef sc = do
 				Just (Placement _ p, _, _) -> p `seq` pure ()
 				_ -> pure ()
 
-			let [threadSpeed', gameSpeed', moveSpeed'] = incSearchIterations <$> [threadSpeed, gameSpeed, moveSpeed]
-			    speeds' = HM.fromList [("thread", threadSpeed), ("game", gameSpeed), ("move", moveSpeed)]
+			let [threadSpeed', gameSpeed', moveSpeed'] = ssInc <$> [threadSpeed, gameSpeed, moveSpeed]
+			    speeds' = [("thread", threadSpeed), ("game", gameSpeed), ("move", moveSpeed)]
 
 			gts <- atomically . modifyTVar genRef $ id
 				. onSpeeds (const speeds')
 				. case move of
-				  	Just (Placement _ p, _, _) -> onRootPosition (sOnSubterm psmOverlayL (sTrySetPayload [(p, 0.3)]))
+				  	Just (Placement _ p, _, _) -> onRootPosition (sOnSubterm psmOverlayL (sTrySet [(p, 0.3)]))
 				  	_ -> id
 
 			scIO sc
@@ -258,39 +260,115 @@ recordGame gs steps = do
 	b <- mfreeze (board gs)
 	now <- Time.getCurrentTime
 	rand <- BS.foldr (\w s -> printf "%02x" w ++ s) "" <$> withFile "/dev/urandom" ReadMode (\h -> BS.hGet h 8)
-	dir <- getUserDataDir "nurse-sveta"
+	dir <- nsDataDir
 	path <- prepareFile dir GamesPending $ show now ++ "-" ++ rand <.> "json"
 	encodeFile path (b, reverse steps)
 
-inferenceThreadView :: DMEvaluationProcedure -> IO ThreadView
-inferenceThreadView eval = do
-	spd <- new Grid []
-	spdWidget <- toWidget spd
-	infRef <- newTVarIO HM.empty
-	pure ThreadView
-		{ tvWidget = spdWidget
-		, tvRefresh = readTVarIO infRef >>= renderSpeeds spd
-		, tvCompute = inferenceThread eval infRef
-		}
+data InferenceThreadState = InferenceThreadState
+	{ itsThreadBatches :: SearchSpeed
+	, itsThreadPositions :: SearchSpeed
+	, itsNetBatches :: SearchSpeed
+	, itsNetPositions :: SearchSpeed
+	, itsNet :: Stable (Maybe (Integer, Net))
+	}
 
-inferenceThread :: DMEvaluationProcedure -> TVar (HashMap T.Text SearchSpeed) -> StatusCheck -> IO ()
-inferenceThread eval infRef sc = do
-	net <- netSample False
-	batches <- newSearchSpeed
-	positions <- newSearchSpeed
-	go net batches positions
+itsEvaluate :: Traversable t => InferenceThreadState -> t (GameState, Color, Color) -> IO (t DetailedEvaluation, Int)
+itsEvaluate its queries = (\answers -> (answers, length answers)) <$> case sPayload (itsNet its) of
+	Nothing -> traverse dumbEvaluation queries
+	Just (_, net) -> netEvaluation net queries
+
+itsNewNet :: InferenceThreadState -> Maybe Integer -> Bool
+itsNewNet its mn = fmap fst (sPayload (itsNet its)) /= mn
+
+inferenceThreadView :: DMEvaluationProcedure -> TVar (Maybe Integer) -> IO ThreadView
+inferenceThreadView eval netUpdate = do
+	top <- new Box [#orientation := OrientationVertical]
+	lbl <- descriptionLabel "<initializing net>"
+	spd <- new Grid []
+	#append top lbl
+	#append top spd
+
+	latestNet <- inferenceThreadLoadLatestNet
+	atomically $ do
+		updatedNet <- readTVar netUpdate
+		case (latestNet, updatedNet) of
+			(Just (n, _), Nothing) -> writeTVar netUpdate (Just n)
+			_ -> pure ()
+	its0 <- pure InferenceThreadState
+		<*> newSearchSpeed
+		<*> newSearchSpeed
+		<*> newSearchSpeed
+		<*> newSearchSpeed
+		<*> pure (newStable latestNet)
+	ref <- newTVarIO its0
+
+	tracker <- newTracker
+	topWidget <- toWidget top
+	pure ThreadView
+		{ tvWidget = topWidget
+		, tvRefresh = do
+			its <- readTVarIO ref
+			tWhenUpdated tracker (itsNet its) $ \mn ->
+				set lbl [#label := describeNet mn]
+			renderSpeeds spd $ tail [undefined
+				, ("positions (thread)", itsThreadPositions its)
+				, ("positions (net)   ", itsNetPositions its)
+				, ("batches (thread)", itsThreadBatches its)
+				, ("batches (net)   ", itsNetBatches its)
+				]
+		, tvCompute = inferenceThread eval netUpdate ref
+		}
 	where
-	go net batches positions = do
-		atomically . writeTVar infRef $ HM.fromList [("batches", batches), ("positions", positions)]
-		mn <- atomically
-			$ (Just <$> serviceCallsSTM eval (\as -> flip (,) (length as) <$> netEvaluation net as))
-			<|> (Nothing <$ scSTM sc)
-		case mn of
-			Just ion -> ion >>= \n -> go
-				net
-				(incSearchIterations batches)
-				(positions { searchIterations = searchIterations positions + n })
-			Nothing -> scIO sc
+	describeNet mn = "current net: " <> case mn of
+		Nothing -> "hand-crafted"
+		Just (n, _) -> tshow n
+
+data InferenceThreadStep
+	= ITSLoadNet (Maybe Integer)
+	| ITSProgress (IO Int)
+	| ITSDie
+
+inferenceThread :: DMEvaluationProcedure -> TVar (Maybe Integer) -> TVar InferenceThreadState -> StatusCheck -> IO ()
+inferenceThread eval netUpdate itsRef sc = forever $ do
+	its <- readTVarIO itsRef
+	step <- atomically . asum $ tail [undefined
+		, ITSProgress <$> serviceCallsSTM eval (itsEvaluate its)
+		, ITSDie <$ scSTM sc
+		, ITSLoadNet <$> (readTVar netUpdate >>= ensure (itsNewNet its))
+		]
+	case step of
+		ITSProgress ion -> ion >>= \n -> atomically $ writeTVar itsRef its
+			{ itsThreadBatches = ssInc (itsThreadBatches its)
+			, itsNetBatches = ssInc (itsNetBatches its)
+			, itsThreadPositions = ssIncBy (itsThreadPositions its) n
+			, itsNetPositions = ssIncBy (itsNetPositions its) n
+			}
+		ITSLoadNet n -> do
+			net <- traverse inferenceThreadLoadNet n
+			when (itsNewNet its (fst <$> net)) $ do
+				batches <- newSearchSpeed
+				positions <- newSearchSpeed
+				atomically $ writeTVar itsRef its { itsNet = sSet net (itsNet its), itsNetBatches = batches, itsNetPositions = positions }
+		ITSDie -> scIO sc
+
+inferenceThreadLoadLatestNet :: IO (Maybe (Integer, Net))
+inferenceThreadLoadLatestNet = do
+	dir <- nsDataDir
+	n <- catch
+		(decodeFileStrict' (dir </> subdirectory Weights latestFilename))
+		(\e -> if isDoesNotExistError e then pure Nothing else throwIO e)
+	traverse inferenceThreadLoadNet n
+
+-- TODO: better error handling
+inferenceThreadLoadNet :: Integer -> IO (Integer, Net)
+inferenceThreadLoadNet generation = do
+	dir <- nsDataDir
+	-- [N]urse [S]veta [n]et
+	net <- netLoadForInference (dir </> subdirectory Weights (show generation <.> "nsn"))
+	pure (generation, net)
+
+nsDataDir :: IO FilePath
+nsDataDir = getUserDataDir "nurse-sveta"
 
 data BureaucracyGlobalState = BureaucracyGlobalState
 	{ bgsLastGame :: Maybe FilePath
@@ -349,7 +427,7 @@ bureaucracyThreadView lock = do
 	tracker <- newTracker
 
 	top <- new Box [#orientation := OrientationVertical, #spacing := 3]
-	vsv <- newValidationSplitView initialValidationSplit $ atomically . modifyTVar burRef . sOnSubterm btsRequestedSplitL . sTrySetPayload
+	vsv <- newValidationSplitView initialValidationSplit $ atomically . modifyTVar burRef . sOnSubterm btsRequestedSplitL . sTrySet
 	glg <- descriptionLabel "<initializing>\n"
 	int <- new Grid []
 	glt <- newSumView int 0 "tensors available to other threads"
@@ -379,7 +457,7 @@ bureaucracyThreadView lock = do
 
 bureaucracyThread :: MVar BureaucracyGlobalState -> TVar (Stable BureaucracyThreadState) -> StatusCheck -> IO a
 bureaucracyThread lock status sc = do
-	dir <- getUserDataDir $ "nurse-sveta"
+	dir <- nsDataDir
 	forever $ do
 		-- TODO: is this really doing the right thing if gameFileToTensorFiles throws an exception? seems like probably not?
 		modifyMVar_ lock $ \bgs -> do
@@ -409,7 +487,7 @@ gameFileToTensorFiles status dir fp = recallGame dir fp >>= \case
 		    bgs = btsLatestGlobal bts
 		firstTensor <- asum [empty
 			, maybe empty pure $ HM.lookup categoryT (bgsNextTensor bgs)
-			, maybe empty (pure . succ) =<< decodeFileStrict' (dir </> subdirectory (Tensors category) latestTensorFilename)
+			, maybe empty (pure . succ) =<< decodeFileStrict' (dir </> subdirectory (Tensors category) latestFilename)
 			, pure 0
 			]
 
@@ -417,7 +495,7 @@ gameFileToTensorFiles status dir fp = recallGame dir fp >>= \case
 		n <- saveTensors path firstTensor history
 
 		relocate dir fp GamesPending (GamesProcessed category)
-		encodeFile (dir </> subdirectory (Tensors category) latestTensorFilename) (firstTensor + n - 1)
+		encodeFile (dir </> subdirectory (Tensors category) latestFilename) (firstTensor + n - 1)
 		btsUpdate status $ \bts -> bts
 			{ btsLatestGlobal = BureaucracyGlobalState
 				{ bgsLastGame = Just fp
@@ -435,14 +513,16 @@ data Directory
 	| GamesProcessed FilePath
 	| GamesParseError
 	| Tensors FilePath
+	| Weights
 	deriving (Eq, Ord, Read, Show)
 
 subdirectory :: Directory -> FilePath -> FilePath
 subdirectory dir fp = case dir of
 	GamesPending            -> "games" </> "pending" </> fp
 	GamesProcessed category -> "games" </> "processed" </> category </> fp
-	GamesParseError         -> "games" </> "parse-error"
+	GamesParseError         -> "games" </> "parse-error" </> fp
 	Tensors category        -> "tensors" </> category </> fp
+	Weights                 -> "weights" </> fp
 
 relocate :: FilePath -> FilePath -> Directory -> Directory -> IO ()
 relocate root fp from to = do
@@ -453,12 +533,12 @@ prepareFile :: FilePath -> Directory -> FilePath -> IO FilePath
 prepareFile root dir fp = (subdir </> fp) <$ createDirectoryIfMissing True subdir where
 	subdir = root </> subdirectory dir ""
 
-latestTensorFilename :: FilePath
-latestTensorFilename = "latest.json"
+latestFilename :: FilePath
+latestFilename = "latest.json"
 
 readLatestTensor :: FilePath -> FilePath -> IO (Maybe Integer)
 readLatestTensor root category = catch
-	(decodeFileStrict' (root </> subdirectory (Tensors category) latestTensorFilename))
+	(decodeFileStrict' (root </> subdirectory (Tensors category) latestFilename))
 	(\e -> if isDoesNotExistError e then pure Nothing else throwIO e)
 
 newSumView :: Grid -> Int32 -> T.Text -> IO Grid
@@ -487,58 +567,91 @@ updateSumView grid ns = do
 			then "100%"
 			else tshow (round (100 * fromIntegral n / totalD)) <> "%"
 
-trainingThreadView :: IO ThreadView
-trainingThreadView = do
+trainingThreadView :: TVar (Maybe Integer) -> IO ThreadView
+trainingThreadView netUpdate = do
 	top <- new Box [#orientation := OrientationVertical]
+	svb <- new Box [#orientation := OrientationHorizontal]
+	svd <- descriptionLabel "most recently saved net: "
+	svv <- descriptionLabel "<none yet>"
 	lob <- new Box [#orientation := OrientationHorizontal]
 	lod <- descriptionLabel "loss: "
 	lov <- numericLabel "Infinity"
 	spd <- new Grid []
 
+	#append top svb
+	#append svb svd
+	#append svb svv
 	#append top lob
 	#append lob lod
 	#append lob lov
 	#append top spd
 
 	ss0 <- newSearchSpeed
-	ref <- newTVarIO (ss0, 1/0)
+	ref <- newTVarIO (newStable Nothing, ss0, 1/0)
+	tracker <- newTracker
 	let refresh = do
-	    	(ss, loss) <- readTVarIO ref
+	    	(sgen, ss, loss) <- readTVarIO ref
+	    	tWhenUpdated tracker sgen $ \case
+	    		Nothing -> set svv [#label := "<none yet>"]
+	    		Just gen -> set svv [#label := tshow gen]
 	    	set lov [#label := T.pack (printf "%7.3f" loss)]
-	    	renderSpeeds spd (HM.singleton "iterations" ss)
+	    	renderSpeeds spd [("iterations", ss)]
 	refresh
 
 	topWidget <- toWidget top
 	pure ThreadView
 		{ tvWidget = topWidget
 		, tvRefresh = refresh
-		, tvCompute = trainingThread ref
+		, tvCompute = trainingThread netUpdate ref
 		}
 
 -- TODO: do we have a stall condition to kill the AI if it survives too long without making progress?
 -- TODO: make learning rate, batch size, and how many recent tensors to draw from configurable
 -- TODO: perhaps instead of a flat recent tensor count, we should do exponential discounting!
-trainingThread :: TVar (SearchSpeed, Double) -> StatusCheck -> IO ()
-trainingThread ref sc = do
-	net <- netSample True
-	sgd <- newOptimizer net
-	gen <- createSystemRandom
-	dir <- getUserDataDir $ "nurse-sveta"
+trainingThread :: TVar (Maybe Integer) -> TVar (Stable (Maybe Integer), SearchSpeed, Double) -> StatusCheck -> IO ()
+trainingThread netUpdate ref sc = do
+	(gen0, net, sgd) <- trainingThreadLoadLatestNet
+	rng <- createSystemRandom
+	dir <- nsDataDir
 	let readLatestTensorLoop = readLatestTensor dir category >>= \case
 	    	Nothing -> scIO sc >> threadDelay 1000000 >> readLatestTensorLoop
 	    	Just n -> pure n
-	    loop i = do
+	    loop i gen = do
+	    	i' <- if i >= 1000000
+	    		then do
+	    			path <- prepareFile dir Weights (show gen <.> "nsn")
+	    			netSave net sgd path
+	    			encodeFile (dir </> subdirectory Weights latestFilename) gen
+	    			atomically $ writeTVar netUpdate (Just gen)
+	    			atomically . modifyTVar ref $ \(sgen, ss, loss) -> (sSet (Just gen) sgen, ss, loss)
+	    			pure 0
+	    		else pure (i+1)
 	    	latestTensor <- readLatestTensorLoop
 	    	let earliestTensor = max 0 (latestTensor - 5000)
-	    	batchIndices <- replicateM 100 (uniformRM (earliestTensor, latestTensor) gen)
+	    	batchIndices <- replicateM 100 (uniformRM (earliestTensor, latestTensor) rng)
 	    	batch <- batchLoad [dir </> subdirectory (Tensors category) (show ix <.> "nst") | ix <- batchIndices]
 	    	loss <- netTrain net sgd batch
-	    	atomically (modifyTVar ref (\(ss, _) -> (incSearchIterations ss, loss)))
-	    	scIO sc
-	    	loop (i+1)
-	loop 0
+	    	atomically (modifyTVar ref (\(gen, ss, _) -> (gen, ssInc ss, loss)))
+	    	scIO sc -- TODO: do one last netSave
+	    	loop i' (gen+1)
+	loop 0 gen0
 	where
 	category = "train"
+
+trainingThreadLoadLatestNet :: IO (Integer, Net, Optimizer)
+trainingThreadLoadLatestNet = do
+	dir <- nsDataDir
+	mn <- catch
+		(decodeFileStrict' (dir </> subdirectory Weights latestFilename))
+		(\e -> if isDoesNotExistError e then pure Nothing else throwIO e)
+	case mn of
+		Nothing -> do
+			net <- netSample True
+			sgd <- newOptimizer net
+			pure (0, net, sgd)
+		Just n -> do
+			(net, sgd) <- netLoadForTraining (dir </> subdirectory Weights (show n <.> "nsn"))
+			pure (n, net, sgd)
 
 gridGetLabelAt :: Grid -> Int32 -> Int32 -> IO Label -> IO Label
 gridGetLabelAt grid x y factory = #getChildAt grid x y >>= \case
@@ -588,10 +701,13 @@ data SearchSpeed = SearchSpeed
 newSearchSpeed :: IO SearchSpeed
 newSearchSpeed = Time.getCurrentTime <&> \now -> SearchSpeed now 0
 
-incSearchIterations :: SearchSpeed -> SearchSpeed
-incSearchIterations ss = ss { searchIterations = searchIterations ss + 1 }
+ssInc :: SearchSpeed -> SearchSpeed
+ssInc ss = ss { searchIterations = searchIterations ss + 1 }
+
+ssIncBy :: SearchSpeed -> Int -> SearchSpeed
+ssIncBy ss n = ss { searchIterations = searchIterations ss + n }
 
 data SearchSummary = SearchSummary
 	{ rootPosition :: Stable PlayerStateModel
-	, speeds :: HashMap T.Text SearchSpeed
+	, speeds :: [(T.Text, SearchSpeed)]
 	} deriving (Eq, Ord, Read, Show)

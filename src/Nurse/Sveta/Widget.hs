@@ -32,7 +32,7 @@ module Nurse.Sveta.Widget (
 	Stable,
 	newStable,
 	sPayload,
-	sUpdate, sUpdateM, sTryUpdate, sSetPayload, sTrySetPayload,
+	sUpdate, sUpdateM, sTryUpdate, sSet, sTrySet,
 	sOnSubterm,
 
 	Tracker,
@@ -606,7 +606,7 @@ tmStartThread tm = readIORef (tmDying tm) >>= \case
 			case sPayload ts of
 				Dead{} -> #remove (tmThreadList tm) top
 				_ -> do
-					atomically $ modifyTVar tsRef (sSetPayload Dying)
+					atomically $ modifyTVar tsRef (sSet Dying)
 					updateDisplay ts
 
 		timeoutAdd PRIORITY_DEFAULT 30 $ do
@@ -623,7 +623,7 @@ tmStartThread tm = readIORef (tmDying tm) >>= \case
 		modifyIORef (tmRunningThreads tm) (btn:)
 		() <$ fork (tmAffinity tm) (catch
 			(tvCompute tv (tmCheckStatus tsRef))
-			(atomically . modifyTVar tsRef . sSetPayload . Dead)
+			(atomically . modifyTVar tsRef . sSet . Dead)
 			)
 
 tmCheckStatus :: TVar (Stable ThreadStatus) -> StatusCheck
@@ -660,13 +660,13 @@ sUpdateM f s@(Stable g p) = case f p of
 	Just p' -> Stable (g+1) p'
 
 sTryUpdate :: Eq a => (a -> a) -> Stable a -> Stable a
-sTryUpdate f s = sTrySetPayload (f (sPayload s)) s
+sTryUpdate f s = sTrySet (f (sPayload s)) s
 
-sSetPayload :: a -> Stable a -> Stable a
-sSetPayload p s = Stable (generation s + 1) p
+sSet :: a -> Stable a -> Stable a
+sSet p s = Stable (generation s + 1) p
 
-sTrySetPayload :: Eq a => a -> Stable a -> Stable a
-sTrySetPayload p s = if p == sPayload s then s else Stable (generation s + 1) p
+sTrySet :: Eq a => a -> Stable a -> Stable a
+sTrySet p s = if p == sPayload s then s else Stable (generation s + 1) p
 
 sOnSubterm :: (a -> (b, b -> a)) -> (Stable b -> Stable b) -> Stable a -> Stable a
 sOnSubterm lens f sa@(Stable g pa) = if g == g' then sa else Stable g' pa'
