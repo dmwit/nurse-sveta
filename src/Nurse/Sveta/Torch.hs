@@ -58,7 +58,7 @@ batchLoad paths = withUnwrapped (WCS <$> paths) $ flip withArrayLen $ \n cpaths 
 	cxx_load_batch cpaths (fromIntegral n) >>= mkBatch
 
 newOptimizer :: Net -> IO Optimizer
-newOptimizer net_ = withUnwrapped net_ $ cxx_connect_optimizer >=> mkOptimizer
+newOptimizer net = withUnwrapped net $ cxx_connect_optimizer >=> mkOptimizer
 
 netSave :: Net -> Optimizer -> FilePath -> IO ()
 netSave net_ optim_ fp = withUnwrapped (net_, (optim_, WCS fp)) $ \(net, (optim, cfp)) ->
@@ -159,13 +159,13 @@ parseForEvaluation i (gs, l, r) priors_ bernoulli_ scalars_ = withUnwrapped (pri
 
 -- TODO: I wonder if we could improve throughput by pushing the rendering into the generation thread, like we did with the parsing
 netEvaluation :: Traversable t => Net -> t (GameState, Color, Color) -> IO (t (Double, HashMap PillContent (Vector (Vector Double))))
-netEvaluation (Net net) triples = do
-	[priors, bernoulli, scalars] <- mallocForeignPtrArrays [shiftL n logNumPriors, shiftL n logNumBernoullis, n * numScalars]
+netEvaluation net_ triples = do
+	[priors_, bernoulli_, scalars_] <- mallocForeignPtrArrays [shiftL n logNumPriors, shiftL n logNumBernoullis, n * numScalars]
 	-- TODO: can we avoid a ton of allocation here by pooling allocations of each size -- or even just the largest size, per Net, say?
 	(boards, lookaheads) <- render itriples
 
-	withUnwrapped (net, (priors, (bernoulli, scalars))) $ \(netPtr, (priorsPtr, (bernoulliPtr, scalarsPtr))) ->
-		cxx_evaluate_net netPtr (fromIntegral n) priorsPtr bernoulliPtr scalarsPtr boards lookaheads
+	withUnwrapped (net_, (priors_, (bernoulli_, scalars_))) $ \(net, (priors, (bernoulli, scalars))) ->
+		cxx_evaluate_net net (fromIntegral n) priors bernoulli scalars boards lookaheads
 	result <- for itriples $ \(i, state) ->
 			-- unsafeInterleaveIO: turns out parseForEvaluation is a bottleneck
 			-- to making foreign calls, so spread its work across multiple
@@ -180,7 +180,7 @@ netEvaluation (Net net) triples = do
 			-- modification will be done by the time we call netEvaluation,
 			-- then it will be thrown away, hence the IORefs won't ever be
 			-- modified again.
-			unsafeInterleaveIO (parseForEvaluation i state priors bernoulli scalars)
+			unsafeInterleaveIO (parseForEvaluation i state priors_ bernoulli_ scalars_)
 
 	free boards
 	free lookaheads
