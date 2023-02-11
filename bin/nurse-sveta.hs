@@ -88,16 +88,19 @@ main = do
 			, On #closeRequest $ readIORef mainRef >>= \case
 				Just{} -> pure False
 				Nothing -> do
-					-- Don't bother to cleanly shut down the inference thread.
-					-- It doesn't have any resources worth being careful about,
-					-- and stopping its threads can cause search threads to
-					-- block instead of gracefully shutting down.
-					let tms = [gen, bur, trn]
-					writeIORef mainRef (Just (length tms))
-					for_ tms $ \tm -> tmDieThen tm $ readIORef mainRef >>= \case
-						Nothing -> fail "the impossible happened: a thread manager finished dying before thread managers started dying"
-						Just 1 -> #quit app
-						Just n -> writeIORef mainRef (Just (n-1))
+					let quitIfAppropriate = readIORef mainRef >>= \case
+					    	Nothing -> fail "the impossible happened: a thread manager finished dying before thread managers started dying"
+					    	Just 1 -> #quit app
+					    	Just n -> writeIORef mainRef (Just (n-1))
+					    tms = [bur, trn] -- gen, inf handled specially (see below)
+					writeIORef mainRef (Just (length tms + 2))
+					for_ tms $ \tm -> tm `tmDieThen` quitIfAppropriate
+					-- don't kill off the inference threads until the
+					-- generation threads are done, otherwise they might block
+					-- waiting for a reply
+					gen `tmDieThen` do
+						inf `tmDieThen` quitIfAppropriate
+						quitIfAppropriate
 					pure True
 			]
 		#show w
