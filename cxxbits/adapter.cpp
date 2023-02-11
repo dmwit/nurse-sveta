@@ -323,8 +323,7 @@ void load_net(char *path, Net **netptr, torch::optim::SGD **optimptr) {
 		net->train(false);
 	} else {
 		net->train(true);
-		// the learning rate is going to be immediately overwritten, so use
-		// whatever, e.g. 0.001
+		// TODO: load SGD parameters, they aren't saved with the SGD state FFS
 		*optimptr = new torch::optim::SGD(net->parameters(), 0.1);
 		(**optimptr).load(archive);
 	}

@@ -132,10 +132,10 @@ onSpeeds :: ([(T.Text, SearchSpeed)] -> [(T.Text, SearchSpeed)]) -> GenerationTh
 onSpeeds f gts = gts { summary = s { speeds = f (speeds s) } } where
 	s = summary gts
 
-initialSearchConfiguration :: SearchConfiguration
-initialSearchConfiguration = SearchConfiguration
+newSearchConfiguration :: SearchConfiguration
+newSearchConfiguration = SearchConfiguration
 	{ c_puct = 1
-	, iterations = 10000
+	, iterations = 2000
 	}
 
 requestConfiguration :: SearchConfiguration -> GenerationThreadState -> GenerationThreadState
@@ -154,10 +154,10 @@ acceptConfiguration gts = gts { currentConfiguration = sTrySet (requestedConfigu
 -- ╰────────────────╯
 generationThreadView :: DMEvaluationProcedure -> IO ThreadView
 generationThreadView eval = do
-	genRef <- newTVarIO (newGenerationThreadState initialSearchConfiguration)
+	genRef <- newTVarIO (newGenerationThreadState newSearchConfiguration)
 
 	psv <- newPlayerStateView (PSM (emptyBoard 8 16) Nothing [])
-	scv <- newSearchConfigurationView initialSearchConfiguration (atomically . modifyTVar genRef . requestConfiguration)
+	scv <- newSearchConfigurationView newSearchConfiguration (atomically . modifyTVar genRef . requestConfiguration)
 	spd <- new Grid []
 	nfo <- new Box [#orientation := OrientationVertical]
 	top <- new Box [#orientation := OrientationHorizontal]
@@ -473,14 +473,15 @@ bureaucracyThread lock status sc = do
 
 gameFileToTensorFiles :: TVar (Stable BureaucracyThreadState) -> FilePath -> FilePath -> IO ()
 gameFileToTensorFiles status dir fp = recallGame dir fp >>= \case
-	Nothing -> do
+	GDStillWriting -> pure ()
+	GDParseError -> do
 		relocate dir fp GamesPending GamesParseError
 		btsUpdate status $ \bts -> bts
 			{ btsLatestGlobal = (btsLatestGlobal bts)
 				{ bgsLastGame = Just fp
 				}
 			}
-	Just history -> do
+	GDSuccess history -> do
 		bts <- sPayload <$> readTVarIO status
 		categoryT <- vsSample (btsCurrentSplit bts)
 		let category = dirEncode (T.unpack categoryT)
@@ -505,8 +506,17 @@ gameFileToTensorFiles status dir fp = recallGame dir fp >>= \case
 			, btsTensorsProcessed = HM.insertWith (+) categoryT n (btsTensorsProcessed bts)
 			}
 
-recallGame :: FilePath -> FilePath -> IO (Maybe (Board, [GameStep]))
-recallGame dir fp = decodeFileStrict' (dir </> subdirectory GamesPending fp)
+data GameDecodingResult
+	= GDParseError
+	| GDStillWriting
+	| GDSuccess (Board, [GameStep])
+
+recallGame :: FilePath -> FilePath -> IO GameDecodingResult
+recallGame dir fp = handle (\e -> if isAlreadyInUseError e then pure GDStillWriting else throwIO e) $ do
+	result <- decodeFileStrict' (dir </> subdirectory GamesPending fp)
+	pure $ case result of
+		Nothing -> GDParseError
+		Just history -> GDSuccess history
 
 data Directory
 	= GamesPending
@@ -608,6 +618,7 @@ trainingThreadView netUpdate = do
 -- TODO: do we have a stall condition to kill the AI if it survives too long without making progress?
 -- TODO: make learning rate, batch size, and how many recent tensors to draw from configurable
 -- TODO: perhaps instead of a flat recent tensor count, we should do exponential discounting!
+-- TODO: might be nice to show current generation and iterations to next save
 trainingThread :: TVar (Maybe Integer) -> TVar (Stable (Maybe Integer), SearchSpeed, Double) -> StatusCheck -> IO ()
 trainingThread netUpdate ref sc = do
 	(gen0, net, sgd) <- trainingThreadLoadLatestNet
@@ -617,24 +628,24 @@ trainingThread netUpdate ref sc = do
 	    	Nothing -> scIO sc >> threadDelay 1000000 >> readLatestTensorLoop
 	    	Just n -> pure n
 	    loop i gen = do
-	    	i' <- if i >= 1000000
+	    	i' <- if i >= 10000
 	    		then do
 	    			path <- prepareFile dir Weights (show gen <.> "nsn")
 	    			netSave net sgd path
 	    			encodeFile (dir </> subdirectory Weights latestFilename) gen
 	    			atomically $ writeTVar netUpdate (Just gen)
 	    			atomically . modifyTVar ref $ \(sgen, ss, loss) -> (sSet (Just gen) sgen, ss, loss)
-	    			pure 0
+	    			pure 1
 	    		else pure (i+1)
 	    	latestTensor <- readLatestTensorLoop
 	    	let earliestTensor = max 0 (latestTensor - 5000)
 	    	batchIndices <- replicateM 100 (uniformRM (earliestTensor, latestTensor) rng)
 	    	batch <- batchLoad [dir </> subdirectory (Tensors category) (show ix <.> "nst") | ix <- batchIndices]
 	    	loss <- netTrain net sgd batch
-	    	atomically (modifyTVar ref (\(gen, ss, _) -> (gen, ssInc ss, loss)))
+	    	atomically (modifyTVar ref (\(lastSavedGen, ss, _) -> (lastSavedGen, ssInc ss, loss)))
 	    	scIO sc -- TODO: do one last netSave
 	    	loop i' (gen+1)
-	loop 0 gen0
+	loop 1 gen0
 	where
 	category = "train"
 
@@ -648,7 +659,7 @@ trainingThreadLoadLatestNet = do
 		Nothing -> do
 			net <- netSample True
 			sgd <- newOptimizer net
-			pure (0, net, sgd)
+			pure (1, net, sgd)
 		Just n -> do
 			(net, sgd) <- netLoadForTraining (dir </> subdirectory Weights (show n <.> "nsn"))
 			pure (n, net, sgd)

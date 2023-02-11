@@ -151,7 +151,7 @@ parseForEvaluation i (gs, l, r) priors_ bernoulli_ scalars_ = withUnwrapped (pri
 	      + (1 - pWin) *  losingValuation orig (clampCleared orig (fromIntegral virusesPast + virusesFuture))
 
 	let iPriors = shiftL i logNumPriors
-	p <- forZipWithM [0..numRotations-1] (iterate (`rotateContent` Clockwise) (PillContent Horizontal l r)) $ \numRots pc -> do
+	p <- forZipWithM [0..numRotations-1] (iterate (`rotateContent` Clockwise) (PillContent startingOrientation l r)) $ \numRots pc -> do
 		let iNumRots = iPriors + shiftL numRots logCellCount
 		v <- V.generateM boardWidth $ \x -> let ix = iNumRots + shiftL x logBoardHeight in
 			V.generateM boardHeight $ \y -> let iy = ix + y in
