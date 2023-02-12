@@ -139,6 +139,8 @@ newSearchConfiguration :: SearchConfiguration
 newSearchConfiguration = SearchConfiguration
 	{ c_puct = 1
 	, iterations = 2000
+	, typicalMoves = 40
+	, priorNoise = 0.25
 	}
 
 requestConfiguration :: SearchConfiguration -> GenerationThreadState -> GenerationThreadState
@@ -204,7 +206,7 @@ generationThread eval genRef sc = do
 	where
 	gameLoop g threadSpeed = do
 		config <- atomically . stateTVar genRef $ \gts -> (requestedConfiguration gts, acceptConfiguration gts)
-		let params = dmParameters config eval
+		let params = dmParameters config eval g
 		(s0, t) <- initialTree params g
 		s <- clone params s0
 		gameSpeed <- newSearchSpeed

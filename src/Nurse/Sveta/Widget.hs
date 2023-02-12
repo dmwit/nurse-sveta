@@ -42,10 +42,12 @@ module Nurse.Sveta.Widget (
 import Control.Concurrent
 import Control.Exception
 import Control.Monad
+import Control.Monad.Fix
 import Control.Monad.IO.Class
 import Data.Foldable
 import Data.Functor
 import Data.HashMap.Strict (HashMap)
+import Data.Int
 import Data.IORef
 import Data.List
 import Data.Monoid
@@ -326,88 +328,129 @@ centered f (x,y) = f (x+0.5) (y+0.5)
 
 data SearchConfigurationView = SCV
 	{ scvTop :: Grid
-	, scvCache :: IORef (SearchConfiguration, SearchConfiguration)
-	, scvC_puct :: Label
-	, scvIterations :: Label
+	, scvC_puct :: ConfigurationRequestView Double
+	, scvIterations :: ConfigurationRequestView Int
+	, scvTypicalMoves :: ConfigurationRequestView Double
+	, scvPriorNoise :: ConfigurationRequestView Double
 	}
 
 newSearchConfigurationView :: SearchConfiguration -> (SearchConfiguration -> IO ()) -> IO SearchConfigurationView
-newSearchConfigurationView sc request = do
+newSearchConfigurationView sc request = mfix $ \scv -> do
 	grid <- new Grid [#columnSpacing := 7, #rowSpacing := 3]
 	cache <- newIORef (sc, sc)
 
-	let mkLabel t = new Label [#label := t, #halign := AlignStart]
+	let period = "next game"
+	    validate :: (SearchConfiguration -> a -> (Bool, SearchConfiguration)) -> a -> IO Bool
+	    validate f req = do
+	    	scReq <- scvRequest scv
+	    	let (valid, scReq') = f scReq req
+	    	when valid (request scReq')
+	    	pure valid
+	crvC_puct       <- newConfigurationRequestView (c_puct       sc) "c_puct"                        period InputPurposeNumber . validate $ \scReq c_puctReq -> (True, scReq { c_puct = c_puctReq })
+	crvIterations   <- newConfigurationRequestView (iterations   sc) "iterations per move"           period InputPurposeDigits . validate $ \scReq itReq     -> (itReq >= 0, scReq { iterations = itReq })
+	crvTypicalMoves <- newConfigurationRequestView (typicalMoves sc) "typical number of legal moves" period InputPurposeDigits . validate $ \scReq typReq    -> (typReq > 0, scReq { typicalMoves = typReq })
+	crvPriorNoise   <- newConfigurationRequestView (priorNoise   sc) "noisiness of priors"           period InputPurposeNumber . validate $ \scReq noiseReq  -> (0 <= noiseReq && noiseReq <= 1, scReq { priorNoise = noiseReq })
 
-	c_puctLabel <- new Label [#halign := AlignStart]
-	#setMarkup c_puctLabel "c<sub>puct</sub>"
-	c_puctEditor <- new Entry [#inputPurpose := InputPurposeNumber]
-	c_puctBuffer <- G.get c_puctEditor #buffer
-	let c_puctText = tshow (c_puct sc)
-	set c_puctBuffer [#text := c_puctText]
-	c_puctDisplay <- mkLabel c_puctText
+	#setMarkup (crvDescription crvC_puct) "c<sub>puct</sub>"
+	crvAttach crvC_puct grid 0
+	crvAttach crvIterations grid 1
+	crvAttach crvTypicalMoves grid 2
+	crvAttach crvPriorNoise grid 3
 
-	iterationsLabel <- mkLabel "iterations per move"
-	iterationsEditor <- new Entry [#inputPurpose := InputPurposeDigits]
-	iterationsBuffer <- G.get iterationsEditor #buffer
-	let iterationsText = tshow (iterations sc)
-	set iterationsBuffer [#text := iterationsText]
-	iterationsDisplay <- mkLabel iterationsText
-
-	let scv = SCV
-	    	{ scvTop = grid
-	    	, scvCache = cache
-	    	, scvC_puct = c_puctDisplay
-	    	, scvIterations = iterationsDisplay
-	    	}
-
-	on c_puctEditor #activate $ do
-		c_puctText <- G.get c_puctBuffer #text
-		for_ (tread c_puctText) $ \c -> do
-			(scReq, scCur) <- readIORef cache
-			let scReq' = scReq { c_puct = c }
-			request scReq'
-			writeIORef cache (scReq', scCur)
-			scvDisplay scv scReq' scCur
-
-	on iterationsEditor #activate $ do
-		iterationsText <- G.get iterationsBuffer #text
-		for_ (tread iterationsText) $ \n -> do
-			(scReq, scCur) <- readIORef cache
-			let scReq' = scReq { iterations = n }
-			request scReq'
-			writeIORef cache (scReq', scCur)
-			scvDisplay scv scReq' scCur
-
-	#attach grid c_puctLabel   0 0 1 1
-	#attach grid c_puctEditor  1 0 1 1
-	#attach grid c_puctDisplay 2 0 1 1
-
-	#attach grid iterationsLabel   0 1 1 1
-	#attach grid iterationsEditor  1 1 1 1
-	#attach grid iterationsDisplay 2 1 1 1
-
-	pure scv
+	pure SCV
+		{ scvTop = grid
+		, scvC_puct       = crvC_puct
+		, scvIterations   = crvIterations
+		, scvTypicalMoves = crvTypicalMoves
+		, scvPriorNoise   = crvPriorNoise
+		}
 
 scvWidget :: SearchConfigurationView -> IO Widget
 scvWidget = toWidget . scvTop
 
+scvRequest :: SearchConfigurationView -> IO SearchConfiguration
+scvRequest scv = pure SearchConfiguration
+	<*> crvRequest (scvC_puct       scv)
+	<*> crvRequest (scvIterations   scv)
+	<*> crvRequest (scvTypicalMoves scv)
+	<*> crvRequest (scvPriorNoise   scv)
+
 scvSet :: SearchConfigurationView -> SearchConfiguration -> IO ()
 scvSet scv scCur = do
-	(scReq, _) <- readIORef (scvCache scv)
-	writeIORef (scvCache scv) (scReq, scCur)
-	scvDisplay scv scReq scCur
+	crvSet (scvC_puct       scv) (c_puct       scCur)
+	crvSet (scvIterations   scv) (iterations   scCur)
+	crvSet (scvTypicalMoves scv) (typicalMoves scCur)
+	crvSet (scvPriorNoise   scv) (priorNoise   scCur)
 
--- | If you see this documentation, please report a bug.
-scvDisplay :: SearchConfigurationView -> SearchConfiguration -> SearchConfiguration -> IO ()
-scvDisplay scv scReq scCur = do
-	set (scvC_puct scv) [#label := describe c_puct]
-	set (scvIterations scv) [#label := describe iterations]
-	where
-	describe :: (Eq a, Show a) => (SearchConfiguration -> a) -> T.Text
-	describe f = tshow cur <> if req == cur then mempty else " (will change to " <> tshow req <> " next game)"
-		where
-		req = f scReq
-		cur = f scCur
+data ConfigurationRequestView a = CRV
+	{ crvDescription :: Label
+	, crvEditor :: Entry
+	, crvBuffer :: EntryBuffer
+	, crvRequestStatus :: Label
+	, crvCache :: IORef (a, a)
+	, crvPeriod :: T.Text
+	}
+
+-- | Arguments:
+-- * an initial value
+-- * a description of the meaning of the value
+-- * a description of when requested values get processed and become current
+-- * 'InputPurpose'
+-- * a callback that checks a new value for validity; if it's valid (and so
+-- returns 'True'), it should record the new value as a request
+newConfigurationRequestView ::
+	(Eq a, Read a, Show a) =>
+	a ->
+	T.Text -> T.Text ->
+	InputPurpose ->
+	(a -> IO Bool) ->
+	IO (ConfigurationRequestView a)
+newConfigurationRequestView a0 description period purpose callback = do
+	cache <- newIORef (a0, a0)
+	label <- new Label [#label := description, #halign := AlignStart]
+	editor <- new Entry [#inputPurpose := purpose]
+	buffer <- G.get editor #buffer
+	let text = tshow a0
+	set buffer [#text := text]
+	status <- new Label [#label := text, #halign := AlignStart]
+
+	let crv = CRV
+	    	{ crvDescription = label
+	    	, crvEditor = editor
+	    	, crvBuffer = buffer
+	    	, crvRequestStatus = status
+	    	, crvCache = cache
+	    	, crvPeriod = " " <> period <> ")"
+	    	}
+
+	on editor #activate $ do
+		textReq <- G.get buffer #text
+		for_ (tread textReq) $ \req -> do
+			valid <- callback req
+			when valid $ do
+				modifyIORef cache $ \(_, cur) -> (req, cur)
+				crvUpdateStatus crv
+
+	pure crv
+
+crvRequest :: ConfigurationRequestView a -> IO a
+crvRequest crv = fst <$> readIORef (crvCache crv)
+
+crvSet :: (Eq a, Show a) => ConfigurationRequestView a -> a -> IO ()
+crvSet crv cur = do
+	modifyIORef (crvCache crv) $ \(req, _) -> (req, cur)
+	crvUpdateStatus crv
+
+crvUpdateStatus :: (Eq a, Show a) => ConfigurationRequestView a -> IO ()
+crvUpdateStatus crv = do
+	(req, cur) <- readIORef (crvCache crv)
+	set (crvRequestStatus crv) [#label := tshow cur <> if req == cur then mempty else " (will change to " <> tshow req <> crvPeriod crv]
+
+crvAttach :: ConfigurationRequestView a -> Grid -> Int32 -> IO ()
+crvAttach crv grid i = do
+	#attach grid (crvDescription   crv) 0 i 1 1
+	#attach grid (crvEditor        crv) 1 i 1 1
+	#attach grid (crvRequestStatus crv) 2 i 1 1
 
 data ValidationSplit = ValidationSplit
 	{ vsSum :: Double
@@ -437,8 +480,7 @@ vsSet category weight vs = case compare weight 0 of
 vsGet :: ValidationSplit -> T.Text -> Double
 vsGet vs category = HM.findWithDefault 0 category (vsSplit vs)
 
--- TODO: there's so much shared code here between ValidationSplitView and
--- SearchConfigurationView, we should really think about a way to DRY
+-- TODO: refactor to use ConfigurationRequestView for DRY
 data ValidationSplitView = VSV
 	{ vsvTop :: Grid
 	, vsvCache :: IORef (ValidationSplit, ValidationSplit)

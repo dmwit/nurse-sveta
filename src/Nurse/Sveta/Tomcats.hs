@@ -41,10 +41,12 @@ import qualified Tomcats.AlphaZero as A0
 -- 	* board/pill generation options like MWC vs LFSR, Algorithm X vs NES' algo,
 -- 	  128 pre-determined pills vs on-the-fly, maybe SNES vs NES distro?
 -- 	* neural net vs. not
--- 	* temperature/dirichlet params
+-- 	* temperature
 data SearchConfiguration = SearchConfiguration
 	{ c_puct :: Double
 	, iterations :: Int
+	, typicalMoves :: Double
+	, priorNoise :: Double
 	} deriving (Eq, Ord, Read, Show)
 
 type DMEvaluationProcedure = Procedure (GameState, Color, Color) (Double, HashMap PillContent (Vector (Vector Double)))
@@ -125,13 +127,13 @@ initialTree params g = do
 	(_, t) <- Tomcats.initialize params s >>= preprocess params s
 	pure (s, t)
 
-dmParameters :: SearchConfiguration -> DMEvaluationProcedure -> DMParameters
-dmParameters config eval = Parameters
+dmParameters :: SearchConfiguration -> DMEvaluationProcedure -> GenIO -> DMParameters
+dmParameters config eval gen = Parameters
 	{ score = dmScore config
 	, expand = dmExpand
 	, clone = dmClone
 	, play = dmPlay
-	, preprocess = dmPreprocess eval
+	, preprocess = dmPreprocess config eval gen
 	}
 
 dmScore :: SearchConfiguration -> Move -> A0.Statistics -> A0.Statistics -> Double
@@ -229,27 +231,31 @@ approximateCostModel move pill counts = 0
 	+ 1 - 2*yDelta move -- move vertically
 	+ sum [16*n + 20 | n <- rowsFallen counts] -- fall time + clear animation
 
-dmPreprocess :: DMEvaluationProcedure -> GameState -> Tree A0.Statistics Move -> IO (A0.Statistics, Tree A0.Statistics Move)
-dmPreprocess eval gs t = if not (RNG Blue Blue `HM.member` unexplored t) then pure (mempty, t) else do
+dmPreprocess :: SearchConfiguration -> DMEvaluationProcedure -> GenIO -> GameState -> Tree A0.Statistics Move -> IO (A0.Statistics, Tree A0.Statistics Move)
+dmPreprocess config eval gen gs t = if not (RNG Blue Blue `HM.member` unexplored t) then pure (mempty, t) else do
 	moves <- munsafeApproxReachable (board gs) (launchPill Blue Red)
 	-- doing fromListWith instead of fromList is probably a bit paranoid, but what the hell
 	let symmetricMoves = HM.fromListWith smallerBox [(substPill Blue Blue p, m) | (p, m) <- HM.toList moves]
 	children' <- flip HM.traverseWithKey (unexplored t) $ \(RNG l r) stats -> do
 		future <- schedule eval (gs, l, r)
-		~(valueEstimate, moveWeights) <- unsafeInterleaveIO future
+		unsafeInterleaveIO $ (,) stats <$> future
+	-- we do this as a second pass so that we have a chance to schedule a bunch
+	-- of evaluations before forcing any of their results
+	children'' <- flip HM.traverseWithKey children' $ \(RNG l r) (stats, (valueEstimate, moveWeights)) -> do
+		unex <- A0.dirichletA0 (typicalMoves config) (priorNoise config) gen . A0.normalize $ HM.fromList
+			[ (Placement bm pill { content = pc' }, moveWeights HM.! pc' V.! x V.! y)
+			| (pill, bm) <- HM.toList (if l == r then symmetricMoves else moves)
+			, let Position x y = bottomLeftPosition pill
+			      pc' = substPillContent l r (content pill)
+			]
 		pure Tree
 			{ statistics = A0.Statistics 1 (A0.priorProbability stats) valueEstimate
 			, children = HM.empty
-			, unexplored = A0.normalizeStatistics $ HM.fromList
-				[ (Placement bm pill { content = pc' }, A0.Statistics 0 (moveWeights HM.! pc' V.! x V.! y) 0)
-				| (pill, bm) <- HM.toList (if l == r then symmetricMoves else moves)
-				, let Position x y = bottomLeftPosition pill
-				      pc' = substPillContent l r (content pill)
-				]
+			, unexplored = unex
 			, cachedEvaluation = Nothing
 			}
-	let childStats = (foldMap A0.statistics children') { A0.priorProbability = 0 }
-	pure (childStats, t { statistics = statistics t <> childStats, children = children', unexplored = HM.empty })
+	let childStats = (foldMap A0.statistics children'') { A0.priorProbability = 0 }
+	pure (childStats, t { statistics = statistics t <> childStats, children = children'', unexplored = HM.empty })
 	where
 	substPill l r p = p { content = substPillContent l r (content p) }
 	substPillContent l r pc = pc { bottomLeftColor = substColor l r (bottomLeftColor pc), otherColor = substColor l r (otherColor pc) }
