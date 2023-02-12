@@ -31,6 +31,7 @@ import System.Environment.XDG.BaseDir
 import System.FilePath
 import System.IO
 import System.IO.Error
+import System.Mem
 import System.Random.MWC
 import Text.Printf
 import Util
@@ -90,7 +91,8 @@ main = do
 				Nothing -> do
 					let quitIfAppropriate = readIORef mainRef >>= \case
 					    	Nothing -> fail "the impossible happened: a thread manager finished dying before thread managers started dying"
-					    	Just 1 -> #quit app
+					    	-- performGC to run finalizers
+					    	Just 1 -> performGC >> #quit app
 					    	Just n -> writeIORef mainRef (Just (n-1))
 					    tms = [bur, trn] -- gen, inf handled specially (see below)
 					writeIORef mainRef (Just (length tms + 2))
