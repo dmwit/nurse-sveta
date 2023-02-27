@@ -269,7 +269,7 @@ recordGame gs steps = do
 	rand <- BS.foldr (\w s -> printf "%02x" w ++ s) "" <$> withFile "/dev/urandom" ReadMode (\h -> BS.hGet h 8)
 	dir <- nsDataDir
 	path <- prepareFile dir GamesPending $ show now ++ "-" ++ rand <.> "json"
-	encodeFile path (b, reverse steps)
+	encodeFile path ((b, originalSensitive gs, speed gs), reverse steps)
 
 data InferenceThreadState = InferenceThreadState
 	{ itsThreadBatches :: SearchSpeed
@@ -516,7 +516,7 @@ gameFileToTensorFiles status dir fp = recallGame dir fp >>= \case
 data GameDecodingResult
 	= GDParseError
 	| GDStillWriting
-	| GDSuccess (Board, [GameStep])
+	| GDSuccess ((Board, Bool, CoarseSpeed), [GameStep])
 
 recallGame :: FilePath -> FilePath -> IO GameDecodingResult
 recallGame dir fp = handle (\e -> if isAlreadyInUseError e then pure GDStillWriting else throwIO e) $ do

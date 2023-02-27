@@ -51,8 +51,8 @@ data SearchConfiguration = SearchConfiguration
 
 type DMEvaluationProcedure = Procedure (GameState, Color, Color) (Double, HashMap PillContent (Vector (Vector Double)))
 
--- | The 'BoxMove' is ignored for 'Eq', 'Ord', and 'Hashable'.
-data Move = RNG Color Color | Placement BoxMove Pill deriving (Show, Read)
+-- | The 'MidPath' is ignored for 'Eq', 'Ord', and 'Hashable'.
+data Move = RNG Color Color | Placement MidPath Pill deriving (Show, Read)
 
 instance Eq Move where
 	RNG l0 r0 == RNG l1 r1 = l0 == l1 && r0 == r1
@@ -89,6 +89,8 @@ data GameState = GameState
 	{ board :: IOBoard
 	, virusesKilled, pillsUsed, framesPassed :: IORef Int
 	, originalVirusCount :: Int
+	, originalSensitive :: Bool
+	, speed :: CoarseSpeed
 	}
 
 type DMParameters = Parameters IO Double A0.Statistics Move GameState
@@ -102,6 +104,8 @@ instance Gen a ~ GenIO => GameStateSeed (Gen a) where
 		level <- uniformRM (0, 20) g
 		seed <- uniformRM (2, maxBound) g
 		b <- mrandomBoard seed level
+		frameParity <- uniformM g
+		coarseSpeed <- ([Med, Hi, Ult] !!) <$> uniformRM (0,2) g
 		vk <- newIORef 0
 		pu <- newIORef 0
 		fp <- newIORef 0
@@ -111,15 +115,19 @@ instance Gen a ~ GenIO => GameStateSeed (Gen a) where
 			, pillsUsed = pu
 			, framesPassed = fp
 			, originalVirusCount = 4*(level + 1)
+			, originalSensitive = frameParity
+			, speed = coarseSpeed
 			}
 
-instance GameStateSeed Board where
-	initialState b = pure GameState
+instance (a ~ Board, b ~ Bool, c ~ CoarseSpeed) => GameStateSeed (a, b, c) where
+	initialState (b, sensitive, speed) = pure GameState
 		<*> thaw b
 		<*> newIORef 0
 		<*> newIORef 0
 		<*> newIORef 0
 		<*> pure (countViruses b)
+		<*> pure sensitive
+		<*> pure speed
 
 initialTree :: GameStateSeed a => DMParameters -> a -> IO (GameState, Tree A0.Statistics Move)
 initialTree params g = do
@@ -198,6 +206,8 @@ dmClone gs = pure GameState
 	<*> cloneIORef (pillsUsed gs)
 	<*> cloneIORef (framesPassed gs)
 	<*> pure (originalVirusCount gs)
+	<*> pure (originalSensitive gs)
+	<*> pure (speed gs)
 
 cloneIORef :: IORef a -> IO (IORef a)
 cloneIORef = readIORef >=> newIORef
@@ -223,19 +233,19 @@ yCosts = V.fromList [47 {- TODO -}, 46 {- TODO -}, 44, 42, 41, 41, 39, 39, 37, 3
 
 -- TODO: figure out the exact cost model for the NES, then move that into maryodel
 -- TODO: don't count fall time after the last clear
-approximateCostModel :: BoxMove -> Pill -> CleanupResults -> Int
+approximateCostModel :: MidPath -> Pill -> CleanupResults -> Int
 approximateCostModel move pill counts = 0
 	+ yCosts V.! y (bottomLeftPosition pill) -- throwing animation, lock animation, and pause between lock and next throw
-	+ 1 -- rotate once
-	+ max 0 (2*abs (xDelta move) - 1) -- move horizontally
-	+ 1 - 2*yDelta move -- move vertically
+	+ mpPathLength move -- pill maneuvering
 	+ sum [16*n + 20 | n <- rowsFallen counts] -- fall time + clear animation
 
 dmPreprocess :: SearchConfiguration -> DMEvaluationProcedure -> GenIO -> GameState -> Tree A0.Statistics Move -> IO (A0.Statistics, Tree A0.Statistics Move)
 dmPreprocess config eval gen gs t = if not (RNG Blue Blue `HM.member` unexplored t) then pure (mempty, t) else do
-	moves <- munsafeApproxReachable (board gs) (launchPill Blue Red)
+	fp <- readIORef (framesPassed gs)
+	pu <- readIORef (pillsUsed gs)
+	moves <- mapproxReachable (board gs) (fp .&. 1 /= fromEnum (originalSensitive gs)) (gravity (speed gs) pu)
 	-- doing fromListWith instead of fromList is probably a bit paranoid, but what the hell
-	let symmetricMoves = HM.fromListWith smallerBox [(substPill Blue Blue p, m) | (p, m) <- HM.toList moves]
+	let symmetricMoves = HM.fromListWith shorterPath [(p { mpRotations = mpRotations p .&. 1 }, m) | (p, m) <- HM.toList moves]
 	children' <- flip HM.traverseWithKey (unexplored t) $ \(RNG l r) stats -> do
 		future <- schedule eval (gs, l, r)
 		unsafeInterleaveIO $ (,) stats <$> future
@@ -243,10 +253,10 @@ dmPreprocess config eval gen gs t = if not (RNG Blue Blue `HM.member` unexplored
 	-- of evaluations before forcing any of their results
 	children'' <- flip HM.traverseWithKey children' $ \(RNG l r) (stats, (valueEstimate, moveWeights)) -> do
 		unex <- A0.dirichletA0 (typicalMoves config) (priorNoise config) gen . A0.normalize $ HM.fromList
-			[ (Placement bm pill { content = pc' }, moveWeights HM.! pc' V.! x V.! y)
-			| (pill, bm) <- HM.toList (if l == r then symmetricMoves else moves)
-			, let Position x y = bottomLeftPosition pill
-			      pc' = substPillContent l r (content pill)
+			[ (Placement path pill, moveWeights HM.! content pill V.! x V.! y)
+			| (placement, path) <- HM.toList (if l == r then symmetricMoves else moves)
+			, let Position x y = mpBottomLeft placement
+			      pill = mpPill placement l r
 			]
 		pure Tree
 			{ statistics = A0.Statistics 1 (A0.priorProbability stats) valueEstimate
@@ -256,13 +266,6 @@ dmPreprocess config eval gen gs t = if not (RNG Blue Blue `HM.member` unexplored
 			}
 	let childStats = (foldMap A0.statistics children'') { A0.priorProbability = 0 }
 	pure (childStats, t { statistics = statistics t <> childStats, children = children'', unexplored = HM.empty })
-	where
-	substPill l r p = p { content = substPillContent l r (content p) }
-	substPillContent l r pc = pc { bottomLeftColor = substColor l r (bottomLeftColor pc), otherColor = substColor l r (otherColor pc) }
-	substColor l r = \case
-		Blue -> l
-		Red -> r
-		Yellow -> error "The impossible happened in Dr.Mario.Tomcats.dmPreprocess: pathfinding on a blue-red pill resulted in placing a yellow pill half."
 
 type DetailedEvaluation = (Double, HashMap PillContent (Vector (Vector Double)))
 

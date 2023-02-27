@@ -210,7 +210,7 @@ instance FromJSON GameStep where parseJSON v = parseJSON v <&> \(m, r, c) -> Gam
 -- They will be saved in files named @<i>.nst@, @<i+1>.nst@, etc., up to
 -- @<i+di-1>.nst@, with @i@ being the second argument and @di@ being the return
 -- value.
-saveTensors :: FilePath -> Integer -> (Board, [GameStep]) -> IO Integer
+saveTensors :: FilePath -> Integer -> ((Board, Bool, CoarseSpeed), [GameStep]) -> IO Integer
 saveTensors dir i0 (b0, steps) = do
 	currentState <- initialState b0
 
