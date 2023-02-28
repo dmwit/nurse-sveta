@@ -60,6 +60,7 @@ import Nurse.Sveta.STM
 import Nurse.Sveta.Tomcats (SearchConfiguration(..))
 import Nurse.Sveta.Util
 import System.IO
+import System.Random.MWC
 import Text.Read
 
 import qualified Data.HashMap.Strict as HM
@@ -455,27 +456,40 @@ crvAttach crv grid i = do
 data ValidationSplit = ValidationSplit
 	{ vsSum :: Double
 	, vsSplit :: HashMap T.Text Double
-	} deriving (Eq, Ord, Read, Show)
+	, vsGen :: GenIO
+	}
 
-unsafeNewValidationSplit :: HashMap T.Text Double -> ValidationSplit
-unsafeNewValidationSplit split = ValidationSplit { vsSum = sum split, vsSplit = split }
+-- | ignores 'vsGen'
+instance Eq ValidationSplit where
+	vs == vs' = (vsSum vs, vsSplit vs) == (vsSum vs', vsSplit vs')
 
-newValidationSplit :: [(T.Text, Double)] -> ValidationSplit
+unsafeNewValidationSplit :: HashMap T.Text Double -> GenIO -> ValidationSplit
+unsafeNewValidationSplit split gen = ValidationSplit { vsSum = sum split, vsSplit = split, vsGen = gen }
+
+newValidationSplit :: [(T.Text, Double)] -> IO ValidationSplit
 newValidationSplit split
-	| any ((<=0) . snd) split = error "newValidationSplit: initial split must contain only positive numbers"
-	| null split = error "newValidationSplit: initial split must contain at least one category"
-	| otherwise = unsafeNewValidationSplit (HM.fromListWith (+) split)
+	| any ((<=0) . snd) split = fail "newValidationSplit: initial split must contain only positive numbers"
+	| null split = fail "newValidationSplit: initial split must contain at least one category"
+	| otherwise = unsafeNewValidationSplit (HM.fromListWith (+) split) <$> createSystemRandom
 
 vsSample :: ValidationSplit -> IO T.Text
-vsSample _ = pure "train" -- TODO
+vsSample ValidationSplit { vsSum = s, vsSplit = m, vsGen = g } = do
+	n <- uniformRM (0, s) g
+	go n (HM.toList m)
+	where
+	go n [] = fail $ "vsSample: somehow a ValidationSplit with no splits got built"
+	go _ [(category, _)] = pure category
+	go n ((category, weight):cws)
+		| n < weight = pure category
+		| otherwise = go (n-weight) cws
 
 vsSet :: T.Text -> Double -> ValidationSplit -> ValidationSplit
 vsSet category weight vs = case compare weight 0 of
 	LT -> vs
 	EQ | HM.null split -> vs
-	   | otherwise -> unsafeNewValidationSplit split
+	   | otherwise -> unsafeNewValidationSplit split (vsGen vs)
 	   where split = HM.delete category (vsSplit vs)
-	GT -> unsafeNewValidationSplit (HM.insert category weight (vsSplit vs))
+	GT -> unsafeNewValidationSplit (HM.insert category weight (vsSplit vs)) (vsGen vs)
 
 vsGet :: ValidationSplit -> T.Text -> Double
 vsGet vs category = HM.findWithDefault 0 category (vsSplit vs)

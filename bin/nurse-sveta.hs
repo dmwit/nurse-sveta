@@ -392,7 +392,7 @@ data BureaucracyThreadState = BureaucracyThreadState
 	, btsRequestedSplit :: ValidationSplit
 	, btsCurrentSplit :: ValidationSplit
 	, btsLatestGlobal :: BureaucracyGlobalState
-	} deriving (Eq, Ord, Read, Show)
+	} deriving Eq
 
 newBureaucracyThreadState :: ValidationSplit -> BureaucracyThreadState
 newBureaucracyThreadState vs = BureaucracyThreadState
@@ -409,8 +409,8 @@ btsRequestedSplitL bts = (btsRequestedSplit bts, \vs -> bts { btsRequestedSplit 
 btsUpdate :: TVar (Stable BureaucracyThreadState) -> (BureaucracyThreadState -> BureaucracyThreadState) -> IO ()
 btsUpdate status = atomically . modifyTVar status . sTryUpdate
 
-initialValidationSplit :: ValidationSplit
-initialValidationSplit = newValidationSplit [("train", 8), ("test", 1), ("validate", 1)]
+initialValidationSplit :: [(T.Text, Double)]
+initialValidationSplit = [("train", 8), ("test", 1), ("validate", 1)]
 
 -- ╭╴top╶────╮
 -- │╭╴vsv╶──╮│
@@ -428,11 +428,12 @@ initialValidationSplit = newValidationSplit [("train", 8), ("test", 1), ("valida
 -- ╰─────────╯
 bureaucracyThreadView :: MVar BureaucracyGlobalState -> IO ThreadView
 bureaucracyThreadView lock = do
-	burRef <- newTVarIO (newStable (newBureaucracyThreadState initialValidationSplit))
+	vs <- newValidationSplit initialValidationSplit
+	burRef <- newTVarIO (newStable (newBureaucracyThreadState vs))
 	tracker <- newTracker
 
 	top <- new Box [#orientation := OrientationVertical, #spacing := 3]
-	vsv <- newValidationSplitView initialValidationSplit $ atomically . modifyTVar burRef . sOnSubterm btsRequestedSplitL . sTrySet
+	vsv <- newValidationSplitView vs $ atomically . modifyTVar burRef . sOnSubterm btsRequestedSplitL . sTrySet
 	glg <- descriptionLabel "<initializing>\n"
 	int <- new Grid []
 	glt <- newSumView int 0 "tensors available to other threads"
@@ -701,7 +702,7 @@ descriptionLabel t = new Label [#label := t, #halign := AlignStart]
 
 numericLabel :: T.Text -> IO Label
 numericLabel t = do
-	lbl <- new Label [#label := t, #justify := JustificationRight, #cssClasses := ["mono"]]
+	lbl <- new Label [#label := t, #justify := JustificationRight, #halign := AlignEnd, #cssClasses := ["mono"]]
 	cssPrv <- new CssProvider []
 	#loadFromData cssPrv ".mono { font-family: \"monospace\"; }"
 	cssCtx <- #getStyleContext lbl
