@@ -361,9 +361,7 @@ inferenceThread eval netUpdate itsRef sc = forever $ do
 inferenceThreadLoadLatestNet :: IO (Maybe (Integer, Net))
 inferenceThreadLoadLatestNet = do
 	dir <- nsDataDir
-	n <- catch
-		(decodeFileStrict' (dir </> subdirectory Weights latestFilename))
-		(\e -> if isDoesNotExistError e then pure Nothing else throwIO e)
+	n <- decodeFileLoop (dir </> subdirectory Weights latestFilename)
 	traverse inferenceThreadLoadNet n
 
 -- TODO: better error handling
@@ -495,7 +493,7 @@ gameFileToTensorFiles status dir fp = recallGame dir fp >>= \case
 		    bgs = btsLatestGlobal bts
 		firstTensor <- asum [empty
 			, maybe empty pure $ HM.lookup categoryT (bgsNextTensor bgs)
-			, maybe empty (pure . succ) =<< decodeFileStrict' (dir </> subdirectory (Tensors category) latestFilename)
+			, maybe empty (pure . succ) =<< decodeFileLoop (dir </> subdirectory (Tensors category) latestFilename)
 			, pure 0
 			]
 
@@ -503,7 +501,9 @@ gameFileToTensorFiles status dir fp = recallGame dir fp >>= \case
 		n <- saveTensors path firstTensor history
 
 		relocate dir fp GamesPending (GamesProcessed category)
-		encodeFile (dir </> subdirectory (Tensors category) latestFilename) (firstTensor + n - 1)
+		encodeFileLoop
+			(dir </> subdirectory (Tensors category) latestFilename)
+			(firstTensor + n - 1)
 		btsUpdate status $ \bts -> bts
 			{ btsLatestGlobal = BureaucracyGlobalState
 				{ bgsLastGame = Just fp
@@ -512,6 +512,17 @@ gameFileToTensorFiles status dir fp = recallGame dir fp >>= \case
 			, btsGamesProcessed = HM.insertWith (+) categoryT 1 (btsGamesProcessed bts)
 			, btsTensorsProcessed = HM.insertWith (+) categoryT n (btsTensorsProcessed bts)
 			}
+
+encodeFileLoop :: ToJSON a => FilePath -> a -> IO ()
+encodeFileLoop fp a = catch
+	(encodeFile fp a)
+	(\e -> if isAlreadyInUseError e then threadDelay 1000 >> encodeFileLoop fp a else throwIO e)
+
+decodeFileLoop :: FromJSON a => FilePath -> IO (Maybe a)
+decodeFileLoop fp = catch (decodeFileStrict' fp) $ \e -> if
+	| isAlreadyInUseError e -> threadDelay 1000 >> decodeFileLoop fp
+	| isDoesNotExistError e -> pure Nothing
+	| otherwise -> throwIO e
 
 data GameDecodingResult
 	= GDParseError
@@ -554,9 +565,8 @@ latestFilename :: FilePath
 latestFilename = "latest.json"
 
 readLatestTensor :: FilePath -> FilePath -> IO (Maybe Integer)
-readLatestTensor root category = catch
-	(decodeFileStrict' (root </> subdirectory (Tensors category) latestFilename))
-	(\e -> if isDoesNotExistError e || isAlreadyInUseError e then pure Nothing else throwIO e)
+readLatestTensor root category = decodeFileLoop
+	(root </> subdirectory (Tensors category) latestFilename)
 
 newSumView :: Grid -> Int32 -> T.Text -> IO Grid
 newSumView parent i description = do
@@ -639,7 +649,7 @@ trainingThread netUpdate ref sc = do
 	    		then do
 	    			path <- prepareFile dir Weights (show gen <.> "nsn")
 	    			netSave net sgd path
-	    			encodeFile (dir </> subdirectory Weights latestFilename) gen
+	    			encodeFileLoop (dir </> subdirectory Weights latestFilename) gen
 	    			atomically $ writeTVar netUpdate (Just gen)
 	    			atomically . modifyTVar ref $ \(sgen, ss, loss) -> (sSet (Just gen) sgen, ss, loss)
 	    			pure 1
@@ -659,9 +669,7 @@ trainingThread netUpdate ref sc = do
 trainingThreadLoadLatestNet :: IO (Integer, Net, Optimizer)
 trainingThreadLoadLatestNet = do
 	dir <- nsDataDir
-	mn <- catch
-		(decodeFileStrict' (dir </> subdirectory Weights latestFilename))
-		(\e -> if isDoesNotExistError e then pure Nothing else throwIO e)
+	mn <- decodeFileLoop (dir </> subdirectory Weights latestFilename)
 	case mn of
 		Nothing -> do
 			net <- netSample True
