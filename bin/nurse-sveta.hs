@@ -339,9 +339,9 @@ inferenceThread :: DMEvaluationProcedure -> TVar (Maybe Integer) -> TVar Inferen
 inferenceThread eval netUpdate itsRef sc = forever $ do
 	its <- readTVarIO itsRef
 	step <- atomically . asum $ tail [undefined
-		, ITSProgress <$> serviceCallsSTM eval (itsEvaluate its)
 		, ITSDie <$ scSTM sc
 		, ITSLoadNet <$> (readTVar netUpdate >>= ensure (itsNewNet its))
+		, ITSProgress <$> serviceCallsSTM eval (itsEvaluate its)
 		]
 	case step of
 		ITSProgress ion -> ion >>= \n -> atomically $ writeTVar itsRef its
