@@ -10,6 +10,12 @@ const int64_t NUM_ROTATIONS = 4;
 
 const int64_t NUM_CELLS = BOARD_WIDTH * BOARD_HEIGHT;
 
+const int64_t FILTER_COUNT = 32;
+const int64_t RESIDUAL_BLOCK_COUNT = 20;
+const double LEAKAGE = 0.01;
+
+const int64_t BODY_SIZE = FILTER_COUNT * NUM_CELLS;
+
 struct TensorSketch {
 	torch::Device dev;
 	torch::ScalarType ty;
@@ -208,38 +214,112 @@ struct Batch {
 	}
 };
 
+class Conv2dReLUInitImpl : public torch::nn::Module {
+	public:
+		Conv2dReLUInitImpl(int64_t iChans, int64_t oChans, double leakage, int64_t padding=1, int64_t k=3)
+			: torch::nn::Module("Conv2d (custom initialization)")
+			, conv(torch::nn::Conv2d(torch::nn::Conv2dOptions(iChans, oChans, k).padding(padding)))
+		{
+			auto opts = torch::TensorOptions().dtype(torch::kFloat64).requires_grad(true);
+			// scaling factor is from Delving Deep into Rectifiers
+			auto scaling = std::sqrt(2 / ((1 + leakage*leakage) * k*k*iChans));
+			torch::autograd::GradMode::set_enabled(false);
+			conv->weight.normal_(0, scaling);
+			conv->bias.normal_(0, 1);
+			torch::autograd::GradMode::set_enabled(true);
+			register_module("conv", conv);
+		}
+
+		torch::Tensor forward(const torch::Tensor &in) { return conv->forward(in); }
+
+		torch::nn::Conv2d conv;
+};
+TORCH_MODULE(Conv2dReLUInit);
+
+class ResidualImpl : public torch::nn::Module {
+	public:
+		ResidualImpl(int64_t chans, double leakage, int64_t padding=1, int64_t k=3)
+			: torch::nn::Module("residual block")
+			, conv0(chans, chans, leakage, padding, k)
+			, conv1(chans, chans, leakage, padding, k)
+			, norm0(torch::nn::BatchNorm2dOptions(chans))
+			, norm1(torch::nn::BatchNorm2dOptions(chans))
+			, lrelu(torch::nn::LeakyReLU(torch::nn::LeakyReLUOptions().negative_slope(leakage)))
+		{
+			register_module("conv0", conv0);
+			register_module("conv1", conv1);
+			register_module("norm0", norm0);
+			register_module("norm1", norm1);
+			register_module("lrelu", lrelu);
+		}
+
+		torch::Tensor forward(const torch::Tensor &in) {
+			return lrelu->forward(in +
+				norm1->forward(
+				conv1->forward(
+				lrelu->forward(
+				norm0->forward(
+				conv0->forward(
+				in))))));
+		}
+
+	Conv2dReLUInit conv0, conv1;
+	torch::nn::BatchNorm2d norm0, norm1;
+	torch::nn::LeakyReLU lrelu;
+};
+TORCH_MODULE(Residual);
+
 class NetImpl : public torch::nn::Module {
 	public:
 		NetImpl()
 			: torch::nn::Module("Nurse Sveta net")
-			, linear(torch::nn::Linear(CELL_SIZE*NUM_CELLS + LOOKAHEAD_SIZE, NUM_ROTATIONS*NUM_CELLS + NUM_BERNOULLIS + NUM_SCALARS))
+			, board_convolution(CELL_SIZE, FILTER_COUNT, LEAKAGE)
+			, input_linear(LOOKAHEAD_SIZE, BODY_SIZE)
+			, input_norm(torch::nn::BatchNorm2dOptions(FILTER_COUNT))
+			, bernoulli_linear(BODY_SIZE, NUM_BERNOULLIS)
+			, scalar_linear(BODY_SIZE, NUM_SCALARS)
+			, priors_convolution(FILTER_COUNT, NUM_ROTATIONS, LEAKAGE)
 			{
-				register_module("linear", linear);
+				for(int64_t i = 0; i < RESIDUAL_BLOCK_COUNT; i++)
+					residuals.push_back(Residual(FILTER_COUNT, LEAKAGE));
+
+				register_module("initial board convolution", board_convolution);
+				register_module("initial fully-connected inputs", input_linear);
+				register_module("input normalization", input_norm);
+
+				for(int64_t i = 0; i < RESIDUAL_BLOCK_COUNT; i++) {
+					std::stringstream ss;
+					ss << "main body residual #" << i;
+					register_module(ss.str(), residuals[i]);
+				}
+				register_module("Bernoulli parameter outputs", bernoulli_linear);
+				register_module("scalar outputs", scalar_linear);
+				register_module("final priors convolution", priors_convolution);
+
 				to(torch::kCUDA);
 				to(torch::kF64);
 			}
+
 		NetOutput forward(const NetInput &in);
 
 	private:
-		torch::nn::Linear linear;
+		Conv2dReLUInit board_convolution, priors_convolution;
+		torch::nn::Linear input_linear, bernoulli_linear, scalar_linear;
+		torch::nn::BatchNorm2d input_norm;
+		std::vector<Residual> residuals;
 };
 TORCH_MODULE(Net);
 
 NetOutput NetImpl::forward(const NetInput &in) {
-	const int n = in.boards.size(0);
-	auto linear_in = torch::cat(
-		{ in.boards.reshape({n, CELL_SIZE*NUM_CELLS})
-		, in.lookaheads
-		}, 1);
-	auto linear_out = linear->forward(linear_in);
+	const int64_t n = in.boards.size(0);
+	torch::Tensor t = input_norm->forward(board_convolution->forward(in.boards) + input_linear->forward(in.lookaheads).reshape({n, FILTER_COUNT, BOARD_WIDTH, BOARD_HEIGHT}));
+	for(int64_t i = 0; i < RESIDUAL_BLOCK_COUNT; i++) t = residuals[i]->forward(t);
 
 	NetOutput out;
-	int64_t start = 0, len;
-	len = NUM_ROTATIONS*NUM_CELLS; out.priors     = linear_out.index({torch::indexing::Slice(), torch::indexing::Slice(start, start + len)}); start += len;
-	len = NUM_BERNOULLIS         ; out.bernoullis = linear_out.index({torch::indexing::Slice(), torch::indexing::Slice(start, start + len)}); start += len;
-	len = NUM_SCALARS            ; out.scalars    = linear_out.index({torch::indexing::Slice(), torch::indexing::Slice(start, start + len)}); start += len;
-	out.priors = out.priors.reshape({n, NUM_ROTATIONS, BOARD_WIDTH, BOARD_HEIGHT}).exp();
-	out.bernoullis = out.bernoullis.sigmoid();
+	out.priors = priors_convolution->forward(t).exp();
+	t = t.reshape({n, BODY_SIZE});
+	out.bernoullis = bernoulli_linear->forward(t).sigmoid();
+	out.scalars = scalar_linear->forward(t).exp();
 
 	return out;
 }
