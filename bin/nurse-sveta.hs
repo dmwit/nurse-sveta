@@ -646,7 +646,7 @@ trainingThread netUpdate ref sc = do
 	    	Nothing -> scIO sc >> threadDelay 1000000 >> readLatestTensorLoop
 	    	Just n -> pure n
 	    loop i gen = do
-	    	i' <- if i >= 10000
+	    	i' <- if i >= 1000
 	    		then do
 	    			path <- prepareFile dir Weights (show gen <.> "nsn")
 	    			netSave net sgd path
@@ -678,7 +678,7 @@ trainingThreadLoadLatestNet = do
 			pure (1, net, sgd)
 		Just n -> do
 			(net, sgd) <- netLoadForTraining (dir </> subdirectory Weights (show n <.> "nsn"))
-			pure (n, net, sgd)
+			pure (n+1, net, sgd)
 
 gridGetLabelAt :: Grid -> Int32 -> Int32 -> IO Label -> IO Label
 gridGetLabelAt grid x y factory = #getChildAt grid x y >>= \case
