@@ -3,6 +3,7 @@ module Nurse.Sveta.STM.BatchProcessor where
 import Control.Concurrent
 import Control.Exception
 import Control.Monad
+import Data.Functor
 import Nurse.Sveta.STM
 
 data BoundedFIFO a = BoundedFIFO
@@ -40,6 +41,11 @@ newProcedure n = Procedure <$> emptyBoundedFIFO n
 serviceCalls :: Procedure a b -> (forall t. Traversable t => t a -> IO (t b, c)) -> IO c
 serviceCalls proc f = join (atomically (serviceCallsSTM proc f))
 
+-- | A convenience wrapper around 'serviceCalls' that doesn't compute anything
+-- about the inputs.
+serviceCalls_ :: Procedure a b -> (forall t. Traversable t => t a -> IO (t b)) -> IO ()
+serviceCalls_ proc f = serviceCalls proc (\as -> f as <&> \bs -> (bs, ()))
+
 -- | Pop all the pending calls and return an IO action that will service them
 -- all and reply. Usually you want 'serviceCalls' instead, but since this
 -- blocks waiting for at least one request, occasionally you want to be able to
@@ -49,6 +55,11 @@ serviceCallsSTM (Procedure bf) f = process <$> popAll bf where
 	process reqs = do
 		(bs, c) <- f (map fst reqs)
 		c <$ zipWithM_ ((atomically .) . writeTMVar) (map snd reqs) bs
+
+-- | A convenience wrapper around 'serviceCallsSTM' that doesn't compute
+-- anything about the inputs.
+serviceCallsSTM_ :: Procedure a b -> (forall t. Traversable t => t a -> IO (t b)) -> STM (IO ())
+serviceCallsSTM_ proc f = serviceCallsSTM proc (\as -> f as <&> \bs -> (bs, ()))
 
 -- | Send a request for processing. This will block until the request is
 -- finished processing, which includes waiting for the request to be accepted

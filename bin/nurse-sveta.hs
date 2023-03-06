@@ -24,6 +24,7 @@ import Nurse.Sveta.Tomcats
 import Nurse.Sveta.Torch
 import Nurse.Sveta.Util
 import Nurse.Sveta.Widget
+import Paths_nurse_sveta
 import System.Directory
 import System.Environment
 -- TODO: this is now built into the directory package, we should switch to that
@@ -32,6 +33,7 @@ import System.FilePath
 import System.IO
 import System.IO.Error
 import System.Mem
+import System.Process
 import System.Random.MWC
 import Text.Printf
 import Util
@@ -50,6 +52,8 @@ import qualified Data.Time as Time
 -- ││       │╰─────╯│       ││
 -- ││       │╭╴trn╶╮│       ││
 -- ││       │╰─────╯│       ││
+-- ││       │╭╴log╶╮│       ││
+-- ││       │╰─────╯│       ││
 -- ││       ╰───────╯       ││
 -- │╰───────────────────────╯│
 -- ╰─────────────────────────╯
@@ -59,6 +63,7 @@ main = do
 	app <- new Application []
 	on app #activate $ do
 		inferenceProcedure <- newProcedure 100
+		loggingProcedure <- newProcedure 10000
 		bureaucracyLock <- newMVar newBureaucracyGlobalState
 		netUpdate <- newTVarIO Nothing
 		mainRef <- newIORef Nothing
@@ -70,14 +75,17 @@ main = do
 		inf <- newThreadManager "inference" OS (inferenceThreadView inferenceProcedure netUpdate)
 		bur <- newThreadManager "bureaucracy" Green (bureaucracyThreadView bureaucracyLock)
 		trn <- newThreadManager "training" OS (trainingThreadView netUpdate)
+		log <- newThreadManager "logging" Green (loggingThreadView loggingProcedure)
 		replicateM_ 3 (tmStartThread gen)
 		tmStartThread inf
 		tmStartThread bur
 		tmStartThread trn
+		tmStartThread log
 		tmWidget gen >>= #append top
 		tmWidget inf >>= #append txt
 		tmWidget bur >>= #append txt
 		tmWidget trn >>= #append txt
+		tmWidget log >>= #append txt
 		#append top txt
 
 		w <- new Window $ tail [undefined
@@ -94,7 +102,7 @@ main = do
 					    	-- performGC to run finalizers
 					    	Just 1 -> performGC >> #quit app
 					    	Just n -> writeIORef mainRef (Just (n-1))
-					    tms = [bur, trn] -- gen, inf handled specially (see below)
+					    tms = [bur, trn, log] -- gen, inf handled specially (see below)
 					writeIORef mainRef (Just (length tms + 2))
 					for_ tms $ \tm -> tm `tmDieThen` quitIfAppropriate
 					-- don't kill off the inference threads until the
@@ -705,6 +713,53 @@ trainingThreadLoadLatestNet = do
 		Just n -> do
 			(net, sgd) <- netLoadForTraining (dir </> subdirectory Weights (show n <.> "nsn"))
 			pure (n+1, net, sgd)
+
+data LogMessage
+	= Iteration Integer
+	| Metric String Double
+	deriving (Eq, Ord, Read, Show)
+
+-- TODO: this really does not need to update its view 30 times per second, once per hour is enough
+loggingThreadView :: Procedure LogMessage () -> IO ThreadView
+loggingThreadView log = do
+	top <- new Box [#orientation := OrientationVertical]
+	topWidget <- toWidget top
+	pure ThreadView
+		{ tvWidget = topWidget
+		, tvRefresh = pure ()
+		, tvCompute = loggingThread log
+		}
+
+loggingThread :: Procedure LogMessage () -> StatusCheck -> IO ()
+loggingThread log sc = do
+	wandbCat <- getDataFileName "pybits/wandb-cat.py"
+	dir <- nsDataDir
+	createDirectoryIfMissing True (dir </> "wandb")
+	(Just h, Nothing, Nothing, ph) <- createProcess (proc "python3" [wandbCat, "-q"]) { std_in = CreatePipe }
+
+	hPutStrLn h dir
+	hPutStrLn h "Nurse Sveta"
+	Time.getCurrentTime >>= hPrint h
+	hPutStrLn h "" -- no support for resuming (yet?)
+	hPutStrLn h "" -- no reporting of configuration data (yet?)
+	hFlush h
+
+	iRef <- newIORef 0
+	let go = \case
+	    	Iteration i -> writeIORef iRef i
+	    	Metric k v -> readIORef iRef >>= \i -> do
+	    		hPrint h i
+	    		hPutStrLn h k
+	    		hPrint h v
+
+	forever $ do
+		step <- atomically . asum $ tail [undefined
+			, Left <$> scSTM sc
+			, Right <$> serviceCallsSTM_ log (traverse go)
+			]
+		case step of
+			Left _ -> hClose h >> waitForProcess ph >> scIO sc
+			Right act -> act
 
 gridGetLabelAt :: Grid -> Int32 -> Int32 -> IO Label -> IO Label
 gridGetLabelAt grid x y factory = #getChildAt grid x y >>= \case

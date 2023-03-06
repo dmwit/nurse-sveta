@@ -9,6 +9,7 @@ maintainer:         me@dmwit.com
 copyright:          2022 Daniel Wagner
 category:           AI
 extra-source-files: CHANGELOG.md
+data-files:         pybits/wandb-cat.py
 
 flag debug
     description: Build with debugging symbols and no optimizations.
@@ -95,8 +96,10 @@ executable nurse-sveta-pathfinding-demo
 executable nurse-sveta
     import:             executable
     main-is:            nurse-sveta.hs
+    other-modules:      Paths_nurse_sveta
     build-depends:        bytestring ^>=0.10
                         , directory ^>=1.3
+                        , process ^>=1.6
                         , xdg-basedir ^>=0.2
                         , time ^>=1.9
 
