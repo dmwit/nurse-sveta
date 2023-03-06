@@ -140,7 +140,7 @@ onSpeeds f gts = gts { summary = s { speeds = f (speeds s) } } where
 newSearchConfiguration :: SearchConfiguration
 newSearchConfiguration = SearchConfiguration
 	{ c_puct = 1
-	, iterations = 2000
+	, iterations = 20000
 	, typicalMoves = 40
 	, priorNoise = 0.25
 	}
@@ -277,12 +277,13 @@ data InferenceThreadState = InferenceThreadState
 	, itsNetBatches :: SearchSpeed
 	, itsNetPositions :: SearchSpeed
 	, itsNet :: Stable (Maybe (Integer, Net))
+	, itsUseNet :: Bool
 	}
 
 itsEvaluate :: Traversable t => InferenceThreadState -> t (GameState, Color, Color) -> IO (t DetailedEvaluation, Int)
-itsEvaluate its queries = (\answers -> (answers, length answers)) <$> case sPayload (itsNet its) of
-	Nothing -> traverse dumbEvaluation queries
-	Just (_, net) -> netEvaluation net queries
+itsEvaluate its queries = (\answers -> (answers, length answers)) <$> case (itsUseNet its, sPayload (itsNet its)) of
+	(True, Just (_, net)) -> netEvaluation net queries
+	_ -> traverse dumbEvaluation queries
 
 itsNewNet :: InferenceThreadState -> Maybe Integer -> Bool
 itsNewNet its mn = fmap fst (sPayload (itsNet its)) /= mn
@@ -291,8 +292,10 @@ inferenceThreadView :: DMEvaluationProcedure -> TVar (Maybe Integer) -> IO Threa
 inferenceThreadView eval netUpdate = do
 	top <- new Box [#orientation := OrientationVertical]
 	lbl <- descriptionLabel "<initializing net>"
+	use <- new CheckButton [#label := "Use neural net", #active := False]
 	spd <- new Grid []
 	#append top lbl
+	#append top use
 	#append top spd
 
 	latestNet <- inferenceThreadLoadLatestNet
@@ -307,7 +310,23 @@ inferenceThreadView eval netUpdate = do
 		<*> newSearchSpeed
 		<*> newSearchSpeed
 		<*> pure (newStable latestNet)
+		<*> pure False
 	ref <- newTVarIO its0
+
+	on use #toggled $ do
+		batches_ <- newSearchSpeed
+		positions_ <- newSearchSpeed
+		useNet <- G.get use #active
+		atomically $ do
+			its <- readTVar ref
+			let (batches, positions) = case sPayload (itsNet its) of
+			    	Just{} -> (batches_, positions_)
+			    	Nothing -> (itsNetBatches its, itsNetPositions its)
+			writeTVar ref its
+				{ itsNetBatches = batches
+				, itsNetPositions = positions
+				, itsUseNet = useNet
+				}
 
 	tracker <- newTracker
 	topWidget <- toWidget top
@@ -326,7 +345,7 @@ inferenceThreadView eval netUpdate = do
 		, tvCompute = inferenceThread eval netUpdate ref
 		}
 	where
-	describeNet mn = "current net: " <> case mn of
+	describeNet mn = "currently loaded net: " <> case mn of
 		Nothing -> "hand-crafted"
 		Just (n, _) -> tshow n
 
@@ -337,25 +356,32 @@ data InferenceThreadStep
 
 inferenceThread :: DMEvaluationProcedure -> TVar (Maybe Integer) -> TVar InferenceThreadState -> StatusCheck -> IO ()
 inferenceThread eval netUpdate itsRef sc = forever $ do
-	its <- readTVarIO itsRef
-	step <- atomically . asum $ tail [undefined
-		, ITSDie <$ scSTM sc
-		, ITSLoadNet <$> (readTVar netUpdate >>= ensure (itsNewNet its))
-		, ITSProgress <$> serviceCallsSTM eval (itsEvaluate its)
-		]
+	step <- atomically $ do
+		its <- readTVar itsRef
+		asum $ tail [undefined
+			, ITSDie <$ scSTM sc
+			, ITSLoadNet <$> (readTVar netUpdate >>= ensure (itsNewNet its))
+			, ITSProgress <$> serviceCallsSTM eval (itsEvaluate its)
+			]
 	case step of
-		ITSProgress ion -> ion >>= \n -> atomically $ writeTVar itsRef its
-			{ itsThreadBatches = ssInc (itsThreadBatches its)
-			, itsNetBatches = ssInc (itsNetBatches its)
-			, itsThreadPositions = ssIncBy (itsThreadPositions its) n
-			, itsNetPositions = ssIncBy (itsNetPositions its) n
-			}
+		ITSProgress ion -> ion >>= \n -> atomically $ do
+			its <- readTVar itsRef
+			writeTVar itsRef its
+				{ itsThreadBatches = ssInc (itsThreadBatches its)
+				, itsNetBatches = ssInc (itsNetBatches its)
+				, itsThreadPositions = ssIncBy (itsThreadPositions its) n
+				, itsNetPositions = ssIncBy (itsNetPositions its) n
+				}
 		ITSLoadNet n -> do
 			net <- traverse inferenceThreadLoadNet n
-			when (itsNewNet its (fst <$> net)) $ do
-				batches <- newSearchSpeed
-				positions <- newSearchSpeed
-				atomically $ writeTVar itsRef its { itsNet = sSet net (itsNet its), itsNetBatches = batches, itsNetPositions = positions }
+			batches <- newSearchSpeed
+			positions <- newSearchSpeed
+			atomically $ do
+				its <- readTVar itsRef
+				let its' = if itsUseNet its
+				    	then its { itsNetBatches = batches, itsNetPositions = positions }
+				    	else its
+				writeTVar itsRef its { itsNet = sSet net (itsNet its) }
 		ITSDie -> scIO sc
 
 inferenceThreadLoadLatestNet :: IO (Maybe (Integer, Net))
