@@ -446,7 +446,7 @@ btsUpdate :: TVar (Stable BureaucracyThreadState) -> (BureaucracyThreadState -> 
 btsUpdate status = atomically . modifyTVar status . sTryUpdate
 
 initialValidationSplit :: [(T.Text, Double)]
-initialValidationSplit = [("train", 8), ("test", 1), ("validate", 1)]
+initialValidationSplit = [("train", 9), ("test", 1), ("validate", 0.1)]
 
 -- ╭╴top╶────╮
 -- │╭╴vsv╶──╮│

@@ -416,6 +416,7 @@ void load_net(char *path, Net **netptr, torch::optim::SGD **optimptr) {
 // boards: [n, 7, 8, 16]
 // lookaheads: [n, 6]
 void evaluate_net(Net *net, int n, double *priors, double *bernoullis, double *scalars, char *boards, char *lookaheads) {
+	torch::NoGradGuard g;
 	NetInput in(n, boards, lookaheads); in.to_gpu();
 	NetOutput out = (**net).forward(in); out.to_cpu();
 
