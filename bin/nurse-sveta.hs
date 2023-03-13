@@ -5,6 +5,7 @@ import Control.Concurrent
 import Control.Exception
 import Control.Monad
 import Data.Aeson
+import Data.Bits
 import Data.Fixed
 import Data.Foldable
 import Data.Functor
@@ -74,7 +75,7 @@ main = do
 		gen <- newThreadManager "generation" Green (generationThreadView inferenceProcedure)
 		inf <- newThreadManager "inference" OS (inferenceThreadView inferenceProcedure netUpdate)
 		bur <- newThreadManager "bureaucracy" Green (bureaucracyThreadView bureaucracyLock)
-		trn <- newThreadManager "training" OS (trainingThreadView netUpdate)
+		trn <- newThreadManager "training" OS (trainingThreadView loggingProcedure netUpdate)
 		log <- newThreadManager "logging" Green (loggingThreadView loggingProcedure)
 		replicateM_ 3 (tmStartThread gen)
 		tmStartThread inf
@@ -99,18 +100,19 @@ main = do
 				Nothing -> do
 					let quitIfAppropriate = readIORef mainRef >>= \case
 					    	Nothing -> fail "the impossible happened: a thread manager finished dying before thread managers started dying"
+					    	Just [] -> fail "the impossible happened: after all the thread managers died, the app didn't exit AND another thread manager died"
+					    	Just ([]:_) -> fail "the impossible happened: all the thread managers in one dependency level died, but didn't start killing managers in the next dependency level"
 					    	-- performGC to run finalizers
-					    	Just 1 -> performGC >> #quit app
-					    	Just n -> writeIORef mainRef (Just (n-1))
-					    tms = [bur, trn, log] -- gen, inf handled specially (see below)
-					writeIORef mainRef (Just (length tms + 2))
-					for_ tms $ \tm -> tm `tmDieThen` quitIfAppropriate
-					-- don't kill off the inference threads until the
-					-- generation threads are done, otherwise they might block
-					-- waiting for a reply
-					gen `tmDieThen` do
-						inf `tmDieThen` quitIfAppropriate
-						quitIfAppropriate
+					    	Just [[_]] -> performGC >> #quit app
+					    	Just ([_]:tms:tmss) -> writeIORef mainRef (Just (tms:tmss)) >> traverse_ (\tm -> tm `tmDieThen` quitIfAppropriate) tms
+					    	Just ((_:tms):tmss) -> writeIORef mainRef (Just (tms:tmss))
+					-- dependencies reified here:
+					-- * generation threads may block if inference threads die too early
+					-- * training threads may block if logging threads die too early
+					-- the undefined looks scary, but it's just to kick off the
+					-- recursion, it's completely ignored
+					writeIORef mainRef (Just [[undefined], [gen, trn], [inf, log, bur]])
+					quitIfAppropriate
 					pure True
 			]
 		#show w
@@ -629,8 +631,8 @@ updateSumView grid ns = do
 			then "100%"
 			else tshow (round (100 * fromIntegral n / totalD)) <> "%"
 
-trainingThreadView :: TVar (Maybe Integer) -> IO ThreadView
-trainingThreadView netUpdate = do
+trainingThreadView :: Procedure LogMessage () -> TVar (Maybe Integer) -> IO ThreadView
+trainingThreadView log netUpdate = do
 	top <- new Box [#orientation := OrientationVertical]
 	svb <- new Box [#orientation := OrientationHorizontal]
 	svd <- descriptionLabel "most recently saved net: "
@@ -664,22 +666,19 @@ trainingThreadView netUpdate = do
 	pure ThreadView
 		{ tvWidget = topWidget
 		, tvRefresh = refresh
-		, tvCompute = trainingThread netUpdate ref
+		, tvCompute = trainingThread log netUpdate ref
 		}
 
 -- TODO: do we have a stall condition to kill the AI if it survives too long without making progress?
 -- TODO: make learning rate, batch size, and how many recent tensors to draw from configurable
 -- TODO: perhaps instead of a flat recent tensor count, we should do exponential discounting!
 -- TODO: might be nice to show current generation and iterations to next save
-trainingThread :: TVar (Maybe Integer) -> TVar (Stable (Maybe Integer), SearchSpeed, Double) -> StatusCheck -> IO ()
-trainingThread netUpdate ref sc = do
+trainingThread :: Procedure LogMessage () -> TVar (Maybe Integer) -> TVar (Stable (Maybe Integer), SearchSpeed, Double) -> StatusCheck -> IO ()
+trainingThread log netUpdate ref sc = do
 	(gen0, net, sgd) <- trainingThreadLoadLatestNet
 	rng <- createSystemRandom
 	dir <- nsDataDir
-	let readLatestTensorLoop = readLatestTensor dir category >>= \case
-	    	Nothing -> scIO sc >> threadDelay 1000000 >> readLatestTensorLoop
-	    	Just n -> pure n
-	    loop i gen = do
+	let loop i gen = do
 	    	i' <- if i >= 1000
 	    		then do
 	    			path <- prepareFile dir Weights (show gen <.> "nsn")
@@ -689,12 +688,24 @@ trainingThread netUpdate ref sc = do
 	    			atomically . modifyTVar ref $ \(sgen, ss, loss) -> (sSet (Just gen) sgen, ss, loss)
 	    			pure 1
 	    		else pure (i+1)
-	    	latestTensor <- readLatestTensorLoop
-	    	let earliestTensor = max 0 (latestTensor - 5000)
-	    	batchIndices <- replicateM 100 (uniformRM (earliestTensor, latestTensor) rng)
-	    	batch <- batchLoad [dir </> subdirectory (Tensors category) (show ix <.> "nst") | ix <- batchIndices]
+	    	batch <- trainingThreadLoadBatch rng sc "train" 50000 100
 	    	loss <- netTrain net sgd batch
 	    	atomically (modifyTVar ref (\(lastSavedGen, ss, _) -> (lastSavedGen, ssInc ss, loss)))
+	    	call log (Iteration gen)
+	    	call log (Metric "loss/train/sum" loss)
+	    	when (gen .&. 0xff == 0) $ do
+	    		testBatch <- trainingThreadLoadBatch rng sc "test" 5000 100
+	    		(priorTrain, bernoulliTrain, scalarTrain) <- netDetailedLoss net batch
+	    		(priorTest, bernoulliTest, scalarTest) <- netDetailedLoss net testBatch
+	    		traverse_ (call log) $ tail [undefined
+	    			, Metric "loss/train/priors" priorTrain
+	    			, Metric "loss/train/outcome" bernoulliTrain
+	    			, Metric "loss/train/rollout" scalarTrain
+	    			, Metric "loss/test/sum" (priorTest + bernoulliTest + scalarTest)
+	    			, Metric "loss/test/priors" priorTest
+	    			, Metric "loss/test/outcome" bernoulliTest
+	    			, Metric "loss/test/rollout" scalarTest
+	    			]
 	    	scIO sc -- TODO: do one last netSave
 	    	loop i' (gen+1)
 	loop 1 gen0
@@ -713,6 +724,17 @@ trainingThreadLoadLatestNet = do
 		Just n -> do
 			(net, sgd) <- netLoadForTraining (dir </> subdirectory Weights (show n <.> "nsn"))
 			pure (n+1, net, sgd)
+
+trainingThreadLoadBatch :: GenIO -> StatusCheck -> String -> Integer -> Int -> IO Batch
+trainingThreadLoadBatch rng sc category historySize batchSize = do
+	dir <- nsDataDir
+	let go = readLatestTensor dir category >>= \case
+	    	Nothing -> scIO sc >> threadDelay 1000000 >> go
+	    	Just n -> pure n
+	latestTensor <- go
+	let earliestTensor = max 0 (latestTensor - historySize)
+	batchIndices <- replicateM batchSize (uniformRM (earliestTensor, latestTensor) rng)
+	batchLoad [dir </> subdirectory (Tensors category) (show ix <.> "nst") | ix <- batchIndices]
 
 data LogMessage
 	= Iteration Integer

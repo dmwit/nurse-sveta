@@ -1,7 +1,7 @@
 {-# Language AllowAmbiguousTypes #-}
 
 module Nurse.Sveta.Torch (
-	Net, netSample, netEvaluation, netTrain,
+	Net, netSample, netEvaluation, netTrain, netDetailedLoss,
 	netSave, netLoadForInference, netLoadForTraining,
 	Optimizer, newOptimizer,
 	Batch, batchLoad,
@@ -39,6 +39,7 @@ foreign import ccall "save_example" cxx_save_example :: CString -> Ptr CDouble -
 foreign import ccall "load_batch" cxx_load_batch :: Ptr CString -> CInt -> IO (Ptr Batch)
 foreign import ccall "&discard_batch" cxx_discard_batch :: FunPtr (Ptr Batch -> IO ())
 foreign import ccall "train_net" cxx_train_net :: Ptr Net -> Ptr Optimizer -> Ptr Batch -> IO CDouble
+foreign import ccall "detailed_loss" cxx_detailed_loss :: Ptr Net -> Ptr CDouble -> Ptr Batch -> IO ()
 foreign import ccall "save_net" cxx_save_net :: Ptr Net -> Ptr Optimizer -> CString -> IO ()
 foreign import ccall "load_net" cxx_load_net :: CString -> Ptr (Ptr Net) -> Ptr (Ptr Optimizer) -> IO ()
 foreign import ccall "connect_optimizer" cxx_connect_optimizer :: Ptr Net -> IO (Ptr Optimizer)
@@ -83,6 +84,15 @@ netLoadForTraining path = withUnwrapped (WCS path) $ \cpath -> do
 	optimPtr <- malloc
 	cxx_load_net cpath netPtr optimPtr
 	liftM2 (,) (peek netPtr >>= mkNet) (peek optimPtr >>= mkOptimizer)
+
+netDetailedLoss :: Net -> Batch -> IO (Double, Double, Double)
+netDetailedLoss net_ batch_ = withUnwrapped (net_, batch_) $ \(net, batch) ->
+	allocaArray 3 $ \out -> do
+		cxx_detailed_loss net out batch
+		liftM3 (,,)
+			(realToFrac <$> peekElemOff out 0)
+			(realToFrac <$> peekElemOff out 1)
+			(realToFrac <$> peekElemOff out 2)
 
 class OneHot a where
 	indexCount :: Int
