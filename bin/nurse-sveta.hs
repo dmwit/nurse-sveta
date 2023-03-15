@@ -391,7 +391,7 @@ inferenceThread eval netUpdate itsRef sc = forever $ do
 				let its' = if itsUseNet its
 				    	then its { itsNetBatches = batches, itsNetPositions = positions }
 				    	else its
-				writeTVar itsRef its { itsNet = sSet net (itsNet its) }
+				writeTVar itsRef its' { itsNet = sSet net (itsNet its) }
 		ITSDie -> scIO sc
 
 inferenceThreadLoadLatestNet :: IO (Maybe (Integer, Net))
