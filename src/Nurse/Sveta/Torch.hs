@@ -5,7 +5,7 @@ module Nurse.Sveta.Torch (
 	netSave, netLoadForInference, netLoadForTraining,
 	Optimizer, newOptimizer,
 	Batch, batchLoad,
-	GameStep(..), saveTensors,
+	GameStep(..), SaveTensorsSummary(..), saveTensors,
 	)
 	where
 
@@ -216,11 +216,18 @@ data GameStep = GameStep
 instance ToJSON GameStep where toJSON gs = toJSON (gsMove gs, gsRoot gs, HM.toList (gsChildren gs))
 instance FromJSON GameStep where parseJSON v = parseJSON v <&> \(m, r, c) -> GameStep m r (HM.fromList c)
 
+data SaveTensorsSummary = SaveTensorsSummary
+	{ stsTensorsSaved :: Integer
+	, stsVirusesOriginal :: Int
+	, stsVirusesKilled :: Int
+	, stsFrames :: Int
+	} deriving (Eq, Ord, Read, Show)
+
 -- | Arguments: directory to save tensors in; an index; and the game record.
 -- They will be saved in files named @<i>.nst@, @<i+1>.nst@, etc., up to
 -- @<i+di-1>.nst@, with @i@ being the second argument and @di@ being the return
 -- value.
-saveTensors :: FilePath -> Integer -> ((Board, Bool, CoarseSpeed), [GameStep]) -> IO Integer
+saveTensors :: FilePath -> Integer -> ((Board, Bool, CoarseSpeed), [GameStep]) -> IO SaveTensorsSummary
 saveTensors dir i0 (b0, steps) = do
 	currentState <- initialState b0
 
@@ -286,7 +293,12 @@ saveTensors dir i0 (b0, steps) = do
 	free cells
 	free lookahead
 
-	pure di
+	pure SaveTensorsSummary
+		{ stsTensorsSaved = di
+		, stsVirusesOriginal = originalVirusCount finalState
+		, stsVirusesKilled = vkFinal
+		, stsFrames = fpFinal
+		}
 
 netTrain :: Net -> Optimizer -> Batch -> IO Double
 netTrain net_ optim_ batch_ = withUnwrapped (net_, (batch_, optim_)) $ \(net, (batch, optim)) ->

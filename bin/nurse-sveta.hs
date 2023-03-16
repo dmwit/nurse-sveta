@@ -5,12 +5,14 @@ import Control.Concurrent
 import Control.Exception
 import Control.Monad
 import Data.Aeson
+import Data.Aeson.Encoding
 import Data.Bits
 import Data.Fixed
 import Data.Foldable
 import Data.Functor
 import Data.HashMap.Strict (HashMap)
 import Data.Int
+import Data.IntMap (IntMap)
 import Data.IORef
 import Data.List
 import Data.Maybe
@@ -41,6 +43,7 @@ import Util
 
 import qualified Data.ByteString as BS
 import qualified Data.HashMap.Strict as HM
+import qualified Data.IntMap as IM
 import qualified Data.Text as T
 import qualified Data.Time as Time
 
@@ -74,7 +77,7 @@ main = do
 
 		gen <- newThreadManager "generation" Green (generationThreadView inferenceProcedure)
 		inf <- newThreadManager "inference" OS (inferenceThreadView inferenceProcedure netUpdate)
-		bur <- newThreadManager "bureaucracy" Green (bureaucracyThreadView bureaucracyLock)
+		bur <- newThreadManager "bureaucracy" Green (bureaucracyThreadView loggingProcedure bureaucracyLock)
 		trn <- newThreadManager "training" OS (trainingThreadView loggingProcedure netUpdate)
 		log <- newThreadManager "logging" Green (loggingThreadView loggingProcedure)
 		replicateM_ 3 (tmStartThread gen)
@@ -411,15 +414,124 @@ inferenceThreadLoadNet generation = do
 nsDataDir :: IO FilePath
 nsDataDir = getUserDataDir "nurse-sveta"
 
+data LevelMetric = LevelMetric
+	{ lmMetric :: Int
+	, lmSource :: FilePath
+	} deriving (Eq, Ord, Read, Show)
+
+lmToTuple :: LevelMetric -> (Int, FilePath)
+lmToTuple = liftA2 (,) lmMetric lmSource
+
+lmFromTuple :: (Int, FilePath) -> LevelMetric
+lmFromTuple = uncurry LevelMetric
+
+instance FromJSON LevelMetric where parseJSON = fmap lmFromTuple . parseJSON
+instance ToJSON LevelMetric where
+	toJSON = toJSON . lmToTuple
+	toEncoding rm = list id [toEncoding (lmMetric rm), toEncoding (lmSource rm)]
+
+lmFewest :: LevelMetric -> LevelMetric -> LevelMetric
+lmFewest rm rm' = if lmMetric rm < lmMetric rm' then rm else rm'
+
+lmMost :: LevelMetric -> LevelMetric -> LevelMetric
+lmMost rm rm' = if lmMetric rm > lmMetric rm' then rm else rm'
+
+lmDouble :: LevelMetric -> Double
+lmDouble = fromIntegral . lmMetric
+
+data CategoryMetrics = CategoryMetrics
+	{ cmVirusesKilled :: IntMap LevelMetric
+	, cmFramesToWin   :: IntMap LevelMetric
+	, cmFramesToLoss  :: IntMap LevelMetric
+	} deriving (Eq, Ord, Read, Show)
+
+vkFieldName, ftwFieldName, ftlFieldName :: Key
+vkFieldName = "viruses killed"
+ftwFieldName = "frames to win"
+ftlFieldName = "frames to loss"
+
+instance ToJSON CategoryMetrics where
+	toJSON cm = object $ tail [undefined
+		,  vkFieldName .= cmVirusesKilled cm
+		, ftwFieldName .= cmFramesToWin cm
+		, ftlFieldName .= cmFramesToLoss cm
+		]
+	toEncoding cm = pairs $ mempty
+		<>  vkFieldName .= cmVirusesKilled cm
+		<> ftwFieldName .= cmFramesToWin cm
+		<> ftlFieldName .= cmFramesToLoss cm
+
+instance FromJSON CategoryMetrics where
+	parseJSON = withObject "CategoryMetrics" $ \v -> pure CategoryMetrics
+		<*> v .:  vkFieldName
+		<*> v .: ftwFieldName
+		<*> v .: ftlFieldName
+
+newCategoryMetrics :: CategoryMetrics
+newCategoryMetrics = CategoryMetrics
+	{ cmVirusesKilled = mempty
+	, cmFramesToWin   = mempty
+	, cmFramesToLoss  = mempty
+	}
+
+-- invariant: corresponding fields in cmSuperlative and cmLatest have the same keys
+data CategoryMetadata = CategoryMetadata
+	{ cmBest :: CategoryMetrics
+	, cmLatest :: CategoryMetrics
+	} deriving (Eq, Ord, Read, Show)
+
+bFieldName, rFieldName :: Key
+bFieldName = "best"
+rFieldName = "recent"
+
+instance ToJSON CategoryMetadata where
+	toJSON cm = object $ tail [undefined
+		, bFieldName .= cmBest cm
+		, rFieldName .= cmLatest cm
+		]
+	toEncoding cm = pairs $ mempty
+		<> bFieldName .= cmBest cm
+		<> rFieldName .= cmLatest cm
+
+instance FromJSON CategoryMetadata where
+	parseJSON = withObject "CategoryMetadata" $ \v -> pure CategoryMetadata
+		<*> v .: bFieldName
+		<*> v .: rFieldName
+
+newCategoryMetadata :: CategoryMetadata
+newCategoryMetadata = CategoryMetadata
+	{ cmBest = newCategoryMetrics
+	, cmLatest = newCategoryMetrics
+	}
+
+cmInsert :: FilePath -> Int -> Int -> Int -> CategoryMetadata -> CategoryMetadata
+cmInsert fp startingViruses virusesKilled frames CategoryMetadata { cmBest = b, cmLatest = r } = CategoryMetadata
+	{ cmBest = CategoryMetrics
+		{ cmVirusesKilled = iw lmMost   True   virusesKilled cmVirusesKilled b
+		, cmFramesToWin   = iw lmFewest isWin  frames        cmFramesToWin   b
+		, cmFramesToLoss  = iw lmMost   isLoss frames        cmFramesToLoss  b
+		}
+	, cmLatest = CategoryMetrics
+		{ cmVirusesKilled = iw const    True   virusesKilled cmVirusesKilled r
+		, cmFramesToWin   = iw const    isWin  frames        cmFramesToWin   r
+		, cmFramesToLoss  = iw const    isLoss frames        cmFramesToLoss  r
+		}
+	} where
+	isWin = startingViruses == virusesKilled
+	isLoss = not isWin
+	iw comb cond metric field record = (if cond then IM.insertWith comb startingViruses (LevelMetric metric fp) else id) (field record)
+
 data BureaucracyGlobalState = BureaucracyGlobalState
 	{ bgsLastGame :: Maybe FilePath
 	, bgsNextTensor :: HashMap T.Text Integer
+	, bgsMetadata :: HashMap T.Text CategoryMetadata
 	} deriving (Eq, Ord, Read, Show)
 
 newBureaucracyGlobalState :: BureaucracyGlobalState
 newBureaucracyGlobalState = BureaucracyGlobalState
 	{ bgsLastGame = Nothing
 	, bgsNextTensor = HM.empty
+	, bgsMetadata = HM.empty
 	}
 
 data BureaucracyThreadState = BureaucracyThreadState
@@ -462,8 +574,8 @@ initialValidationSplit = [("train", 9), ("test", 1), ("validate", 0.1)]
 -- ││╰─────╯││
 -- │╰───────╯│
 -- ╰─────────╯
-bureaucracyThreadView :: MVar BureaucracyGlobalState -> IO ThreadView
-bureaucracyThreadView lock = do
+bureaucracyThreadView :: Procedure LogMessage () -> MVar BureaucracyGlobalState -> IO ThreadView
+bureaucracyThreadView log lock = do
 	vs <- newValidationSplit initialValidationSplit
 	burRef <- newTVarIO (newStable (newBureaucracyThreadState vs))
 	tracker <- newTracker
@@ -494,11 +606,11 @@ bureaucracyThreadView lock = do
 				updateSumView glt (bgsNextTensor (btsLatestGlobal bts))
 				updateSumView tgp (btsGamesProcessed bts)
 				updateSumView ttp (btsTensorsProcessed bts)
-		, tvCompute = bureaucracyThread lock burRef
+		, tvCompute = bureaucracyThread log lock burRef
 		}
 
-bureaucracyThread :: MVar BureaucracyGlobalState -> TVar (Stable BureaucracyThreadState) -> StatusCheck -> IO a
-bureaucracyThread lock status sc = do
+bureaucracyThread :: Procedure LogMessage () -> MVar BureaucracyGlobalState -> TVar (Stable BureaucracyThreadState) -> StatusCheck -> IO a
+bureaucracyThread log lock status sc = do
 	dir <- nsDataDir
 	forever $ do
 		-- TODO: is this really doing the right thing if gameFileToTensorFiles throws an exception? seems like probably not?
@@ -506,15 +618,15 @@ bureaucracyThread lock status sc = do
 			pending <- catch (listDirectory (dir </> subdirectory GamesPending "")) $ \e ->
 				if isDoesNotExistError e || isAlreadyInUseError e then pure [] else throw e
 			btsUpdate status $ \bts -> bts { btsLatestGlobal = bgs }
-			traverse_ (gameFileToTensorFiles status dir) (sort pending)
+			traverse_ (gameFileToTensorFiles log status dir) (sort pending)
 			btsLatestGlobal . sPayload <$> readTVarIO status
 		btsUpdate status $ \bts -> bts { btsCurrentSplit = btsRequestedSplit bts }
 		-- TODO: comms from other threads to tell us when to try again
 		threadDelay 1000000
 		scIO sc
 
-gameFileToTensorFiles :: TVar (Stable BureaucracyThreadState) -> FilePath -> FilePath -> IO ()
-gameFileToTensorFiles status dir fp = recallGame dir fp >>= \case
+gameFileToTensorFiles :: Procedure LogMessage () -> TVar (Stable BureaucracyThreadState) -> FilePath -> FilePath -> IO ()
+gameFileToTensorFiles log status dir fp = recallGame dir fp >>= \case
 	GDStillWriting -> pure ()
 	GDParseError -> do
 		relocate dir fp GamesPending GamesParseError
@@ -533,21 +645,52 @@ gameFileToTensorFiles status dir fp = recallGame dir fp >>= \case
 			, maybe empty (pure . succ) =<< decodeFileLoop (dir </> subdirectory (Tensors category) latestFilename)
 			, pure 0
 			]
+		meta_ <- asum [empty
+			, maybe empty pure $ HM.lookup categoryT (bgsMetadata bgs)
+			, maybe empty pure =<< decodeFileLoop (dir </> subdirectory (GamesProcessed category) metadataFilename)
+			, pure newCategoryMetadata
+			]
 
 		path <- prepareFile dir (Tensors category) ""
-		n <- saveTensors path firstTensor history
+		sts <- saveTensors path firstTensor history
+		let meta = cmInsert fp (stsVirusesOriginal sts) (stsVirusesKilled sts) (stsFrames sts) meta_
 
 		relocate dir fp GamesPending (GamesProcessed category)
 		encodeFileLoop
 			(dir </> subdirectory (Tensors category) latestFilename)
-			(firstTensor + n - 1)
+			(firstTensor + stsTensorsSaved sts - 1)
+		encodeFileLoop
+			(dir </> subdirectory (GamesProcessed category) metadataFilename)
+			meta
+
+		let logKinds = zip ["viruses", "frames/won", "frames/lost" :: String]
+		                   [cmVirusesKilled, cmFramesToWin, cmFramesToLoss]
+		    logAggregations = zip ["best", "latest" :: String]
+		                          [cmBest, cmLatest]
+		traverse_ (schedule log)
+			[ Metric (printf "%s/%s/%02d" k a (stsVirusesOriginal sts)) (lmDouble lm)
+			| categoryT == "train"
+			, (k, fk) <- logKinds
+			, (a, fa) <- logAggregations
+			, Just lm <- [IM.lookup (stsVirusesOriginal sts) (fk (fa meta))]
+			]
+		traverse_ (schedule log)
+			[ Metric (printf "%s/%s/sum" k a) (sum (lmDouble <$> im))
+			| categoryT == "train"
+			, (k, fk) <- logKinds
+			, (a, fa) <- logAggregations
+			, let im = fk (fa meta)
+			, IM.keys im == [4,8..84]
+			]
+
 		btsUpdate status $ \bts -> bts
 			{ btsLatestGlobal = BureaucracyGlobalState
 				{ bgsLastGame = Just fp
-				, bgsNextTensor = HM.insert categoryT (firstTensor + n) (bgsNextTensor (btsLatestGlobal bts))
+				, bgsNextTensor = HM.insert categoryT (firstTensor + stsTensorsSaved sts) (bgsNextTensor (btsLatestGlobal bts))
+				, bgsMetadata = HM.insert categoryT meta (bgsMetadata (btsLatestGlobal bts))
 				}
 			, btsGamesProcessed = HM.insertWith (+) categoryT 1 (btsGamesProcessed bts)
-			, btsTensorsProcessed = HM.insertWith (+) categoryT n (btsTensorsProcessed bts)
+			, btsTensorsProcessed = HM.insertWith (+) categoryT (stsTensorsSaved sts) (btsTensorsProcessed bts)
 			}
 
 encodeFileLoop :: ToJSON a => FilePath -> a -> IO ()
@@ -598,8 +741,9 @@ prepareFile :: FilePath -> Directory -> FilePath -> IO FilePath
 prepareFile root dir fp = (subdir </> fp) <$ createDirectoryIfMissing True subdir where
 	subdir = root </> subdirectory dir ""
 
-latestFilename :: FilePath
+latestFilename, metadataFilename :: FilePath
 latestFilename = "latest.json"
+metadataFilename = "meta.json"
 
 readLatestTensor :: FilePath -> FilePath -> IO (Maybe Integer)
 readLatestTensor root category = decodeFileLoop
@@ -691,13 +835,13 @@ trainingThread log netUpdate ref sc = do
 	    	batch <- trainingThreadLoadBatch rng sc "train" 50000 100
 	    	loss <- netTrain net sgd batch
 	    	atomically (modifyTVar ref (\(lastSavedGen, ss, _) -> (lastSavedGen, ssInc ss, loss)))
-	    	call log (Iteration gen)
-	    	call log (Metric "loss/train/sum" loss)
+	    	schedule log (Iteration gen)
+	    	schedule log (Metric "loss/train/sum" loss)
 	    	when (gen .&. 0xff == 0) $ do
 	    		testBatch <- trainingThreadLoadBatch rng sc "test" 5000 100
 	    		(priorTrain, bernoulliTrain, scalarTrain) <- netDetailedLoss net batch
 	    		(priorTest, bernoulliTest, scalarTest) <- netDetailedLoss net testBatch
-	    		traverse_ (call log) $ tail [undefined
+	    		traverse_ (schedule log) $ tail [undefined
 	    			, Metric "loss/train/priors" priorTrain
 	    			, Metric "loss/train/outcome" bernoulliTrain
 	    			, Metric "loss/train/rollout" scalarTrain
