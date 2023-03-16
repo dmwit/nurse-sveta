@@ -338,16 +338,10 @@ torch::Tensor detailed_loss(Net &net, const Batch &batch) {
 	// incoming zeros.
 	loss.index_put_({0}, (batch.out.priors * (batch.out.priors.clamp_min(1e-20) / scaled_priors).log() * batch.reachable).sum());
 	// cross-entropy loss for bernoullis
-	// this is about 10 times as big as the priors term when training starts;
-	// other than that there's no real reason to believe -10 is a better factor
-	// than -1
 	auto bs = net_out.bernoullis.clamp(1e-10, 1-1e-10);
-	loss.index_put_({1}, (batch.out.bernoullis * bs.log() + (1 - batch.out.bernoullis) * (1 - bs).log()).sum() * -10);
-	// squared-error loss for scalars
-	// this is about 1e6 times as big as the priors term when training starts;
-	// other than that there's no real reason to believe 1e6 is the right
-	// factor here
-	loss.index_put_({2}, (net_out.scalars - batch.out.scalars).square().sum() / 1e6);
+	loss.index_put_({1}, (batch.out.bernoullis * bs.log() + (1 - batch.out.bernoullis) * (1 - bs).log()).sum().neg());
+	// squared-error loss in log-space for scalars
+	loss.index_put_({2}, (net_out.scalars.log() - batch.out.scalars.clamp_min(1e-20).log()).square().sum());
 	loss /= n;
 	return loss;
 }
