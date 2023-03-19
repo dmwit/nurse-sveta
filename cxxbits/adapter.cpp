@@ -271,8 +271,8 @@ class NetImpl : public torch::nn::Module {
 		NetImpl()
 			: torch::nn::Module("Nurse Sveta net")
 			, board_convolution(CELL_SIZE, FILTER_COUNT, LEAKAGE)
-			, lookahead_linear(LOOKAHEAD_SIZE, BODY_SIZE)
-			, scalar_linear(NUM_SCALARS, BODY_SIZE)
+			, lookahead_linear(LOOKAHEAD_SIZE, FILTER_COUNT)
+			, scalar_linear(NUM_SCALARS, FILTER_COUNT)
 			, input_norm(torch::nn::BatchNorm2dOptions(FILTER_COUNT))
 			, bernoulli_linear(BODY_SIZE, NUM_BERNOULLIS)
 			, priors_convolution(FILTER_COUNT, NUM_ROTATIONS, LEAKAGE)
@@ -311,8 +311,8 @@ NetOutput NetImpl::forward(const NetInput &in) {
 	const int64_t n = in.boards.size(0);
 	torch::Tensor t = input_norm->forward(
 		board_convolution->forward(in.boards) +
-		lookahead_linear->forward(in.lookaheads).reshape({n, FILTER_COUNT, BOARD_WIDTH, BOARD_HEIGHT}) +
-		scalar_linear->forward(in.scalars).reshape({n, FILTER_COUNT, BOARD_WIDTH, BOARD_HEIGHT})
+		lookahead_linear->forward(in.lookaheads).reshape({n, FILTER_COUNT, 1, 1}).expand({n, FILTER_COUNT, BOARD_WIDTH, BOARD_HEIGHT}) +
+		scalar_linear->forward(in.scalars).reshape({n, FILTER_COUNT, 1, 1}).expand({n, FILTER_COUNT, BOARD_WIDTH, BOARD_HEIGHT})
 		);
 	for(int64_t i = 0; i < RESIDUAL_BLOCK_COUNT; i++) t = residuals[i]->forward(t);
 
