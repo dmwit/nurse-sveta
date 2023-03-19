@@ -342,8 +342,10 @@ torch::Tensor detailed_loss(Net &net, const Batch &batch) {
 	// incoming zeros.
 	loss.index_put_({0}, (batch.out.priors * (batch.out.priors.clamp_min(1e-20) / scaled_priors).log() * batch.reachable).sum());
 	// cross-entropy loss for bernoullis
+	// getting the evaluation function right is much more important than
+	// getting the policy write, so scale this loss term up a lot
 	auto bs = net_out.bernoullis.clamp(1e-10, 1-1e-10);
-	loss.index_put_({1}, (batch.out.bernoullis * bs.log() + (1 - batch.out.bernoullis) * (1 - bs).log()).sum().neg());
+	loss.index_put_({1}, 1000 * (batch.out.bernoullis * bs.log() + (1 - batch.out.bernoullis) * (1 - bs).log()).sum().neg());
 	loss /= n;
 	return loss;
 }
