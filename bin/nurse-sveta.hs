@@ -839,16 +839,14 @@ trainingThread log netUpdate ref sc = do
 	    	schedule log (Metric "loss/train/sum" loss)
 	    	when (gen .&. 0xff == 0) $ do
 	    		testBatch <- trainingThreadLoadBatch rng sc "test" 5000 100
-	    		(priorTrain, bernoulliTrain, scalarTrain) <- netDetailedLoss net batch
-	    		(priorTest, bernoulliTest, scalarTest) <- netDetailedLoss net testBatch
+	    		(priorTrain, bernoulliTrain) <- netDetailedLoss net batch
+	    		(priorTest, bernoulliTest) <- netDetailedLoss net testBatch
 	    		traverse_ (schedule log) $ tail [undefined
 	    			, Metric "loss/train/priors" priorTrain
 	    			, Metric "loss/train/outcome" bernoulliTrain
-	    			, Metric "loss/train/rollout" scalarTrain
-	    			, Metric "loss/test/sum" (priorTest + bernoulliTest + scalarTest)
+	    			, Metric "loss/test/sum" (priorTest + bernoulliTest)
 	    			, Metric "loss/test/priors" priorTest
 	    			, Metric "loss/test/outcome" bernoulliTest
-	    			, Metric "loss/test/rollout" scalarTest
 	    			]
 	    	scIO sc -- TODO: do one last netSave
 	    	loop i' (gen+1)

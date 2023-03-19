@@ -34,8 +34,8 @@ import qualified Data.Vector.Unboxed.Mutable as MV
 
 foreign import ccall "sample_net" cxx_sample_net :: Bool -> IO (Ptr Net)
 foreign import ccall "&discard_net" cxx_discard_net :: FunPtr (Ptr Net -> IO ())
-foreign import ccall "evaluate_net" cxx_evaluate_net :: Ptr Net -> CInt -> Ptr CDouble -> Ptr CDouble -> Ptr CDouble -> Ptr CChar -> Ptr CChar -> IO ()
-foreign import ccall "save_example" cxx_save_example :: CString -> Ptr CDouble -> Ptr CChar -> Ptr CChar -> Ptr CDouble -> Ptr CChar -> Ptr CChar -> IO ()
+foreign import ccall "evaluate_net" cxx_evaluate_net :: Ptr Net -> CInt -> Ptr CDouble -> Ptr CDouble -> Ptr CChar -> Ptr CChar -> Ptr CDouble -> IO ()
+foreign import ccall "save_example" cxx_save_example :: CString -> Ptr CDouble -> Ptr CChar -> Ptr CChar -> Ptr CChar -> Ptr CChar -> Ptr CDouble -> IO ()
 foreign import ccall "load_batch" cxx_load_batch :: Ptr CString -> CInt -> IO (Ptr Batch)
 foreign import ccall "&discard_batch" cxx_discard_batch :: FunPtr (Ptr Batch -> IO ())
 foreign import ccall "train_net" cxx_train_net :: Ptr Net -> Ptr Optimizer -> Ptr Batch -> IO CDouble
@@ -85,14 +85,13 @@ netLoadForTraining path = withUnwrapped (WCS path) $ \cpath -> do
 	cxx_load_net cpath netPtr optimPtr
 	liftM2 (,) (peek netPtr >>= mkNet) (peek optimPtr >>= mkOptimizer)
 
-netDetailedLoss :: Net -> Batch -> IO (Double, Double, Double)
+netDetailedLoss :: Net -> Batch -> IO (Double, Double)
 netDetailedLoss net_ batch_ = withUnwrapped (net_, batch_) $ \(net, batch) ->
-	allocaArray 3 $ \out -> do
+	allocaArray 2 $ \out -> do
 		cxx_detailed_loss net out batch
-		liftM3 (,,)
+		liftM2 (,)
 			(realToFrac <$> peekElemOff out 0)
 			(realToFrac <$> peekElemOff out 1)
-			(realToFrac <$> peekElemOff out 2)
 
 class OneHot a where
 	indexCount :: Int
@@ -135,32 +134,34 @@ renderBoard board b = do
 			pokeElemOff board (shiftL (                    toIndex c) logCellCount + j) 1
 			pokeElemOff board (shiftL (indexCount @Color + toIndex s) logCellCount + j) 1
 
-render :: Traversable t => t (Int, (GameState, Color, Color)) -> IO (Ptr CChar, Ptr CChar)
+renderScalars :: Ptr CDouble -> GameState -> IO ()
+renderScalars scalars gs = do
+	frames_ <- readIORef (framesPassed gs)
+	let [frames, viruses] = fromIntegral <$> [frames_, originalVirusCount gs]
+	    safeLog = log . max (exp (-1))
+	pokeElemOff scalars 0 frames
+	pokeElemOff scalars 1 (safeLog frames)
+	pokeElemOff scalars 2 viruses
+	pokeElemOff scalars 3 (safeLog viruses)
+
+render :: Traversable t => t (Int, (GameState, Color, Color)) -> IO (Ptr CChar, Ptr CChar, Ptr CDouble)
 render itriples = do
 	boards <- mallocZeroArray (n * boardSize)
 	lookaheads <- mallocZeroArray (n * lookaheadSize)
-	for_ itriples $ \(i, (GameState { board = b }, l, r)) -> do
-		renderBoard     (plusArray boards     (i*    boardSize)) b
+	scalars <- mallocArray (n * numScalars)
+	for_ itriples $ \(i, (gs, l, r)) -> do
+		renderBoard     (plusArray boards     (i*    boardSize)) (board gs)
 		renderLookahead (plusArray lookaheads (i*lookaheadSize)) l r
-	pure (boards, lookaheads)
+		renderScalars   (plusArray scalars    (i*   numScalars)) gs
+	pure (boards, lookaheads, scalars)
 	where
 	n = length itriples
 
 -- It looks like there's a lot of realToFrac calls in this code, but it doesn't
 -- matter, because rewrite rules throw them away.
-parseForEvaluation :: Int -> (GameState, Color, Color) -> ForeignPtr CDouble -> ForeignPtr CDouble -> ForeignPtr CDouble -> IO (Double, HashMap PillContent (Vector (Vector Double)))
-parseForEvaluation i (gs, l, r) priors_ bernoulli_ scalars_ = withUnwrapped (priors_, (bernoulli_, scalars_)) $ \(priors, (bernoulli, scalars)) -> do
-	-- TODO: when the net does a sigmoid, just trust it to return a number between 0 and 1
-	pWin <- min 1 . max 0 . realToFrac <$> peekElemOff bernoulli iBernoulli
-	virusesPast <- readIORef (virusesKilled gs)
-	framesPast <- readIORef (framesPassed gs)
-	virusesFuture <- realToFrac <$> peekElemOff scalars iScalars
-	framesFuture <- realToFrac <$> peekElemOff scalars (iScalars+2)
-	let orig = originalVirusCount gs
-	    v =      pWin  * winningValuation orig (fromIntegral framesPast + framesFuture)
-	      + (1 - pWin) *  losingValuation orig (clampCleared orig (fromIntegral virusesPast + virusesFuture))
-
-	let iPriors = shiftL i logNumPriors
+parseForEvaluation :: Int -> (GameState, Color, Color) -> ForeignPtr CDouble -> ForeignPtr CDouble -> IO DetailedEvaluation
+parseForEvaluation i (gs, l, r) priors_ bernoulli_ = withUnwrapped (priors_, bernoulli_) $ \(priors, bernoulli) -> do
+	v <- peekElemOff bernoulli iBernoulli
 	p <- forZipWithM [0..numRotations-1] (iterate (`rotateContent` Clockwise) (PillContent startingOrientation l r)) $ \numRots pc -> do
 		let iNumRots = iPriors + shiftL numRots logCellCount
 		v <- V.generateM boardWidth $ \x -> let ix = iNumRots + shiftL x logBoardHeight in
@@ -168,21 +169,20 @@ parseForEvaluation i (gs, l, r) priors_ bernoulli_ scalars_ = withUnwrapped (pri
 				realToFrac <$> peekElemOff priors iy
 		pure (pc, v)
 
-	pure (v, HM.fromList p)
+	pure (realToFrac v, HM.fromList p)
 	where
 	iBernoulli = shiftL i logNumBernoullis
 	iPriors = shiftL i logNumPriors
-	iScalars = i*numScalars
 
 -- TODO: I wonder if we could improve throughput by pushing the rendering into the generation thread, like we did with the parsing
 netEvaluation :: Traversable t => Net -> t (GameState, Color, Color) -> IO (t DetailedEvaluation)
 netEvaluation net_ triples = do
-	[priors_, bernoulli_, scalars_] <- mallocForeignPtrArrays [shiftL n logNumPriors, shiftL n logNumBernoullis, n * numScalars]
+	[priors_, bernoulli_] <- mallocForeignPtrArrays [shiftL n logNumPriors, shiftL n logNumBernoullis]
 	-- TODO: can we avoid a ton of allocation here by pooling allocations of each size -- or even just the largest size, per Net, say?
-	(boards, lookaheads) <- render itriples
+	(boards, lookaheads, scalars) <- render itriples
 
-	withUnwrapped (net_, (priors_, (bernoulli_, scalars_))) $ \(net, (priors, (bernoulli, scalars))) ->
-		cxx_evaluate_net net (fromIntegral n) priors bernoulli scalars boards lookaheads
+	withUnwrapped (net_, (priors_, bernoulli_)) $ \(net, (priors, bernoulli)) ->
+		cxx_evaluate_net net (fromIntegral n) priors bernoulli boards lookaheads scalars
 	result <- for itriples $ \(i, state) ->
 			-- unsafeInterleaveIO: turns out parseForEvaluation is a bottleneck
 			-- to making foreign calls, so spread its work across multiple
@@ -197,10 +197,11 @@ netEvaluation net_ triples = do
 			-- modification will be done by the time we call netEvaluation,
 			-- then it will be thrown away, hence the IORefs won't ever be
 			-- modified again.
-			unsafeInterleaveIO (parseForEvaluation i state priors_ bernoulli_ scalars_)
+			unsafeInterleaveIO (parseForEvaluation i state priors_ bernoulli_)
 
 	free boards
 	free lookaheads
+	free scalars
 
 	pure result
 	where
@@ -240,9 +241,9 @@ saveTensors dir i0 (b0, steps) = do
 	priors <- mallocArray numPriors
 	reachable <- mallocArray numPriors
 	bernoullis <- mallocArray numBernoullis
-	scalars <- mallocArray numScalars
 	cells <- mallocArray boardSize
 	lookahead <- mallocArray lookaheadSize
+	scalars <- mallocArray numScalars
 
 	pokeElemOff bernoullis 0 (if vkFinal >= originalVirusCount finalState then 1 else 0)
 
@@ -263,6 +264,7 @@ saveTensors dir i0 (b0, steps) = do
 
 	    		zeroArray numPriors reachable
 	    		zeroArray numPriors priors -- probably not needed, but defensive programming
+	    		renderScalars scalars currentState
 	    		-- for double pills, we put half the probability mass in each of the two rotations that give the same result
 	    		let scaling = fromIntegral (length rots) / (max 1 (fromIntegral (sum (length <$> rots)) * visitCount (gsRoot gs)))
 	    		flip HM.traverseWithKey (gsChildren gs) $ \move stats -> case move of
@@ -274,13 +276,9 @@ saveTensors dir i0 (b0, steps) = do
 	    				-- TODO: temperature, maybe? (don't forget to fix scaling appropriately)
 	    				pokeElemOff priors    j (realToFrac (scaling * visitCount stats))
 
-	    		for_ [(0, virusesKilled, vkFinal), (1, pillsUsed, puFinal), (2, framesPassed, fpFinal)] $ \(j, ioRef, final) -> do
-	    			current <- readIORef (ioRef currentState)
-	    			pokeElemOff scalars j (fromIntegral (final - current))
-
 	    		-- [N]urse [S]veta [t]ensor
 	    		withCString (dir </> show i <.> "nst") $ \path ->
-	    			cxx_save_example path priors reachable bernoullis scalars cells lookahead
+	    			cxx_save_example path priors reachable bernoullis cells lookahead scalars
 	    		go (i+1) rots
 	    	where go i' rots' = dmPlay currentState (gsMove gs) >> loop i' rots' gss
 
@@ -289,9 +287,9 @@ saveTensors dir i0 (b0, steps) = do
 	free priors
 	free reachable
 	free bernoullis
-	free scalars
 	free cells
 	free lookahead
+	free scalars
 
 	pure SaveTensorsSummary
 		{ stsTensorsSaved = di
@@ -314,7 +312,7 @@ boardSize = (indexCount @Shape + indexCount @Color)*cellCount
 lookaheadSize = 2*indexCount @Color
 numPriors = numRotations*cellCount; logNumPriors = logNumRotations+logCellCount
 numBernoullis = 1; logNumBernoullis = 0
-numScalars = 3 -- virus clears, pills, frames (in that order)
+numScalars = 4 -- frames, log(frames), starting viruses, log(starting viruses) (in that order)
 
 class CWrapper a where
 	type Unwrapped a

@@ -4,7 +4,7 @@ const int64_t BOARD_WIDTH = 8;
 const int64_t BOARD_HEIGHT = 16;
 const int64_t LOOKAHEAD_SIZE = 6;
 const int64_t CELL_SIZE = 7;
-const int64_t NUM_SCALARS = 3;
+const int64_t NUM_SCALARS = 4; // frames, log(frames), starting viruses, log(starting viruses)
 const int64_t NUM_BERNOULLIS = 1;
 const int64_t NUM_ROTATIONS = 4;
 
@@ -42,70 +42,78 @@ std::ostream &operator<<(std::ostream &o, const TensorSketch sketch) {
 struct NetInput {
 	// boards: [n, 8, 16]
 	// lookaheads: [n, 6]
-	torch::Tensor boards, lookaheads;
+	// scalars: [n, 4]
+	torch::Tensor boards, lookaheads, scalars;
 
 	NetInput() {}
 
-	NetInput(int n, char *boards_data, char *lookaheads_data) {
-		auto inputOptions = torch::TensorOptions().dtype(torch::kU8);
-		boards     = torch::from_blob(    boards_data, {n, CELL_SIZE, BOARD_WIDTH, BOARD_HEIGHT}, [](void *v){}, inputOptions);
-		lookaheads = torch::from_blob(lookaheads_data, {n, LOOKAHEAD_SIZE}                      , [](void *v){}, inputOptions);
+	NetInput(int n, char *boards_data, char *lookaheads_data, double *scalars_data) {
+		auto  u8Options = torch::TensorOptions().dtype(torch::kU8);
+		auto f64Options = torch::TensorOptions().dtype(torch::kF64);
+		boards     = torch::from_blob(    boards_data, {n, CELL_SIZE, BOARD_WIDTH, BOARD_HEIGHT}, [](void *v){},  u8Options);
+		lookaheads = torch::from_blob(lookaheads_data, {n, LOOKAHEAD_SIZE}                      , [](void *v){},  u8Options);
+		scalars    = torch::from_blob(   scalars_data, {n, NUM_SCALARS}                         , [](void *v){}, f64Options);
 	}
 
 	NetInput(int n) {
-		auto charOptions = torch::TensorOptions().dtype(torch::kU8);
-		boards     = torch::empty({n, CELL_SIZE, BOARD_WIDTH, BOARD_HEIGHT}, charOptions);
-		lookaheads = torch::empty({n, LOOKAHEAD_SIZE}                      , charOptions);
+		auto  u8Options = torch::TensorOptions().dtype(torch::kU8);
+		auto f64Options = torch::TensorOptions().dtype(torch::kF64);
+		boards     = torch::empty({n, CELL_SIZE, BOARD_WIDTH, BOARD_HEIGHT},  u8Options);
+		lookaheads = torch::empty({n, LOOKAHEAD_SIZE}                      ,  u8Options);
+		scalars    = torch::empty({n, NUM_SCALARS}                         , f64Options);
 	}
 
 	void to_gpu() {
 		boards     = boards    .to(torch::kCUDA);
 		lookaheads = lookaheads.to(torch::kCUDA);
+		scalars    = scalars   .to(torch::kCUDA);
 		boards     = boards    .to(torch::kF64);
 		lookaheads = lookaheads.to(torch::kF64);
 	}
 
-	void save(torch::serialize::OutputArchive &archive) {
+	void save(torch::serialize::OutputArchive &archive) const {
 		archive.write("boards"    , boards    , true);
 		archive.write("lookaheads", lookaheads, true);
+		archive.write("scalars"   , scalars   , true);
 	}
 
 	void load(torch::serialize::InputArchive &archive) {
 		archive.read("boards"    , boards    , true);
 		archive.read("lookaheads", lookaheads, true);
+		archive.read("scalars"   , scalars   , true);
 	}
 
-	std::ostream &dump(std::ostream &o) {
+	std::ostream &dump(std::ostream &o) const {
 		return o
 			<<     "boards: " << boards     << std::endl
 			<< "lookaheads: " << lookaheads << std::endl
+			<<    "scalars: " << scalars    << std::endl
 			;
 	}
 
-	std::ostream &sketch(std::ostream &o) {
+	std::ostream &sketch(std::ostream &o) const {
 		return o
 			<<     "boards: " << TensorSketch(boards    ) << ", "
-			<< "lookaheads: " << TensorSketch(lookaheads)
+			<< "lookaheads: " << TensorSketch(lookaheads) << ", "
+			<<    "scalars: " << TensorSketch(scalars   )
 			;
 	}
 };
 
-std::ostream &operator<<(std::ostream &o, NetInput &in) { return in.dump(o); }
+std::ostream &operator<<(std::ostream &o, const NetInput &in) { return in.dump(o); }
 
 struct NetOutput {
 	// priors: [n, 4, 8, 16]
 	// bernoullis: [n, 1]
-	// scalars: [n, 3]
-	torch::Tensor priors, bernoullis, scalars;
+	torch::Tensor priors, bernoullis;
 
 	NetOutput() {}
 
-	NetOutput(int n, double *priors_data, char *bernoullis_data, double *scalars_data) {
+	NetOutput(int n, double *priors_data, char *bernoullis_data) {
 		auto doubleOptions = torch::TensorOptions().dtype(torch::kF64);
 		auto charOptions   = torch::TensorOptions().dtype(torch::kU8);
 		priors     = torch::from_blob(    priors_data, {n, NUM_ROTATIONS, BOARD_WIDTH, BOARD_HEIGHT}, [](void *){}, doubleOptions);
 		bernoullis = torch::from_blob(bernoullis_data, {n, NUM_BERNOULLIS}                          , [](void *){}, charOptions  );
-		scalars    = torch::from_blob(   scalars_data, {n, NUM_SCALARS}                             , [](void *){}, doubleOptions);
 	}
 
 	NetOutput(int n) {
@@ -114,52 +122,45 @@ struct NetOutput {
 
 		priors     = torch::empty({n, NUM_ROTATIONS, BOARD_WIDTH, BOARD_HEIGHT}, doubleOptions);
 		bernoullis = torch::empty({n, NUM_BERNOULLIS}                          , charOptions  );
-		scalars    = torch::empty({n, NUM_SCALARS}                             , doubleOptions);
 	}
 
 	void to_gpu() {
 		priors     = priors    .to(torch::kCUDA);
 		bernoullis = bernoullis.to(torch::kCUDA);
-		scalars    = scalars   .to(torch::kCUDA);
 		bernoullis = bernoullis.to(torch::kF64);
 	}
 
 	void to_cpu() {
 		priors     = priors    .to(torch::kCPU);
 		bernoullis = bernoullis.to(torch::kCPU);
-		scalars    = scalars   .to(torch::kCPU);
 	}
 
-	void save(torch::serialize::OutputArchive &archive) {
+	void save(torch::serialize::OutputArchive &archive) const {
 		archive.write("priors"    , priors    , true);
 		archive.write("bernoullis", bernoullis, true);
-		archive.write("scalars"   , scalars   , true);
 	}
 
 	void load(torch::serialize::InputArchive &archive) {
 		archive.read("priors"    , priors    , true);
 		archive.read("bernoullis", bernoullis, true);
-		archive.read("scalars"   , scalars   , true);
 	}
 
-	std::ostream &dump(std::ostream &o) {
+	std::ostream &dump(std::ostream &o) const {
 		return o
 			<<     "priors: " << priors     << std::endl
 			<< "bernoullis: " << bernoullis << std::endl
-			<<    "scalars: " << scalars    << std::endl
 			;
 	}
 
-	std::ostream &sketch(std::ostream &o) {
+	std::ostream &sketch(std::ostream &o) const {
 		return o
 			<<     "priors: " << TensorSketch(priors    ) << ", "
 			<< "bernoullis: " << TensorSketch(bernoullis) << ", "
-			<<    "scalars: " << TensorSketch(scalars   )
 			;
 	}
 };
 
-std::ostream &operator<<(std::ostream &o, NetOutput &out) { return out.dump(o); }
+std::ostream &operator<<(std::ostream &o, const NetOutput &out) { return out.dump(o); }
 
 struct Batch {
 	NetInput  in;
@@ -174,9 +175,9 @@ struct Batch {
 		reachable = torch::empty({n, NUM_ROTATIONS, BOARD_WIDTH, BOARD_HEIGHT}, charOptions);
 	}
 
-	Batch(int n, double *priors_data, char *reachable_data, char *bernoullis_data, double *scalars_data, char *boards_data, char *lookaheads_data)
-		: in(n, boards_data, lookaheads_data)
-		, out(n, priors_data, bernoullis_data, scalars_data) {
+	Batch(int n, double *priors_data, char *reachable_data, char *bernoullis_data, char *boards_data, char *lookaheads_data, double *scalars_data)
+		: in(n, boards_data, lookaheads_data, scalars_data)
+		, out(n, priors_data, bernoullis_data) {
 		auto charOptions = torch::TensorOptions().dtype(torch::kU8);
 		reachable = torch::from_blob(reachable_data, {n, NUM_ROTATIONS, BOARD_WIDTH, BOARD_HEIGHT}, [](void *){}, charOptions);
 	}
@@ -274,17 +275,18 @@ class NetImpl : public torch::nn::Module {
 		NetImpl()
 			: torch::nn::Module("Nurse Sveta net")
 			, board_convolution(CELL_SIZE, FILTER_COUNT, LEAKAGE)
-			, input_linear(LOOKAHEAD_SIZE, BODY_SIZE)
+			, lookahead_linear(LOOKAHEAD_SIZE, BODY_SIZE)
+			, scalar_linear(NUM_SCALARS, BODY_SIZE)
 			, input_norm(torch::nn::BatchNorm2dOptions(FILTER_COUNT))
 			, bernoulli_linear(BODY_SIZE, NUM_BERNOULLIS)
-			, scalar_linear(BODY_SIZE, NUM_SCALARS)
 			, priors_convolution(FILTER_COUNT, NUM_ROTATIONS, LEAKAGE)
 			{
 				for(int64_t i = 0; i < RESIDUAL_BLOCK_COUNT; i++)
 					residuals.push_back(Residual(FILTER_COUNT, LEAKAGE));
 
 				register_module("initial board convolution", board_convolution);
-				register_module("initial fully-connected inputs", input_linear);
+				register_module("fully-connected feed for lookaheads", lookahead_linear);
+				register_module("fully-connected feed for game history statistics", scalar_linear);
 				register_module("input normalization", input_norm);
 
 				for(int64_t i = 0; i < RESIDUAL_BLOCK_COUNT; i++) {
@@ -293,7 +295,6 @@ class NetImpl : public torch::nn::Module {
 					register_module(ss.str(), residuals[i]);
 				}
 				register_module("Bernoulli parameter outputs", bernoulli_linear);
-				register_module("scalar outputs", scalar_linear);
 				register_module("final priors convolution", priors_convolution);
 
 				to(torch::kCUDA);
@@ -304,7 +305,7 @@ class NetImpl : public torch::nn::Module {
 
 	private:
 		Conv2dReLUInit board_convolution, priors_convolution;
-		torch::nn::Linear input_linear, bernoulli_linear, scalar_linear;
+		torch::nn::Linear lookahead_linear, bernoulli_linear, scalar_linear;
 		torch::nn::BatchNorm2d input_norm;
 		std::vector<Residual> residuals;
 };
@@ -312,14 +313,17 @@ TORCH_MODULE(Net);
 
 NetOutput NetImpl::forward(const NetInput &in) {
 	const int64_t n = in.boards.size(0);
-	torch::Tensor t = input_norm->forward(board_convolution->forward(in.boards) + input_linear->forward(in.lookaheads).reshape({n, FILTER_COUNT, BOARD_WIDTH, BOARD_HEIGHT}));
+	torch::Tensor t = input_norm->forward(
+		board_convolution->forward(in.boards) +
+		lookahead_linear->forward(in.lookaheads).reshape({n, FILTER_COUNT, BOARD_WIDTH, BOARD_HEIGHT}) +
+		scalar_linear->forward(in.scalars).reshape({n, FILTER_COUNT, BOARD_WIDTH, BOARD_HEIGHT})
+		);
 	for(int64_t i = 0; i < RESIDUAL_BLOCK_COUNT; i++) t = residuals[i]->forward(t);
 
 	NetOutput out;
 	out.priors = priors_convolution->forward(t).exp();
 	t = t.reshape({n, BODY_SIZE});
 	out.bernoullis = bernoulli_linear->forward(t).sigmoid();
-	out.scalars = scalar_linear->forward(t).exp();
 
 	return out;
 }
@@ -328,7 +332,7 @@ torch::Tensor detailed_loss(Net &net, const Batch &batch) {
 	const int n = batch.out.priors.size(0);
 	auto net_out = net->forward(batch.in);
 	auto opts = torch::TensorOptions().dtype(torch::kF64).device(torch::kCUDA);
-	auto loss = torch::zeros({3}, opts);
+	auto loss = torch::zeros({2}, opts);
 	// Kullback-Leibler divergence for priors
 	auto scaled_priors = net_out.priors / (batch.reachable*net_out.priors).sum({1,2,3}, true);
 	// correct_out.priors can have zeros (e.g. everywhere reachable is zero),
@@ -340,8 +344,6 @@ torch::Tensor detailed_loss(Net &net, const Batch &batch) {
 	// cross-entropy loss for bernoullis
 	auto bs = net_out.bernoullis.clamp(1e-10, 1-1e-10);
 	loss.index_put_({1}, (batch.out.bernoullis * bs.log() + (1 - batch.out.bernoullis) * (1 - bs).log()).sum().neg());
-	// squared-error loss in log-space for scalars
-	loss.index_put_({2}, (net_out.scalars.log() - batch.out.scalars.clamp_min(1e-20).log()).square().sum());
 	loss /= n;
 	return loss;
 }
@@ -362,8 +364,8 @@ extern "C" {
 	void save_net(Net *net, torch::optim::SGD *optim, char *path);
 	void load_net(char *path, Net **net, torch::optim::SGD **optim);
 	void discard_net(Net *net);
-	void evaluate_net(Net *net, int n, double *priors, double *bernoullis, double *scalars, char *boards, char *lookaheads);
-	void save_example(char *path, double *priors, char *reachable, char *bernoullis, double *scalars, char *board, char *lookahead);
+	void evaluate_net(Net *net, int n, double *priors, double *bernoullis, char *boards, char *lookaheads, double *scalars);
+	void save_example(char *path, double *priors, char *reachable, char *bernoullis, char *board, char *lookahead, double *scalars);
 	Batch *load_batch(char **path, int n);
 	void discard_batch(Batch *batch);
 	double train_net(Net *net, torch::optim::SGD *optim, Batch *batch);
@@ -406,17 +408,16 @@ void load_net(char *path, Net **netptr, torch::optim::SGD **optimptr) {
 
 // priors: [n, 4, 8, 16]
 // bernoullis: [n, 1]
-// scalars: [n, 3]
 // boards: [n, 7, 8, 16]
 // lookaheads: [n, 6]
-void evaluate_net(Net *net, int n, double *priors, double *bernoullis, double *scalars, char *boards, char *lookaheads) {
+// scalars: [n, 4]
+void evaluate_net(Net *net, int n, double *priors, double *bernoullis, char *boards, char *lookaheads, double *scalars) {
 	torch::NoGradGuard g;
-	NetInput in(n, boards, lookaheads); in.to_gpu();
+	NetInput in(n, boards, lookaheads, scalars); in.to_gpu();
 	NetOutput out = (**net).forward(in); out.to_cpu();
 
 	tensorcpy(priors,     out.priors    );
 	tensorcpy(bernoullis, out.bernoullis);
-	tensorcpy(scalars,    out.scalars   );
 }
 
 // priors: [4, 8, 16]
@@ -425,8 +426,8 @@ void evaluate_net(Net *net, int n, double *priors, double *bernoullis, double *s
 // scalars: [3]
 // board: [7, 8, 16]
 // lookahead: [6]
-void save_example(char *path, double *priors, char *reachable, char *bernoullis, double *scalars, char *board, char *lookahead) {
-	Batch batch(1, priors, reachable, bernoullis, scalars, board, lookahead);
+void save_example(char *path, double *priors, char *reachable, char *bernoullis, char *board, char *lookahead, double *scalars) {
+	Batch batch(1, priors, reachable, bernoullis, board, lookahead, scalars);
 	torch::serialize::OutputArchive archive;
 	batch.save(archive);
 	archive.save_to(path);
@@ -441,9 +442,9 @@ Batch *load_batch(char **path, int n) {
 		example.load(archive);
 		batch->in .boards    .index_put_({i, "..."}, example.in .boards    );
 		batch->in .lookaheads.index_put_({i, "..."}, example.in .lookaheads);
+		batch->in .scalars   .index_put_({i, "..."}, example.in .scalars   );
 		batch->out.priors    .index_put_({i, "..."}, example.out.priors    );
 		batch->out.bernoullis.index_put_({i, "..."}, example.out.bernoullis);
-		batch->out.scalars   .index_put_({i, "..."}, example.out.scalars   );
 		batch->    reachable .index_put_({i, "..."}, example.    reachable );
 	}
 
