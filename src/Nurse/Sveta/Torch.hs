@@ -35,7 +35,7 @@ import qualified Data.Vector.Unboxed.Mutable as MV
 foreign import ccall "sample_net" cxx_sample_net :: Bool -> IO (Ptr Net)
 foreign import ccall "&discard_net" cxx_discard_net :: FunPtr (Ptr Net -> IO ())
 foreign import ccall "evaluate_net" cxx_evaluate_net :: Ptr Net -> CInt -> Ptr CDouble -> Ptr CDouble -> Ptr CChar -> Ptr CChar -> Ptr CDouble -> IO ()
-foreign import ccall "save_example" cxx_save_example :: CString -> Ptr CDouble -> Ptr CChar -> Ptr CChar -> Ptr CChar -> Ptr CChar -> Ptr CDouble -> IO ()
+foreign import ccall "save_example" cxx_save_example :: CString -> Ptr CDouble -> Ptr CChar -> Ptr CDouble -> Ptr CChar -> Ptr CChar -> Ptr CDouble -> IO ()
 foreign import ccall "load_batch" cxx_load_batch :: Ptr CString -> CInt -> IO (Ptr Batch)
 foreign import ccall "&discard_batch" cxx_discard_batch :: FunPtr (Ptr Batch -> IO ())
 foreign import ccall "train_net" cxx_train_net :: Ptr Net -> Ptr Optimizer -> Ptr Batch -> IO CDouble
@@ -235,7 +235,6 @@ saveTensors dir i0 (b0, steps) = do
 	finalState <- initialState b0
 	traverse_ (dmPlay finalState . gsMove) steps
 	vkFinal <- readIORef (virusesKilled finalState)
-	puFinal <- readIORef (pillsUsed finalState)
 	fpFinal <- readIORef (framesPassed finalState)
 
 	priors <- mallocArray numPriors
@@ -245,7 +244,7 @@ saveTensors dir i0 (b0, steps) = do
 	lookahead <- mallocArray lookaheadSize
 	scalars <- mallocArray numScalars
 
-	pokeElemOff bernoullis 0 (if vkFinal >= originalVirusCount finalState then 1 else 0)
+	evaluateFinalState finalState >>= pokeElemOff bernoullis 0 . realToFrac
 
 	let loop i rots [] = pure (i-i0)
 	    loop i rots (gs:gss) = case gsMove gs of
