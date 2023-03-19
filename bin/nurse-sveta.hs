@@ -153,7 +153,7 @@ onSpeeds f gts = gts { summary = s { speeds = f (speeds s) } } where
 newSearchConfiguration :: SearchConfiguration
 newSearchConfiguration = SearchConfiguration
 	{ c_puct = 1
-	, iterations = 20000
+	, iterations = 2000
 	, typicalMoves = 40
 	, priorNoise = 0.25
 	}
@@ -293,11 +293,6 @@ data InferenceThreadState = InferenceThreadState
 	, itsUseNet :: Bool
 	}
 
-itsEvaluate :: Traversable t => InferenceThreadState -> t (GameState, Color, Color) -> IO (t DetailedEvaluation, Int)
-itsEvaluate its queries = (\answers -> (answers, length answers)) <$> case (itsUseNet its, sPayload (itsNet its)) of
-	(True, Just (_, net)) -> netEvaluation net queries
-	_ -> traverse dumbEvaluation queries
-
 itsNewNet :: InferenceThreadState -> Maybe Integer -> Bool
 itsNewNet its mn = fmap fst (sPayload (itsNet its)) /= mn
 
@@ -305,25 +300,20 @@ inferenceThreadView :: DMEvaluationProcedure -> TVar (Maybe Integer) -> IO Threa
 inferenceThreadView eval netUpdate = do
 	top <- new Box [#orientation := OrientationVertical]
 	lbl <- descriptionLabel "<initializing net>"
-	use <- new CheckButton [#label := "Use neural net", #active := False]
+	use <- new CheckButton [#label := "Use neural net", #active := True]
 	spd <- new Grid []
 	#append top lbl
 	#append top use
 	#append top spd
 
 	latestNet <- inferenceThreadLoadLatestNet
-	atomically $ do
-		updatedNet <- readTVar netUpdate
-		case (latestNet, updatedNet) of
-			(Just (n, _), Nothing) -> writeTVar netUpdate (Just n)
-			_ -> pure ()
 	its0 <- pure InferenceThreadState
 		<*> newSearchSpeed
 		<*> newSearchSpeed
 		<*> newSearchSpeed
 		<*> newSearchSpeed
 		<*> pure (newStable latestNet)
-		<*> pure False
+		<*> pure True
 	ref <- newTVarIO its0
 
 	on use #toggled $ do
@@ -374,7 +364,10 @@ inferenceThread eval netUpdate itsRef sc = forever $ do
 		asum $ tail [undefined
 			, ITSDie <$ scSTM sc
 			, ITSLoadNet <$> (readTVar netUpdate >>= ensure (itsNewNet its))
-			, ITSProgress <$> serviceCallsSTM eval (itsEvaluate its)
+			, case (itsUseNet its, sPayload (itsNet its)) of
+				(True, Just (_, net)) -> liftEvaluation (netEvaluation net)
+				(True, _) -> retry
+				_ -> liftEvaluation (traverse dumbEvaluation)
 			]
 	case step of
 		ITSProgress ion -> ion >>= \n -> atomically $ do
@@ -396,6 +389,9 @@ inferenceThread eval netUpdate itsRef sc = forever $ do
 				    	else its
 				writeTVar itsRef its' { itsNet = sSet net (itsNet its) }
 		ITSDie -> scIO sc
+	where
+	liftEvaluation :: (forall t. Traversable t => (t (GameState, Color, Color) -> IO (t DetailedEvaluation))) -> STM InferenceThreadStep
+	liftEvaluation f = ITSProgress <$> serviceCallsSTM eval (fmap (\answers -> (answers, length answers)) . f)
 
 inferenceThreadLoadLatestNet :: IO (Maybe (Integer, Net))
 inferenceThreadLoadLatestNet = do
@@ -822,19 +818,15 @@ trainingThread log netUpdate ref sc = do
 	(gen0, net, sgd) <- trainingThreadLoadLatestNet
 	rng <- createSystemRandom
 	dir <- nsDataDir
-	let loop i gen = do
-	    	i' <- if i >= 1000
-	    		then do
-	    			path <- prepareFile dir Weights (show gen <.> "nsn")
-	    			netSave net sgd path
-	    			encodeFileLoop (dir </> subdirectory Weights latestFilename) gen
-	    			atomically $ writeTVar netUpdate (Just gen)
-	    			atomically . modifyTVar ref $ \(sgen, ss, loss) -> (sSet (Just gen) sgen, ss, loss)
-	    			pure 1
-	    		else pure (i+1)
+	let loop gen = do
+	    	when (gen `mod` 1000 == 0) $ do
+	    		path <- prepareFile dir Weights (show gen <.> "nsn")
+	    		netSave net sgd path
+	    		encodeFileLoop (dir </> subdirectory Weights latestFilename) gen
+	    		atomically $ writeTVar netUpdate (Just gen)
+	    		atomically . modifyTVar ref $ \(sgen, ss, loss) -> (sSet (Just gen) sgen, ss, loss)
 	    	batch <- trainingThreadLoadBatch rng sc "train" 50000 100
 	    	loss <- netTrain net sgd batch
-	    	atomically (modifyTVar ref (\(lastSavedGen, ss, _) -> (lastSavedGen, ssInc ss, loss)))
 	    	schedule log (Iteration gen)
 	    	schedule log (Metric "loss/train/sum" loss)
 	    	when (gen .&. 0xff == 0) $ do
@@ -848,9 +840,10 @@ trainingThread log netUpdate ref sc = do
 	    			, Metric "loss/test/priors" priorTest
 	    			, Metric "loss/test/outcome" bernoulliTest
 	    			]
+	    	atomically (modifyTVar ref (\(lastSavedGen, ss, _) -> (lastSavedGen, ssInc ss, loss)))
 	    	scIO sc -- TODO: do one last netSave
-	    	loop i' (gen+1)
-	loop 1 gen0
+	    	loop (gen+1)
+	loop gen0
 	where
 	category = "train"
 
@@ -862,10 +855,10 @@ trainingThreadLoadLatestNet = do
 		Nothing -> do
 			net <- netSample True
 			sgd <- newOptimizer net
-			pure (1, net, sgd)
+			pure (0, net, sgd)
 		Just n -> do
 			(net, sgd) <- netLoadForTraining (dir </> subdirectory Weights (show n <.> "nsn"))
-			pure (n+1, net, sgd)
+			pure (n, net, sgd)
 
 trainingThreadLoadBatch :: GenIO -> StatusCheck -> String -> Integer -> Int -> IO Batch
 trainingThreadLoadBatch rng sc category historySize batchSize = do
