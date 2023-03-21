@@ -139,10 +139,7 @@ renderScalars scalars gs = do
 	frames_ <- readIORef (framesPassed gs)
 	let [frames, viruses] = fromIntegral <$> [frames_, originalVirusCount gs]
 	    safeLog = log . max (exp (-1))
-	pokeElemOff scalars 0 frames
-	pokeElemOff scalars 1 (safeLog frames)
-	pokeElemOff scalars 2 viruses
-	pokeElemOff scalars 3 (safeLog viruses)
+	pokeArray scalars [frames, safeLog frames, sqrt frames, viruses, safeLog viruses, 1/sqrt viruses]
 
 render :: Traversable t => t (Int, (GameState, Color, Color)) -> IO (Ptr CChar, Ptr CChar, Ptr CDouble)
 render itriples = do
@@ -311,7 +308,7 @@ boardSize = (indexCount @Shape + indexCount @Color)*cellCount
 lookaheadSize = 2*indexCount @Color
 numPriors = numRotations*cellCount; logNumPriors = logNumRotations+logCellCount
 numBernoullis = 1; logNumBernoullis = 0
-numScalars = 4 -- frames, log(frames), starting viruses, log(starting viruses) (in that order)
+numScalars = 6 -- frames, log(frames), sqrt(frames), starting viruses, log(starting viruses), 1/sqrt(starting viruses) (in that order)
 
 class CWrapper a where
 	type Unwrapped a

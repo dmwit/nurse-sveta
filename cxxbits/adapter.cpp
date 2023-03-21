@@ -4,7 +4,7 @@ const int64_t BOARD_WIDTH = 8;
 const int64_t BOARD_HEIGHT = 16;
 const int64_t LOOKAHEAD_SIZE = 6;
 const int64_t CELL_SIZE = 7;
-const int64_t NUM_SCALARS = 4; // frames, log(frames), starting viruses, log(starting viruses)
+const int64_t NUM_SCALARS = 6; // frames, log(frames), sqrt(frames), starting viruses, log(starting viruses), 1/sqrt(starting viruses)
 const int64_t NUM_BERNOULLIS = 1;
 const int64_t NUM_ROTATIONS = 4;
 
