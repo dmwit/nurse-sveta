@@ -472,7 +472,7 @@ void detailed_loss(Net *net, double *out, Batch *batch) {
 
 torch::optim::SGD *connect_optimizer(Net *net) {
 	// TODO: allow setting SGD parameters like momentum, learning rate, etc.
-	return new torch::optim::SGD((**net).parameters(), 0.000001);
+	return new torch::optim::SGD((**net).parameters(), 1e-6);
 }
 
 void discard_optimizer(torch::optim::SGD *optim) { delete optim; }

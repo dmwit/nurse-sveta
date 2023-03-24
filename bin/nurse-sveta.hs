@@ -153,7 +153,7 @@ onSpeeds f gts = gts { summary = s { speeds = f (speeds s) } } where
 newSearchConfiguration :: SearchConfiguration
 newSearchConfiguration = SearchConfiguration
 	{ c_puct = 1
-	, iterations = 2000
+	, iterations = 30
 	, typicalMoves = 40
 	, priorNoise = 0.25
 	}
