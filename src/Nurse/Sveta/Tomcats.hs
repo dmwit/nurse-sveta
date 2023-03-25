@@ -30,6 +30,7 @@ import Dr.Mario.Model
 import Dr.Mario.Pathfinding
 import Nurse.Sveta.STM.BatchProcessor
 import System.Random.MWC
+import System.Random.MWC.Distributions
 import System.IO.Unsafe (unsafeInterleaveIO)
 import Tomcats
 
@@ -138,7 +139,7 @@ initialTree params g = do
 dmParameters :: SearchConfiguration -> DMEvaluationProcedure -> GenIO -> DMParameters
 dmParameters config eval gen = Parameters
 	{ score = dmScore config
-	, expand = dmExpand
+	, expand = dmExpand gen
 	, clone = dmClone
 	, play = dmPlay
 	, preprocess = dmPreprocess config eval gen
@@ -155,12 +156,12 @@ dmFinished gs = do
 	remaining <- (originalVirusCount gs-) <$> readIORef (virusesKilled gs)
 	pure $ cellL /= Just Empty || cellR /= Just Empty || remaining <= 0
 
-dmExpand :: GameState -> IO (A0.Statistics, HashMap Move A0.Statistics)
-dmExpand gs = do
+dmExpand :: GenIO -> GameState -> IO (A0.Statistics, HashMap Move A0.Statistics)
+dmExpand gen gs = do
 	finished <- dmFinished gs
 	if finished
 	then evaluateFinalState gs <&> \points -> (A0.Statistics 1 0 points, HM.empty)
-	else pure rngExpansion -- this is a bit weird, but in order to share pathfinding, expansion actually happens in the preprocessor
+	else rngExpansion gen -- this is a bit weird, but in order to share pathfinding, expansion actually happens in the preprocessor
 
 -- score: 0 or  1/3 for finishing
 --        up to 1/3 for each virus cleared; want the bot to learn early that clearing is good, so reward heavily for the first few viruses
@@ -196,8 +197,18 @@ evaluateFinalState gs = do
 		then winningValuation origViruses (fromIntegral frames)
 		else losingValuation  origViruses (fromIntegral clearedViruses)
 
-rngExpansion :: (A0.Statistics, HashMap Move A0.Statistics)
-rngExpansion = (mempty, HM.fromList [(RNG l r, A0.Statistics 0 (1/9) 0) | [l, r] <- replicateM 2 [minBound .. maxBound]])
+-- We should probably avoid looking at RNG moves in the same order every time,
+-- as that could introduce a bias. So we toss a tiny tiny bit of randomness
+-- into the priors.
+rngExpansion :: GenIO -> IO (A0.Statistics, HashMap Move A0.Statistics)
+rngExpansion = \gen -> do
+	perm <- uniformPermutation n gen
+	let mk i [l, r] = (RNG l r, A0.Statistics 0 (1/9 + fromIntegral (perm V.! i - halfn) * 1e-10) 0)
+	pure (mempty, HM.fromList (zipWith mk [0..] (replicateM 2 colors)))
+	where
+	n = length colors^2
+	halfn = n `div` 2
+	colors = [minBound..maxBound :: Color]
 
 dmClone :: GameState -> IO GameState
 dmClone gs = pure GameState
