@@ -10,11 +10,15 @@ module Nurse.Sveta.Torch (
 	where
 
 import Control.Monad
+import Control.Monad.Primitive
 import Data.Aeson
 import Data.Foldable
 import Data.Functor
 import Data.HashMap.Strict (HashMap)
+import Data.HashSet (HashSet)
+import Data.IntMap.Strict (IntMap)
 import Data.IORef
+import Data.Map.Strict (Map)
 import Data.Traversable
 import Data.Vector (Vector)
 import Dr.Mario.Model
@@ -29,6 +33,9 @@ import System.IO
 import System.IO.Unsafe (unsafeInterleaveIO)
 
 import qualified Data.HashMap.Strict as HM
+import qualified Data.HashSet as HS
+import qualified Data.IntMap.Strict as IM
+import qualified Data.Map.Strict as M
 import qualified Data.Vector as V
 import qualified Data.Vector.Unboxed.Mutable as MV
 
@@ -214,12 +221,105 @@ data GameStep = GameStep
 instance ToJSON GameStep where toJSON gs = toJSON (gsMove gs, gsRoot gs, HM.toList (gsChildren gs))
 instance FromJSON GameStep where parseJSON v = parseJSON v <&> \(m, r, c) -> GameStep m r (HM.fromList c)
 
+-- Ints are how many pills were used when the thing happened
+data Preview = Preview
+	{ pVirusKills :: Map Position Int
+	, pPlacements :: HashMap Pill [Int]
+	, pClearLocation :: Map Position [Int]
+	, pClearPill :: HashMap PillContent [Int]
+	, pFallTime :: IntMap Int
+	, pFinalBoard :: Board -- ask the net to predict whether spaces are occupied at game end or not
+	} deriving (Eq, Ord, Read, Show)
+
+emptyPreview :: PrimMonad m => MBoard (PrimState m) -> m Preview
+emptyPreview mb = do
+	b <- mfreeze mb
+	pure Preview
+		{ pVirusKills = M.empty
+		, pPlacements = HM.empty
+		, pClearLocation = M.empty
+		, pClearPill = HM.empty
+		, pFallTime = IM.empty
+		, pFinalBoard = b
+		}
+
+summarize :: GameState -> [Move] -> IO Preview
+summarize gs [] = emptyPreview (board gs)
+summarize gs (RNG _ _:ms) = summarize gs ms
+summarize gs (Placement path pill:ms) = mplaceDetails (board gs) pill >>= \case
+	Nothing -> emptyPreview (board gs)
+	Just cr -> do
+		pu <- readIORef (pillsUsed gs)
+		writeIORef (pillsUsed gs) $! succ pu
+		let summary = summarizeClearResults cr
+		    allClears = allClearsFor cr
+		    fallTime = fallTimeFor cr
+		modifyIORef' (virusesKilled gs) (clears summary +)
+		modifyIORef' (framesPassed gs) (approximateCostModel path pill summary +)
+		pre <- summarize gs ms
+		pure pre
+			{ pVirusKills = M.union (pu <$ M.filter (any ((Virus==) . oshape)) allClears) (pVirusKills pre)
+			, pPlacements = HM.insertWith (++) pill [pu] (pPlacements pre)
+			-- We may have multiple clears at a given location. But for
+			-- simplicity, we'll just count the current pill once. This makes
+			-- it easier to rescale our exponential rescaling later.
+			, pClearLocation = M.unionWith (++) ([pu] <$ allClears) (pClearLocation pre)
+			, pClearPill = case cr of
+				NoClear -> pClearPill pre
+				Clear{} -> HM.insertWith (++) (content pill) [pu] (pClearPill pre)
+			, pFallTime = (if fallTime > 0 then IM.insert pu fallTime else id) (pFallTime pre)
+			}
+	where
+	allClearsFor = \case
+		NoClear -> M.empty
+		Clear m dr -> M.unionWith (++) (pure <$> m) $ case dr of
+			NoDrop -> M.empty
+			Drop _ cr' -> allClearsFor cr'
+	fallTimeFor = \case
+		-- it's supposed to be the case that m is non-empty, but we'll defend
+		-- against bugs by not assuming that
+		Clear _ (Drop m cr') -> maximum (0:map fst (M.elems m)) + fallTimeFor cr'
+		_ -> 0
+
+data Prediction = Prediction
+	{ pVirusKillWeight :: Map Position Double
+	, pPlacementWeight :: HashMap Pill Double
+	, pPlacementMask :: HashSet PillContent
+	, pClearLocationWeight :: Map Position Double
+	, pClearPillWeight :: HashMap PillContent Double
+	, pOccupied :: HashSet Position
+	, pFallWeight :: Int
+	} deriving (Eq, Ord, Read, Show)
+
+prediction :: Preview -> Int -> Prediction
+prediction pre = \pu -> Prediction
+	{ pVirusKillWeight = discountUnscaled 0.9 pu <$> pVirusKills pre
+	, pPlacementWeight = discountList 0.9 pu <$> pPlacements pre
+	, pPlacementMask = HS.fromList
+		[ content pill
+		| (pill, pus) <- HM.toList (pPlacements pre)
+		, any (pu<=) pus
+		]
+	, pClearLocationWeight = discountList 0.9 pu <$> pClearLocation pre
+	, pClearPillWeight = discountList 0.9 pu <$> pClearPill pre
+	, pOccupied = occupied
+	, pFallWeight = IM.findWithDefault 0 pu (pFallTime pre)
+	} where
+	occupied = ofoldMapWithKey (\pos c -> case c of Empty -> HS.empty; _ -> HS.singleton pos) (pFinalBoard pre)
+	discountUnscaled rate pu pu' = if pu > pu' then 0 else rate^(pu'-pu)
+	discountInt rate pu pu' = (1-rate) * discountUnscaled rate pu pu'
+	discountList rate pu = sum . map (discountInt rate pu)
+
 data SaveTensorsSummary = SaveTensorsSummary
 	{ stsTensorsSaved :: Integer
 	, stsVirusesOriginal :: Int
 	, stsVirusesKilled :: Int
 	, stsFrames :: Int
 	} deriving (Eq, Ord, Read, Show)
+
+-- TODO: could consider varying the cost model, gravity speed, NES vs SNES pill
+-- distribution, NES vs SNES (vs other?) pathfinding, and then passing info on
+-- which choice was made into the net
 
 -- | Arguments: directory to save tensors in; an index; and the game record.
 -- They will be saved in files named @<i>.nst@, @<i+1>.nst@, etc., up to

@@ -4,7 +4,7 @@ module Nurse.Sveta.Tomcats (
 	mcts, descend, unsafeDescend,
 	evaluateFinalState, DetailedEvaluation, dumbEvaluation,
 	winningValuation, losingValuation, clampCleared,
-	dmFinished, dmPlay,
+	dmFinished, dmPlay, approximateCostModel,
 	SearchConfiguration(..), DMEvaluationProcedure,
 	Move(..),
 	GameState(..),
