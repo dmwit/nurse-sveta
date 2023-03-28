@@ -204,10 +204,11 @@ generationThreadView eval = do
 renderSpeeds :: Grid -> [(T.Text, SearchSpeed)] -> IO ()
 renderSpeeds spd sss = do
 	now <- Time.getCurrentTime
-	let row (nm, ss) = [nm, ": ", tshow (searchIterations ss), " positions/", ms, "s = ", T.justifyRight 5 ' ' . tshow . round $ rate, " positions/s"] where
+	let row (nm, ss) = [nm, ": ", tshow (searchIterations ss), " positions/", ms, "s = ", T.justifyRight 5 ' ' . tshow . precision 10 $ rate, " positions/s"] where
 	    	dt = realToFrac . Time.diffUTCTime now . searchStart $ ss :: Double
 	    	ms = T.pack (showFFloat (Just 1) (realToFrac dt) "")
 	    	rate = fromIntegral (searchIterations ss) / dt
+	    	precision prec n = fromInteger (round (n*prec)) / prec
 	    columns = transpose (map row sss)
 	unless (null sss) $ zipWithM_ updateLabel [0..] (T.unlines <$> columns)
 	where
