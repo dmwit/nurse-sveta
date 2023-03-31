@@ -3,6 +3,7 @@
 module Nurse.Sveta.Torch (
 	Net, netSample, netEvaluation, netTrain, netDetailedLoss,
 	netSave, netLoadForInference, netLoadForTraining,
+	LossType(..), describeLossType, LossMask, lossMask, fullLossMask,
 	Optimizer, newOptimizer,
 	Batch, batchLoad,
 	GameStep(..), SaveTensorsSummary(..), saveTensors,
@@ -42,10 +43,10 @@ import qualified Data.Vector.Unboxed.Mutable as MV
 foreign import ccall "sample_net" cxx_sample_net :: Bool -> IO (Ptr Net)
 foreign import ccall "&discard_net" cxx_discard_net :: FunPtr (Ptr Net -> IO ())
 foreign import ccall "evaluate_net" cxx_evaluate_net :: Ptr Net -> CInt -> Ptr CDouble -> Ptr CDouble -> Ptr CChar -> Ptr CChar -> Ptr CDouble -> IO ()
-foreign import ccall "save_example" cxx_save_example :: CString -> Ptr CDouble -> Ptr CChar -> Ptr CDouble -> Ptr CChar -> Ptr CChar -> Ptr CDouble -> IO ()
+foreign import ccall "save_example" cxx_save_example :: CString -> Ptr CChar -> Ptr CDouble -> CDouble -> CUChar -> Ptr CChar -> Ptr CDouble -> Ptr CDouble -> Ptr CDouble -> Ptr CDouble -> Ptr CChar -> Ptr CChar -> Ptr CDouble -> IO ()
 foreign import ccall "load_batch" cxx_load_batch :: Ptr CString -> CInt -> IO (Ptr Batch)
 foreign import ccall "&discard_batch" cxx_discard_batch :: FunPtr (Ptr Batch -> IO ())
-foreign import ccall "train_net" cxx_train_net :: Ptr Net -> Ptr Optimizer -> Ptr Batch -> IO CDouble
+foreign import ccall "train_net" cxx_train_net :: Ptr Net -> Ptr Optimizer -> Ptr Batch -> CULong -> IO CDouble
 foreign import ccall "detailed_loss" cxx_detailed_loss :: Ptr Net -> Ptr CDouble -> Ptr Batch -> IO ()
 foreign import ccall "save_net" cxx_save_net :: Ptr Net -> Ptr Optimizer -> CString -> IO ()
 foreign import ccall "load_net" cxx_load_net :: CString -> Ptr (Ptr Net) -> Ptr (Ptr Optimizer) -> IO ()
@@ -92,13 +93,11 @@ netLoadForTraining path = withUnwrapped (WCS path) $ \cpath -> do
 	cxx_load_net cpath netPtr optimPtr
 	liftM2 (,) (peek netPtr >>= mkNet) (peek optimPtr >>= mkOptimizer)
 
-netDetailedLoss :: Net -> Batch -> IO (Double, Double)
+netDetailedLoss :: Net -> Batch -> IO [(LossType, Double)]
 netDetailedLoss net_ batch_ = withUnwrapped (net_, batch_) $ \(net, batch) ->
-	allocaArray 2 $ \out -> do
+	allocaArray numLossTypes $ \out -> do
 		cxx_detailed_loss net out batch
-		liftM2 (,)
-			(realToFrac <$> peekElemOff out 0)
-			(realToFrac <$> peekElemOff out 1)
+		zipWith (\ty w -> (ty, realToFrac w)) [minBound..] <$> peekArray numLossTypes out
 
 class OneHot a where
 	indexCount :: Int
@@ -122,6 +121,22 @@ instance OneHot Shape where
 		1 -> East
 		2 -> West
 		3 -> Disconnected
+
+instance OneHot Orientation where
+	indexCount = 1 + fromEnum (maxBound :: Orientation)
+	toIndex = fromEnum
+	fromIndex = toEnum
+
+instance OneHot PillContent where
+	indexCount = indexCount @Orientation * indexCount @Color * indexCount @Color
+	toIndex pc = (toIndex (orientation pc) * indexCount @Color + toIndex (bottomLeftColor pc)) * indexCount @Color + toIndex (otherColor pc)
+	fromIndex n = PillContent
+		{ orientation = fromIndex o
+		, bottomLeftColor = fromIndex l
+		, otherColor = fromIndex r
+		} where
+		(n', r) = n `quotRem` indexCount @Color
+		(o , l) = n' `quotRem` indexCount @Color
 
 renderLookahead :: Ptr CChar -> Color -> Color -> IO ()
 renderLookahead lookahead l r = do
@@ -164,8 +179,8 @@ render itriples = do
 -- It looks like there's a lot of realToFrac calls in this code, but it doesn't
 -- matter, because rewrite rules throw them away.
 parseForEvaluation :: Int -> (GameState, Color, Color) -> ForeignPtr CDouble -> ForeignPtr CDouble -> IO DetailedEvaluation
-parseForEvaluation i (gs, l, r) priors_ bernoulli_ = withUnwrapped (priors_, bernoulli_) $ \(priors, bernoulli) -> do
-	v <- peekElemOff bernoulli iBernoulli
+parseForEvaluation i (gs, l, r) priors_ valuation_ = withUnwrapped (priors_, valuation_) $ \(priors, valuation) -> do
+	v <- peekElemOff valuation i
 	p <- forZipWithM [0..numRotations-1] (iterate (`rotateContent` Clockwise) (PillContent startingOrientation l r)) $ \numRots pc -> do
 		let iNumRots = iPriors + shiftL numRots logCellCount
 		v <- V.generateM boardWidth $ \x -> let ix = iNumRots + shiftL x logBoardHeight in
@@ -175,18 +190,17 @@ parseForEvaluation i (gs, l, r) priors_ bernoulli_ = withUnwrapped (priors_, ber
 
 	pure (realToFrac v, HM.fromList p)
 	where
-	iBernoulli = shiftL i logNumBernoullis
 	iPriors = shiftL i logNumPriors
 
 -- TODO: I wonder if we could improve throughput by pushing the rendering into the generation thread, like we did with the parsing
 netEvaluation :: Traversable t => Net -> t (GameState, Color, Color) -> IO (t DetailedEvaluation)
 netEvaluation net_ triples = do
-	[priors_, bernoulli_] <- mallocForeignPtrArrays [shiftL n logNumPriors, shiftL n logNumBernoullis]
+	[priors_, valuation_] <- mallocForeignPtrArrays [shiftL n logNumPriors, n]
 	-- TODO: can we avoid a ton of allocation here by pooling allocations of each size -- or even just the largest size, per Net, say?
 	(boards, lookaheads, scalars) <- render itriples
 
-	withUnwrapped (net_, (priors_, bernoulli_)) $ \(net, (priors, bernoulli)) ->
-		cxx_evaluate_net net (fromIntegral n) priors bernoulli boards lookaheads scalars
+	withUnwrapped (net_, (priors_, valuation_)) $ \(net, (priors, valuation)) ->
+		cxx_evaluate_net net (fromIntegral n) priors valuation boards lookaheads scalars
 	result <- for itriples $ \(i, state) ->
 			-- unsafeInterleaveIO: turns out parseForEvaluation is a bottleneck
 			-- to making foreign calls, so spread its work across multiple
@@ -201,7 +215,7 @@ netEvaluation net_ triples = do
 			-- modification will be done by the time we call netEvaluation,
 			-- then it will be thrown away, hence the IORefs won't ever be
 			-- modified again.
-			unsafeInterleaveIO (parseForEvaluation i state priors_ bernoulli_)
+			unsafeInterleaveIO (parseForEvaluation i state priors_ valuation_)
 
 	free boards
 	free lookaheads
@@ -229,11 +243,15 @@ data Preview = Preview
 	, pClearPill :: HashMap PillContent [Int]
 	, pFallTime :: IntMap Int
 	, pFinalBoard :: Board -- ask the net to predict whether spaces are occupied at game end or not
+	, pTotalFrames :: Int
+	, pFinalValuation :: Double
 	} deriving (Eq, Ord, Read, Show)
 
-emptyPreview :: PrimMonad m => MBoard (PrimState m) -> m Preview
-emptyPreview mb = do
-	b <- mfreeze mb
+summarize :: GameState -> [Move] -> IO Preview
+summarize gs [] = do
+	b <- mfreeze (board gs)
+	fp <- readIORef (framesPassed gs)
+	v <- evaluateFinalState gs
 	pure Preview
 		{ pVirusKills = M.empty
 		, pPlacements = HM.empty
@@ -241,13 +259,12 @@ emptyPreview mb = do
 		, pClearPill = HM.empty
 		, pFallTime = IM.empty
 		, pFinalBoard = b
+		, pTotalFrames = fp
+		, pFinalValuation = v
 		}
-
-summarize :: GameState -> [Move] -> IO Preview
-summarize gs [] = emptyPreview (board gs)
 summarize gs (RNG _ _:ms) = summarize gs ms
 summarize gs (Placement path pill:ms) = mplaceDetails (board gs) pill >>= \case
-	Nothing -> emptyPreview (board gs)
+	Nothing -> summarize gs [] -- uhhh... recorded a game with an illegal move, I guess?
 	Just cr -> do
 		pu <- readIORef (pillsUsed gs)
 		writeIORef (pillsUsed gs) $! succ pu
@@ -262,7 +279,7 @@ summarize gs (Placement path pill:ms) = mplaceDetails (board gs) pill >>= \case
 			, pPlacements = HM.insertWith (++) pill [pu] (pPlacements pre)
 			-- We may have multiple clears at a given location. But for
 			-- simplicity, we'll just count the current pill once. This makes
-			-- it easier to rescale our exponential rescaling later.
+			-- it easier to do exponential rescaling/discounting later.
 			, pClearLocation = M.unionWith (++) ([pu] <$ allClears) (pClearLocation pre)
 			, pClearPill = case cr of
 				NoClear -> pClearPill pre
@@ -282,28 +299,23 @@ summarize gs (Placement path pill:ms) = mplaceDetails (board gs) pill >>= \case
 		_ -> 0
 
 data Prediction = Prediction
-	{ pVirusKillWeight :: Map Position Double
-	, pPlacementWeight :: HashMap Pill Double
-	, pPlacementMask :: HashSet PillContent
-	, pClearLocationWeight :: Map Position Double
-	, pClearPillWeight :: HashMap PillContent Double
+	{ pVirusKillWeight :: Map Position CDouble
+	, pPlacementWeight :: HashMap Pill CDouble
+	, pClearLocationWeight :: Map Position CDouble
+	, pClearPillWeight :: HashMap PillContent CDouble
 	, pOccupied :: HashSet Position
-	, pFallWeight :: Int
+	, pFallWeight :: CUChar
 	} deriving (Eq, Ord, Read, Show)
 
 prediction :: Preview -> Int -> Prediction
 prediction pre = \pu -> Prediction
 	{ pVirusKillWeight = discountUnscaled 0.9 pu <$> pVirusKills pre
 	, pPlacementWeight = discountList 0.9 pu <$> pPlacements pre
-	, pPlacementMask = HS.fromList
-		[ content pill
-		| (pill, pus) <- HM.toList (pPlacements pre)
-		, any (pu<=) pus
-		]
 	, pClearLocationWeight = discountList 0.9 pu <$> pClearLocation pre
 	, pClearPillWeight = discountList 0.9 pu <$> pClearPill pre
 	, pOccupied = occupied
-	, pFallWeight = IM.findWithDefault 0 pu (pFallTime pre)
+	-- min 255 should never do anything
+	, pFallWeight = fromIntegral . min 255 . IM.findWithDefault 0 pu . pFallTime $ pre
 	} where
 	occupied = ofoldMapWithKey (\pos c -> case c of Empty -> HS.empty; _ -> HS.singleton pos) (pFinalBoard pre)
 	discountUnscaled rate pu pu' = if pu > pu' then 0 else rate^(pu'-pu)
@@ -328,20 +340,20 @@ data SaveTensorsSummary = SaveTensorsSummary
 saveTensors :: FilePath -> Integer -> ((Board, Bool, CoarseSpeed), [GameStep]) -> IO SaveTensorsSummary
 saveTensors dir i0 (b0, steps) = do
 	currentState <- initialState b0
+	-- summarize mutates its argument, so make a fresh clone to pass to it
+	preview <- initialState b0 >>= \gs -> summarize gs (gsMove <$> steps)
+	let valuation = realToFrac (pFinalValuation preview) :: CDouble
 
-	finalState <- initialState b0
-	traverse_ (dmPlay finalState . gsMove) steps
-	vkFinal <- readIORef (virusesKilled finalState)
-	fpFinal <- readIORef (framesPassed finalState)
-
-	priors <- mallocArray numPriors
 	reachable <- mallocArray numPriors
-	bernoullis <- mallocArray numBernoullis
+	priors <- mallocArray numPriors
+	occupied <- mallocArray cellCount
+	virusKills <- mallocArray cellCount
+	wishlist <- mallocArray (indexCount @PillContent*cellCount)
+	clearLocation <- mallocArray cellCount
+	clearPill <- mallocArray (indexCount @PillContent)
 	cells <- mallocArray boardSize
 	lookahead <- mallocArray lookaheadSize
 	scalars <- mallocArray numScalars
-
-	evaluateFinalState finalState >>= pokeElemOff bernoullis 0 . realToFrac
 
 	let loop i rots [] = pure (i-i0)
 	    loop i rots (gs:gss) = case gsMove gs of
@@ -355,8 +367,7 @@ saveTensors dir i0 (b0, steps) = do
 	    			[0..3]
 	    			(iterate (`rotateContent` Clockwise) (PillContent startingOrientation l r))
 	    	Placement bm pill -> do
-	    		zeroArray boardSize cells
-	    		renderBoard cells (board currentState)
+	    		pred <- prediction preview <$> readIORef (pillsUsed currentState)
 
 	    		zeroArray numPriors reachable
 	    		zeroArray numPriors priors -- probably not needed, but defensive programming
@@ -366,40 +377,87 @@ saveTensors dir i0 (b0, steps) = do
 	    		flip HM.traverseWithKey (gsChildren gs) $ \move stats -> case move of
 	    			RNG{} -> hPutStrLn stderr "WARNING: ignoring RNG move that is a sibling of a Placement move"
 	    			Placement bm' pill' -> for_ (HM.findWithDefault [] (content pill') rots) $ \iRot -> do
-	    				let pos = bottomLeftPosition pill'
-	    				    j = shiftL iRot logCellCount + shiftL (x pos) logBoardHeight + y pos
+	    				let j = shiftL iRot logCellCount + iPos (bottomLeftPosition pill')
 	    				pokeElemOff reachable j 1
 	    				-- TODO: temperature, maybe? (don't forget to fix scaling appropriately)
 	    				pokeElemOff priors    j (realToFrac (scaling * visitCount stats))
 
+	    		zeroArray cellCount occupied
+	    		zeroArray cellCount virusKills
+	    		zeroArray (indexCount @PillContent*cellCount) wishlist
+	    		zeroArray cellCount clearLocation
+	    		zeroArray (indexCount @PillContent) clearPill
+	    		for_ (pOccupied pred) $ \pos -> pokeElemOff occupied (iPos pos) 1
+	    		flip  M.traverseWithKey (pVirusKillWeight     pred) $ pokeElemOff virusKills . iPos
+	    		flip HM.traverseWithKey (pPlacementWeight     pred) $ \pill -> pokeElemOff wishlist (shiftL (toIndex (content pill)) logCellCount + iPos (bottomLeftPosition pill))
+	    		flip  M.traverseWithKey (pClearLocationWeight pred) $ pokeElemOff clearLocation . iPos
+	    		flip HM.traverseWithKey (pClearPillWeight     pred) $ pokeElemOff clearPill . toIndex
+
+	    		zeroArray boardSize cells
+	    		renderBoard cells (board currentState)
+
 	    		-- [N]urse [S]veta [t]ensor
 	    		withCString (dir </> show i <.> "nst") $ \path ->
-	    			cxx_save_example path priors reachable bernoullis cells lookahead scalars
+	    			cxx_save_example path reachable priors valuation (pFallWeight pred) occupied virusKills wishlist clearLocation clearPill cells lookahead scalars
 	    		go (i+1) rots
 	    	where go i' rots' = dmPlay currentState (gsMove gs) >> loop i' rots' gss
 
 	di <- loop i0 HM.empty steps
 
-	free priors
 	free reachable
-	free bernoullis
+	free priors
+	free occupied
+	free virusKills
+	free wishlist
+	free clearLocation
+	free clearPill
 	free cells
 	free lookahead
 	free scalars
 
 	pure SaveTensorsSummary
 		{ stsTensorsSaved = di
-		, stsVirusesOriginal = originalVirusCount finalState
-		, stsVirusesKilled = vkFinal
-		, stsFrames = fpFinal
+		, stsVirusesOriginal = originalVirusCount currentState
+		, stsVirusesKilled = M.size (pVirusKills preview)
+		, stsFrames = pTotalFrames preview
 		}
 
-netTrain :: Net -> Optimizer -> Batch -> IO Double
-netTrain net_ optim_ batch_ = withUnwrapped (net_, (batch_, optim_)) $ \(net, (batch, optim)) ->
-	realToFrac <$> cxx_train_net net optim batch
+-- could imagine a OneHot instance for Position instead of this, but given the
+-- dependence on board size it seems weird and maybe even unwise
+iPos :: Position -> Int
+iPos pos = shiftL (x pos) logBoardHeight + y pos
 
-boardWidth, boardHeight, cellCount, boardSize, lookaheadSize, numRotations, numPriors, numBernoullis, numScalars :: Int
-logBoardWidth, logBoardHeight, logCellCount, logNumRotations, logNumPriors, logNumBernoullis :: Int
+data LossType = LossPriors | LossValuation | LossFallTime | LossOccupied | LossVirusKills | LossWishlist | LossClearLocation | LossClearPill deriving (Bounded, Enum, Eq, Ord, Read, Show)
+
+describeLossType = \case
+	LossPriors -> "priors"
+	LossValuation -> "outcome"
+	LossFallTime -> "fall time"
+	LossOccupied -> "final occupation"
+	LossVirusKills -> "virus kills"
+	LossWishlist -> "future placements"
+	LossClearLocation -> "clear locations"
+	LossClearPill -> "clearing pill"
+
+newtype LossMask = LossMask CULong deriving (Eq, Ord, Read, Show)
+instance Semigroup LossMask where LossMask m <> LossMask m' = LossMask (m .|. m')
+instance Monoid LossMask where mempty = LossMask 0
+instance CWrapper LossMask where
+	type Unwrapped LossMask = CULong
+	withUnwrapped (LossMask m) f = f m
+
+lossMask :: LossType -> LossMask
+lossMask = LossMask . bit . fromEnum
+
+fullLossMask :: LossMask
+fullLossMask = foldMap' lossMask [minBound..]
+
+netTrain :: Net -> Optimizer -> Batch -> LossMask -> IO Double
+netTrain net_ optim_ batch_ mask_ = withUnwrapped (net_, (batch_, (optim_, mask_))) $ \(net, (batch, (optim, mask))) ->
+	realToFrac <$> cxx_train_net net optim batch mask
+
+boardWidth, boardHeight, cellCount, boardSize, lookaheadSize, numRotations, numPriors, numScalars, numLossTypes :: Int
+logBoardWidth, logBoardHeight, logCellCount, logNumRotations, logNumPriors :: Int
 boardWidth = 8; logBoardWidth = 3
 boardHeight = 16; logBoardHeight = 4
 numRotations = 4; logNumRotations = 2
@@ -407,8 +465,8 @@ cellCount = boardWidth*boardHeight; logCellCount = logBoardWidth+logBoardHeight
 boardSize = (indexCount @Shape + indexCount @Color)*cellCount
 lookaheadSize = 2*indexCount @Color
 numPriors = numRotations*cellCount; logNumPriors = logNumRotations+logCellCount
-numBernoullis = 1; logNumBernoullis = 0
 numScalars = 6 -- frames, log(frames), sqrt(frames), starting viruses, log(starting viruses), 1/sqrt(starting viruses) (in that order)
+numLossTypes = 1 + fromEnum (maxBound :: LossType)
 
 class CWrapper a where
 	type Unwrapped a

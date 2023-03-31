@@ -827,19 +827,19 @@ trainingThread log netUpdate ref sc = do
 	    		atomically $ writeTVar netUpdate (Just gen)
 	    		atomically . modifyTVar ref $ \(sgen, ss, loss) -> (sSet (Just gen) sgen, ss, loss)
 	    	batch <- trainingThreadLoadBatch rng sc "train" 50000 100
-	    	loss <- netTrain net sgd batch
+	    	-- TODO: make loss mask configurable
+	    	loss <- netTrain net sgd batch fullLossMask
 	    	schedule log (Iteration gen)
 	    	schedule log (Metric "loss/train/sum" loss)
 	    	when (gen .&. 0xff == 0) $ do
 	    		testBatch <- trainingThreadLoadBatch rng sc "test" 5000 100
-	    		(priorTrain, bernoulliTrain) <- netDetailedLoss net batch
-	    		(priorTest, bernoulliTest) <- netDetailedLoss net testBatch
-	    		traverse_ (schedule log) $ tail [undefined
-	    			, Metric "loss/train/priors" priorTrain
-	    			, Metric "loss/train/outcome" bernoulliTrain
-	    			, Metric "loss/test/sum" (priorTest + bernoulliTest)
-	    			, Metric "loss/test/priors" priorTest
-	    			, Metric "loss/test/outcome" bernoulliTest
+	    		trainComponents <- netDetailedLoss net batch
+	    		testComponents <- netDetailedLoss net testBatch
+	    		schedule log $ Metric "loss/test/sum" (sum . map snd $ testComponents)
+	    		traverse_ (schedule log)
+	    			[ Metric ("loss/" <> category <> "/" <> describeLossType ty) loss
+	    			| (category, components) <- [("train", trainComponents), ("test", testComponents)]
+	    			, (ty, loss) <- components
 	    			]
 	    	atomically (modifyTVar ref (\(lastSavedGen, ss, _) -> (lastSavedGen, ssInc ss, loss)))
 	    	scIO sc -- TODO: do one last netSave
