@@ -95,9 +95,9 @@ netLoadForTraining path = withUnwrapped (WCS path) $ \cpath -> do
 
 netDetailedLoss :: Net -> Batch -> IO [(LossType, Double)]
 netDetailedLoss net_ batch_ = withUnwrapped (net_, batch_) $ \(net, batch) ->
-	allocaArray numLossTypes $ \out -> do
+	allocaArray lossTypes $ \out -> do
 		cxx_detailed_loss net out batch
-		zipWith (\ty w -> (ty, realToFrac w)) [minBound..] <$> peekArray numLossTypes out
+		zipWith (\ty w -> (ty, realToFrac w)) [minBound..] <$> peekArray lossTypes out
 
 class OneHot a where
 	indexCount :: Int
@@ -181,7 +181,7 @@ render itriples = do
 parseForEvaluation :: Int -> (GameState, Color, Color) -> ForeignPtr CDouble -> ForeignPtr CDouble -> IO DetailedEvaluation
 parseForEvaluation i (gs, l, r) priors_ valuation_ = withUnwrapped (priors_, valuation_) $ \(priors, valuation) -> do
 	v <- peekElemOff valuation i
-	p <- forZipWithM [0..numRotations-1] (iterate (`rotateContent` Clockwise) (PillContent startingOrientation l r)) $ \numRots pc -> do
+	p <- forZipWithM [0..rotations-1] (iterate (`rotateContent` Clockwise) (PillContent startingOrientation l r)) $ \numRots pc -> do
 		let iNumRots = iPriors + shiftL numRots logCellCount
 		v <- V.generateM boardWidth $ \x -> let ix = iNumRots + shiftL x logBoardHeight in
 			V.generateM boardHeight $ \y -> let iy = ix + y in
@@ -456,17 +456,17 @@ netTrain :: Net -> Optimizer -> Batch -> LossMask -> IO Double
 netTrain net_ optim_ batch_ mask_ = withUnwrapped (net_, (batch_, (optim_, mask_))) $ \(net, (batch, (optim, mask))) ->
 	realToFrac <$> cxx_train_net net optim batch mask
 
-boardWidth, boardHeight, cellCount, boardSize, lookaheadSize, numRotations, numPriors, numScalars, numLossTypes :: Int
-logBoardWidth, logBoardHeight, logCellCount, logNumRotations, logNumPriors :: Int
+boardWidth, boardHeight, cellCount, boardSize, lookaheadSize, rotations, numPriors, numScalars, lossTypes :: Int
+logBoardWidth, logBoardHeight, logCellCount, logRotations, logNumPriors :: Int
 boardWidth = 8; logBoardWidth = 3
 boardHeight = 16; logBoardHeight = 4
-numRotations = 4; logNumRotations = 2
+rotations = 4; logRotations = 2
 cellCount = boardWidth*boardHeight; logCellCount = logBoardWidth+logBoardHeight
 boardSize = (indexCount @Shape + indexCount @Color)*cellCount
 lookaheadSize = 2*indexCount @Color
-numPriors = numRotations*cellCount; logNumPriors = logNumRotations+logCellCount
+numPriors = rotations*cellCount; logNumPriors = logRotations+logCellCount
 numScalars = 6 -- frames, log(frames), sqrt(frames), starting viruses, log(starting viruses), 1/sqrt(starting viruses) (in that order)
-numLossTypes = 1 + fromEnum (maxBound :: LossType)
+lossTypes = 1 + fromEnum (maxBound :: LossType)
 
 class CWrapper a where
 	type Unwrapped a
