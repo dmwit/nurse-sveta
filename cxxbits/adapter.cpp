@@ -389,11 +389,8 @@ NetOutput NetImpl::forward(const NetInput &in) {
 		lookahead_linear->forward(in.lookaheads).reshape({n, FILTERS, 1, 1}).expand({n, FILTERS, BOARD_WIDTH, BOARD_HEIGHT}) +
 		   scalar_linear->forward(in.scalars   ).reshape({n, FILTERS, 1, 1}).expand({n, FILTERS, BOARD_WIDTH, BOARD_HEIGHT})
 		);
-	// std::cout << "t after intro: " << t << std::endl;
 	for(int64_t i = 0; i < RESIDUAL_BLOCKS; i++) t = residuals[i]->forward(t);
-	// std::cout << "t after residuals: " << t << std::endl;
 	t = output_convolution->forward(t);
-	// std::cout << "t after convolution: " << t << std::endl;
 
 	NetOutput out;
 	int64_t i = 0;
@@ -406,7 +403,6 @@ NetOutput NetImpl::forward(const NetInput &in) {
 	out.clear_location = t.index({all, i, "..."}).reshape({n, BOARD_WIDTH, BOARD_HEIGHT}).sigmoid(); i++;
 
 	t = output_linear->forward(t.index({all, i, "..."}).reshape({n, CELLS})); i++;
-	// std::cout << "t after linear: " << t << std::endl;
 	if(i != OUTPUT_LAYERS) throw 0;
 
 	i = 0;
@@ -414,8 +410,6 @@ NetOutput NetImpl::forward(const NetInput &in) {
 	out.valuation  = t.index({all, i}).reshape({n}).sigmoid(); i++;
 	out.fall_time  = t.index({all, i}).reshape({n}); i++;
 	if(i != OUTPUT_SCALARS) throw 0;
-
-	// std::cout << out << std::endl;
 
 	return out;
 }
