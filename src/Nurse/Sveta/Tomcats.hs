@@ -146,7 +146,10 @@ dmParameters config eval gen = Parameters
 	}
 
 dmScore :: SearchConfiguration -> Move -> A0.Statistics -> A0.Statistics -> Double
-dmScore _ RNG{} _ stats = -A0.visitCount stats
+-- We should probably avoid looking at RNG moves in the same order every time,
+-- as that could introduce a bias. In rngExpansion, we put a bit of randomness
+-- into the priors, which we can use to break ordering ties here.
+dmScore _ RNG{} _ stats = A0.priorProbability stats - A0.visitCount stats
 dmScore config _ parent child = pucbA0 (c_puct config) (A0.priorProbability child) (A0.visitCount parent) (A0.visitCount child) (A0.cumulativeValuation child)
 
 dmFinished :: GameState -> IO Bool
@@ -203,7 +206,7 @@ evaluateFinalState gs = do
 rngExpansion :: GenIO -> IO (A0.Statistics, HashMap Move A0.Statistics)
 rngExpansion = \gen -> do
 	perm <- uniformPermutation n gen
-	let mk i [l, r] = (RNG l r, A0.Statistics 0 (1/9 + fromIntegral (perm V.! i - halfn) * 1e-10) 0)
+	let mk i [l, r] = (RNG l r, A0.Statistics 0 (1/9 + fromIntegral (perm V.! i - halfn) * 1e-8) 0)
 	pure (mempty, HM.fromList (zipWith mk [0..] (replicateM 2 colors)))
 	where
 	n = length colors^2
