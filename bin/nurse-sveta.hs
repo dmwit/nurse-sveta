@@ -820,6 +820,12 @@ trainingThread log netUpdate ref sc = do
 	rng <- createSystemRandom
 	dir <- nsDataDir
 	let loop gen = do
+	    	-- The log's iteration number defaults to 0. When we're starting
+	    	-- from scratch, that's the right default, but when we load a
+	    	-- partially-trained net, it's not. We want to overwrite the
+	    	-- default as early as possible, so we report the iteration number
+	    	-- straight away.
+	    	schedule log (Iteration gen)
 	    	when (gen `mod` 1000 == 0) $ do
 	    		path <- prepareFile dir Weights (show gen <.> "nsn")
 	    		netSave net sgd path
@@ -829,7 +835,6 @@ trainingThread log netUpdate ref sc = do
 	    	batch <- trainingThreadLoadBatch rng sc "train" 50000 100
 	    	-- TODO: make loss mask configurable
 	    	loss <- netTrain net sgd batch fullLossMask
-	    	schedule log (Iteration gen)
 	    	schedule log (Metric "loss/train/sum" loss)
 	    	when (gen .&. 0xff == 0) $ do
 	    		testBatch <- trainingThreadLoadBatch rng sc "test" 5000 100
