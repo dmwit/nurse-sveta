@@ -826,17 +826,17 @@ trainingThread log netUpdate ref sc = do
 	    	-- default as early as possible, so we report the iteration number
 	    	-- straight away.
 	    	schedule log (Iteration gen)
-	    	when (gen `mod` 1000 == 0) $ do
+	    	when (gen `mod` 100 == 0) $ do
 	    		path <- prepareFile dir Weights (show gen <.> "nsn")
 	    		netSave net sgd path
 	    		encodeFileLoop (dir </> subdirectory Weights latestFilename) gen
 	    		atomically $ writeTVar netUpdate (Just gen)
 	    		atomically . modifyTVar ref $ \(sgen, ss, loss) -> (sSet (Just gen) sgen, ss, loss)
-	    	batch <- trainingThreadLoadBatch rng sc "train" 50000 100
+	    	batch <- trainingThreadLoadBatch rng sc "train" 50000 3500
 	    	-- TODO: make loss mask configurable
 	    	loss <- netTrain net sgd batch fullLossMask
 	    	schedule log (Metric "loss/train/sum" loss)
-	    	when (gen .&. 0xff == 0) $ do
+	    	when (gen .&. 0xf == 0) $ do
 	    		testBatch <- trainingThreadLoadBatch rng sc "test" 5000 100
 	    		trainComponents <- netDetailedLoss net batch
 	    		testComponents <- netDetailedLoss net testBatch
