@@ -24,7 +24,7 @@ const double LEAKAGE = 0.01;
 const int64_t BODY_SIZE = FILTERS * CELLS;
 
 // TODO: A0 started its LR off at 0.2 (!)
-const double INITIAL_LEARNING_RATE = 1e-7;
+const double INITIAL_LEARNING_RATE = 1e-4;
 
 struct TensorSketch {
 	torch::Device dev;
