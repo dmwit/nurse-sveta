@@ -114,8 +114,8 @@ std::ostream &operator<<(std::ostream &o, const NetInput &in) { return in.dump(o
 
 struct NetOutput {
 	// priors: [n, 4, 8, 16]
-	// valuation: [n, 1]
-	// fall_time: [n, 1]
+	// valuation: [n]
+	// fall_time: [n]
 	// occupied: [n, 8, 16]
 	// virus_kills: [n, 8, 16]
 	// wishlist: [n, 2, 3, 3, 8, 16]
@@ -130,8 +130,8 @@ struct NetOutput {
 		auto  u8Opts = torch::TensorOptions().dtype(torch::kU8 );
 
 		priors         = torch::from_blob(        priors_data, {n, ROTATIONS, BOARD_WIDTH, BOARD_HEIGHT                   }, [](void *) {}, f64Opts);
-		valuation      = torch::from_blob(     valuation_data, {n, 1                                                      }, [](void *) {}, f64Opts);
-		fall_time      = torch::from_blob(     fall_time_data, {n, 1                                                      }, [](void *) {},  u8Opts);
+		valuation      = torch::from_blob(     valuation_data, {n                                                         }, [](void *) {}, f64Opts);
+		fall_time      = torch::from_blob(     fall_time_data, {n                                                         }, [](void *) {},  u8Opts);
 		occupied       = torch::from_blob(      occupied_data, {n, BOARD_WIDTH, BOARD_HEIGHT                              }, [](void *) {},  u8Opts);
 		virus_kills    = torch::from_blob(   virus_kills_data, {n, BOARD_WIDTH, BOARD_HEIGHT                              }, [](void *) {}, f64Opts);
 		wishlist       = torch::from_blob(      wishlist_data, {n, ORIENTATIONS, COLORS, COLORS, BOARD_WIDTH, BOARD_HEIGHT}, [](void *) {}, f64Opts);
@@ -143,8 +143,8 @@ struct NetOutput {
 		auto f64Opts = torch::TensorOptions().dtype(torch::kF64);
 		auto  u8Opts = torch::TensorOptions().dtype(torch::kU8 );
 		priors         = torch::empty({n, ROTATIONS, BOARD_WIDTH, BOARD_HEIGHT                   }, f64Opts);
-		valuation      = torch::empty({n, 1                                                      }, f64Opts);
-		fall_time      = torch::empty({n, 1                                                      },  u8Opts);
+		valuation      = torch::empty({n                                                         }, f64Opts);
+		fall_time      = torch::empty({n                                                         },  u8Opts);
 		occupied       = torch::empty({n, BOARD_WIDTH, BOARD_HEIGHT                              },  u8Opts);
 		virus_kills    = torch::empty({n, BOARD_WIDTH, BOARD_HEIGHT                              }, f64Opts);
 		wishlist       = torch::empty({n, ORIENTATIONS, COLORS, COLORS, BOARD_WIDTH, BOARD_HEIGHT}, f64Opts);
