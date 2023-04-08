@@ -26,7 +26,8 @@ module Nurse.Sveta.Widget (
 	-- * Thread management
 	ThreadManager,
 	newThreadManager, tmWidget, tmStartThread, tmDieThen,
-	ThreadView(..), StatusCheck(..), Affinity(..),
+	ThreadView(..), tvNew,
+	StatusCheck(..), Affinity(..),
 
 	-- * Noticing when things change
 	Stable,
@@ -570,6 +571,19 @@ data ThreadView = ThreadView
 	, tvRefresh :: IO ()
 	, tvCompute :: StatusCheck -> IO ()
 	}
+
+-- | Unlike the 'ThreadView' constructor, this is polymorphic over what kind of
+-- widget is allowed at the top. It also calls the refreshing action once for
+-- you right away.
+tvNew :: IsWidget w => w -> IO () -> (StatusCheck -> IO ()) -> IO ThreadView
+tvNew top refresh compute = do
+	topWidget <- toWidget top
+	refresh
+	pure ThreadView
+		{ tvWidget = topWidget
+		, tvRefresh = refresh
+		, tvCompute = compute
+		}
 
 data StatusCheck = StatusCheck
 	{ scIO :: IO () -- ^ more efficient, does not block

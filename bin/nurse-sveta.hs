@@ -190,16 +190,13 @@ generationThreadView eval = do
 	#append nfo spd
 	#append top nfo
 
-	topWidget <- toWidget top
-	pure ThreadView
-		{ tvWidget = topWidget
-		, tvRefresh = do
-			gts <- readTVarIO genRef
-			renderSpeeds spd (speeds (summary gts))
-			tWhenUpdated psvTracker (rootPosition (summary gts)) (psvSet psv)
-			tWhenUpdated scvTracker (currentConfiguration gts) (scvSet scv)
-		, tvCompute = generationThread eval genRef
-		}
+	let refresh = do
+	    	gts <- readTVarIO genRef
+	    	renderSpeeds spd (speeds (summary gts))
+	    	tWhenUpdated psvTracker (rootPosition (summary gts)) (psvSet psv)
+	    	tWhenUpdated scvTracker (currentConfiguration gts) (scvSet scv)
+
+	tvNew top refresh (generationThread eval genRef)
 
 renderSpeeds :: Grid -> [(T.Text, SearchSpeed)] -> IO ()
 renderSpeeds spd sss = do
@@ -295,7 +292,11 @@ data InferenceThreadState = InferenceThreadState
 	}
 
 itsNewNet :: InferenceThreadState -> Maybe Integer -> Bool
-itsNewNet its mn = fmap fst (sPayload (itsNet its)) /= mn
+itsNewNet its = \case
+	Nothing -> False -- if there's no net at all, there's definitely no new net
+	Just n -> case sPayload (itsNet its) of
+		Nothing -> True
+		Just (n', _) -> n /= n'
 
 inferenceThreadView :: DMEvaluationProcedure -> TVar (Maybe Integer) -> IO ThreadView
 inferenceThreadView eval netUpdate = do
@@ -333,21 +334,17 @@ inferenceThreadView eval netUpdate = do
 				}
 
 	tracker <- newTracker
-	topWidget <- toWidget top
-	pure ThreadView
-		{ tvWidget = topWidget
-		, tvRefresh = do
-			its <- readTVarIO ref
-			tWhenUpdated tracker (itsNet its) $ \mn ->
-				set lbl [#label := describeNet mn]
-			renderSpeeds spd $ tail [undefined
-				, ("positions (thread)", itsThreadPositions its)
-				, ("positions (net)   ", itsNetPositions its)
-				, ("batches (thread)", itsThreadBatches its)
-				, ("batches (net)   ", itsNetBatches its)
-				]
-		, tvCompute = inferenceThread eval netUpdate ref
-		}
+	let refresh = do
+	    	its <- readTVarIO ref
+	    	tWhenUpdated tracker (itsNet its) $ \mn ->
+	    		set lbl [#label := describeNet mn]
+	    	renderSpeeds spd $ tail [undefined
+	    		, ("positions (thread)", itsThreadPositions its)
+	    		, ("positions (net)   ", itsNetPositions its)
+	    		, ("batches (thread)", itsThreadBatches its)
+	    		, ("batches (net)   ", itsNetBatches its)
+	    		]
+	tvNew top refresh (inferenceThread eval netUpdate ref)
 	where
 	describeNet mn = "currently loaded net: " <> case mn of
 		Nothing -> "hand-crafted"
@@ -402,11 +399,11 @@ inferenceThreadLoadLatestNet = do
 
 -- TODO: better error handling
 inferenceThreadLoadNet :: Integer -> IO (Integer, Net)
-inferenceThreadLoadNet generation = do
+inferenceThreadLoadNet tensor = do
 	dir <- nsDataDir
 	-- [N]urse [S]veta [n]et
-	net <- netLoadForInference (dir </> subdirectory Weights (show generation <.> "nsn"))
-	pure (generation, net)
+	net <- netLoadForInference (dir </> subdirectory Weights (show tensor <.> "nsn"))
+	pure (tensor, net)
 
 nsDataDir :: IO FilePath
 nsDataDir = getUserDataDir "nurse-sveta"
@@ -589,22 +586,18 @@ bureaucracyThreadView log lock = do
 	#append top glg
 	#append top int
 
-	topWidget <- toWidget top
-	pure ThreadView
-		{ tvWidget = topWidget
-		, tvRefresh = do
-			sbts <- readTVarIO burRef
-			tWhenUpdated tracker sbts $ \bts -> do
-				vsvSet vsv (btsCurrentSplit bts)
-				set glg [#label := case bgsLastGame (btsLatestGlobal bts) of
-					Nothing -> "no games processed yet\n"
-					Just fp -> "latest game known to be processed was\n" <> T.pack fp
-					]
-				updateSumView glt (bgsNextTensor (btsLatestGlobal bts))
-				updateSumView tgp (btsGamesProcessed bts)
-				updateSumView ttp (btsTensorsProcessed bts)
-		, tvCompute = bureaucracyThread log lock burRef
-		}
+	let refresh = do
+	    	sbts <- readTVarIO burRef
+	    	tWhenUpdated tracker sbts $ \bts -> do
+	    		vsvSet vsv (btsCurrentSplit bts)
+	    		set glg [#label := case bgsLastGame (btsLatestGlobal bts) of
+	    			Nothing -> "no games processed yet\n"
+	    			Just fp -> "latest game known to be processed was\n" <> T.pack fp
+	    			]
+	    		updateSumView glt (bgsNextTensor (btsLatestGlobal bts))
+	    		updateSumView tgp (btsGamesProcessed bts)
+	    		updateSumView ttp (btsTensorsProcessed bts)
+	tvNew top refresh (bureaucracyThread log lock burRef)
 
 bureaucracyThread :: Procedure LogMessage () -> MVar BureaucracyGlobalState -> TVar (Stable BureaucracyThreadState) -> StatusCheck -> IO a
 bureaucracyThread log lock status sc = do
@@ -772,9 +765,20 @@ updateSumView grid ns = do
 			then "100%"
 			else tshow (round (100 * fromIntegral n / totalD)) <> "%"
 
+data TrainingThreadState = TrainingThreadState
+	{ ttsLastSaved :: Stable (Maybe Integer)
+	, ttsCurrent :: Stable (Maybe Integer)
+	, ttsGenerations :: SearchSpeed
+	, ttsTensors :: SearchSpeed
+	, ttsLoss :: Stable Double
+	} deriving (Eq, Ord, Read, Show)
+
 trainingThreadView :: Procedure LogMessage () -> TVar (Maybe Integer) -> IO ThreadView
 trainingThreadView log netUpdate = do
 	top <- new Box [#orientation := OrientationVertical]
+	ogb <- new Box [#orientation := OrientationHorizontal]
+	ogd <- descriptionLabel "current net: "
+	ogv <- descriptionLabel "<still loading/sampling>"
 	svb <- new Box [#orientation := OrientationHorizontal]
 	svd <- descriptionLabel "most recently saved net: "
 	svv <- descriptionLabel "<none yet>"
@@ -783,6 +787,9 @@ trainingThreadView log netUpdate = do
 	lov <- numericLabel "Infinity"
 	spd <- new Grid []
 
+	#append top ogb
+	#append ogb ogd
+	#append ogb ogv
 	#append top svb
 	#append svb svd
 	#append svb svv
@@ -791,53 +798,60 @@ trainingThreadView log netUpdate = do
 	#append lob lov
 	#append top spd
 
-	ss0 <- newSearchSpeed
-	ref <- newTVarIO (newStable Nothing, ss0, 1/0)
-	tracker <- newTracker
-	let refresh = do
-	    	(sgen, ss, loss) <- readTVarIO ref
-	    	tWhenUpdated tracker sgen $ \case
-	    		Nothing -> set svv [#label := "<none yet>"]
-	    		Just gen -> set svv [#label := tshow gen]
-	    	set lov [#label := T.pack (printf "%7.3f" loss)]
-	    	renderSpeeds spd [("iterations", ss)]
-	refresh
-
-	topWidget <- toWidget top
-	pure ThreadView
-		{ tvWidget = topWidget
-		, tvRefresh = refresh
-		, tvCompute = trainingThread log netUpdate ref
+	ssGen0 <- newSearchSpeed
+	ssTen0 <- newSearchSpeed
+	ref <- newTVarIO TrainingThreadState
+		{ ttsLastSaved = newStable Nothing
+		, ttsCurrent = newStable Nothing
+		, ttsGenerations = ssGen0
+		, ttsTensors = ssTen0
+		, ttsLoss = newStable (1/0)
 		}
+	tLastSaved <- newTracker
+	tCurrent <- newTracker
+	tLoss <- newTracker
+	let refresh = do
+	    	tts <- readTVarIO ref
+	    	tWhenUpdated tLastSaved (ttsLastSaved tts) $ \case
+	    		Nothing -> set svv [#label := "<none yet>"]
+	    		Just ten -> set svv [#label := tshow ten]
+	    	tWhenUpdated tCurrent (ttsCurrent tts) $ \case
+	    		Nothing -> set ogv [#label := "<still loading/sampling>"]
+	    		Just ten -> set ogv [#label := tshow ten]
+	    	tWhenUpdated tLoss (ttsLoss tts) $ \loss -> set lov [#label := T.pack (printf "%7.3f" loss)]
+	    	renderSpeeds spd [("epochs", ttsGenerations tts), ("examples", ttsTensors tts)]
+
+	tvNew top refresh (trainingThread log netUpdate ref)
 
 -- TODO: do we have a stall condition to kill the AI if it survives too long without making progress?
 -- TODO: make learning rate, batch size, and how many recent tensors to draw from configurable
 -- TODO: perhaps instead of a flat recent tensor count, we should do exponential discounting!
 -- TODO: might be nice to show current generation and iterations to next save
-trainingThread :: Procedure LogMessage () -> TVar (Maybe Integer) -> TVar (Stable (Maybe Integer), SearchSpeed, Double) -> StatusCheck -> IO ()
+trainingThread :: Procedure LogMessage () -> TVar (Maybe Integer) -> TVar TrainingThreadState -> StatusCheck -> IO ()
 trainingThread log netUpdate ref sc = do
-	(gen0, net, sgd) <- trainingThreadLoadLatestNet
+	(ten0, net, sgd) <- trainingThreadLoadLatestNet
+	atomically . modifyTVar ref $ \tts -> tts { ttsCurrent = sSet (Just ten0) (ttsCurrent tts) }
 	rng <- createSystemRandom
 	dir <- nsDataDir
-	let loop gen = do
+	let loop ten = do
 	    	-- The log's iteration number defaults to 0. When we're starting
 	    	-- from scratch, that's the right default, but when we load a
 	    	-- partially-trained net, it's not. We want to overwrite the
 	    	-- default as early as possible, so we report the iteration number
 	    	-- straight away.
-	    	schedule log (Iteration gen)
-	    	when (gen `mod` 100 == 0) $ do
-	    		path <- prepareFile dir Weights (show gen <.> "nsn")
+	    	schedule log (Iteration ten)
+	    	when (ten `mod` tensorsPerSave < tensorsPerTrainI) $ do
+	    		path <- prepareFile dir Weights (show ten <.> "nsn")
 	    		netSave net sgd path
-	    		encodeFileLoop (dir </> subdirectory Weights latestFilename) gen
-	    		atomically $ writeTVar netUpdate (Just gen)
-	    		atomically . modifyTVar ref $ \(sgen, ss, loss) -> (sSet (Just gen) sgen, ss, loss)
-	    	batch <- trainingThreadLoadBatch rng sc "train" 50000 3500
+	    		encodeFileLoop (dir </> subdirectory Weights latestFilename) ten
+	    		atomically . writeTVar netUpdate $ Just ten
+	    		atomically . modifyTVar ref $ \tts -> tts { ttsLastSaved = sSet (Just ten) (ttsLastSaved tts) }
+	    	batch <- trainingThreadLoadBatch rng sc "train" tensorHistoryTrain tensorsPerTrain
 	    	-- TODO: make loss mask configurable
 	    	loss <- netTrain net sgd batch fullLossMask
 	    	schedule log (Metric "loss/train/sum" loss)
-	    	when (gen .&. 0xf == 0) $ do
-	    		testBatch <- trainingThreadLoadBatch rng sc "test" 5000 100
+	    	when (ten `mod` tensorsPerDetailReport < tensorsPerTrainI) $ do
+	    		testBatch <- trainingThreadLoadBatch rng sc "test" tensorHistoryTest tensorsPerTest
 	    		trainComponents <- netDetailedLoss net batch
 	    		testComponents <- netDetailedLoss net testBatch
 	    		schedule log $ Metric "loss/test/sum" (sum . map snd $ testComponents)
@@ -846,12 +860,26 @@ trainingThread log netUpdate ref sc = do
 	    			| (category, components) <- [("train", trainComponents), ("test", testComponents)]
 	    			, (ty, loss) <- components
 	    			]
-	    	atomically (modifyTVar ref (\(lastSavedGen, ss, _) -> (lastSavedGen, ssInc ss, loss)))
+	    	let ten' = ten+tensorsPerTrainI
+	    	atomically . modifyTVar ref $ \tts -> tts
+	    		{ ttsGenerations = ssInc (ttsGenerations tts)
+	    		, ttsTensors = ssIncBy (ttsTensors tts) tensorsPerTrain
+	    		, ttsCurrent = sSet (Just ten') (ttsCurrent tts)
+	    		, ttsLoss = sSet loss (ttsLoss tts)
+	    		}
 	    	scIO sc -- TODO: do one last netSave
-	    	loop (gen+1)
-	loop gen0
+	    	loop ten'
+	loop ten0
 	where
 	category = "train"
+	-- TODO: make these configurable
+	tensorsPerSave = 100000
+	tensorsPerDetailReport = 30000
+	tensorsPerTrain = 3500
+	tensorsPerTrainI = toInteger tensorsPerTrain
+	tensorsPerTest = 100
+	tensorHistoryTrain = 50000
+	tensorHistoryTest = 5000
 
 trainingThreadLoadLatestNet :: IO (Integer, Net, Optimizer)
 trainingThreadLoadLatestNet = do
@@ -886,12 +914,7 @@ data LogMessage
 loggingThreadView :: Procedure LogMessage () -> IO ThreadView
 loggingThreadView log = do
 	top <- new Box [#orientation := OrientationVertical]
-	topWidget <- toWidget top
-	pure ThreadView
-		{ tvWidget = topWidget
-		, tvRefresh = pure ()
-		, tvCompute = loggingThread log
-		}
+	tvNew top (pure ()) (loggingThread log)
 
 loggingThread :: Procedure LogMessage () -> StatusCheck -> IO ()
 loggingThread log sc = do
