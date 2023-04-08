@@ -25,6 +25,7 @@ const int64_t BODY_SIZE = FILTERS * CELLS;
 
 // TODO: A0 started its LR off at 0.2 (!)
 const double INITIAL_LEARNING_RATE = 1e-4;
+const double EPSILON = 1e-10;
 
 struct TensorSketch {
 	torch::Device dev;
@@ -427,9 +428,9 @@ torch::Tensor detailed_loss(Net &net, const Batch &batch) {
 	// gradients. I also tried clamping after the log, but the nan's show up
 	// even after multiplying by reachable to screen off the effect of the
 	// incoming zeros.
-	loss.index_put_({i++}, (batch.out.priors * (batch.out.priors.clamp_min(1e-20) / scaled_priors).log() * batch.reachable).sum());
+	loss.index_put_({i++}, (batch.out.priors * (batch.out.priors.clamp_min(EPSILON) / scaled_priors).log() * batch.reachable).sum());
 	// cross-entropy loss for valuation
-	auto bs = net_out.valuation.clamp(1e-10, 1-1e-10);
+	auto bs = net_out.valuation.clamp(EPSILON, 1-EPSILON);
 	loss.index_put_({i++}, (batch.out.valuation * bs.log() + (1 - batch.out.valuation) * (1 - bs).log()).sum().neg());
 	// squared-error loss for everything else
 	loss.index_put_({i++}, (batch.out.fall_time      - net_out.fall_time     ).square().sum());
