@@ -40,6 +40,8 @@ import qualified Data.Map.Strict as M
 import qualified Data.Vector as V
 import qualified Data.Vector.Unboxed.Mutable as MV
 
+-- I played with marking these as unsafe. It really hurt performance a lot,
+-- plus it made the UI unbearably choppy.
 foreign import ccall "sample_net" cxx_sample_net :: Bool -> IO (Ptr Net)
 foreign import ccall "&discard_net" cxx_discard_net :: FunPtr (Ptr Net -> IO ())
 foreign import ccall "evaluate_net" cxx_evaluate_net :: Ptr Net -> CInt -> Ptr CDouble -> Ptr CDouble -> Ptr CChar -> Ptr CChar -> Ptr CDouble -> IO ()

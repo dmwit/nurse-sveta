@@ -555,6 +555,10 @@ vsvDisplay vsv vsReq vsCur = (()<$) . flip HM.traverseWithKey (vsvLabels vsv) $ 
 	    cur = vsGet vsCur category
 	set lbl [#label := tshow cur <> if req == cur then mempty else " ( will change to " <> tshow req <> " soon)"]
 
+-- TODO: add a paused state, and start threads out in that state to give people
+-- a chance to fiddle with parameters (especially ones that might control
+-- whether the program crashes, like how many training examples to use per
+-- batch)
 data ThreadManager = ThreadManager
 	{ tmContainer :: Box
 	, tmThreadList :: Box
