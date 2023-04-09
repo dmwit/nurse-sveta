@@ -768,7 +768,7 @@ updateSumView grid ns = do
 data TrainingThreadState = TrainingThreadState
 	{ ttsLastSaved :: Stable (Maybe Integer)
 	, ttsCurrent :: Stable (Maybe Integer)
-	, ttsGenerations :: SearchSpeed
+	, ttsGenerationHundredths :: SearchSpeed
 	, ttsTensors :: SearchSpeed
 	, ttsLoss :: Stable Double
 	} deriving (Eq, Ord, Read, Show)
@@ -803,7 +803,7 @@ trainingThreadView log netUpdate = do
 	ref <- newTVarIO TrainingThreadState
 		{ ttsLastSaved = newStable Nothing
 		, ttsCurrent = newStable Nothing
-		, ttsGenerations = ssGen0
+		, ttsGenerationHundredths = ssGen0
 		, ttsTensors = ssTen0
 		, ttsLoss = newStable (1/0)
 		}
@@ -819,7 +819,7 @@ trainingThreadView log netUpdate = do
 	    		Nothing -> set ogv [#label := "<still loading/sampling>"]
 	    		Just ten -> set ogv [#label := tshow ten]
 	    	tWhenUpdated tLoss (ttsLoss tts) $ \loss -> set lov [#label := T.pack (printf "%7.3f" loss)]
-	    	renderSpeeds spd [("epochs", ttsGenerations tts), ("examples", ttsTensors tts)]
+	    	renderSpeeds spd [("epochs (%)", ttsGenerationHundredths tts), ("examples", ttsTensors tts)]
 
 	tvNew top refresh (trainingThread log netUpdate ref)
 
@@ -862,7 +862,7 @@ trainingThread log netUpdate ref sc = do
 	    			]
 	    	let ten' = ten+tensorsPerTrainI
 	    	atomically . modifyTVar ref $ \tts -> tts
-	    		{ ttsGenerations = ssInc (ttsGenerations tts)
+	    		{ ttsGenerationHundredths = ssIncBy (ttsGenerationHundredths tts) 100
 	    		, ttsTensors = ssIncBy (ttsTensors tts) tensorsPerTrain
 	    		, ttsCurrent = sSet (Just ten') (ttsCurrent tts)
 	    		, ttsLoss = sSet loss (ttsLoss tts)
