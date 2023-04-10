@@ -58,6 +58,8 @@ common executable
     import:             shared
     hs-source-dirs:     bin
     build-depends:      nurse-sveta
+                        , directory ^>=1.3
+                        , xdg-basedir ^>=0.2
     ghc-options:        -threaded -rtsopts
     other-modules:      Util
 
@@ -100,13 +102,9 @@ executable nurse-sveta
     main-is:            nurse-sveta.hs
     other-modules:      Paths_nurse_sveta
     build-depends:        bytestring ^>=0.10
-                        , directory ^>=1.3
                         , process ^>=1.6
-                        , xdg-basedir ^>=0.2
                         , time ^>=1.9
 
 executable nurse-sveta-reset-state
     import:             executable
     main-is:            reset-state.hs
-    build-depends:        directory ^>=1.3
-                        , xdg-basedir ^>=0.2
