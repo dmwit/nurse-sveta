@@ -422,13 +422,13 @@ lmFromTuple = uncurry LevelMetric
 instance FromJSON LevelMetric where parseJSON = fmap lmFromTuple . parseJSON
 instance ToJSON LevelMetric where
 	toJSON = toJSON . lmToTuple
-	toEncoding rm = list id [toEncoding (lmMetric rm), toEncoding (lmSource rm)]
+	toEncoding lm = list id [toEncoding (lmMetric lm), toEncoding (lmSource lm)]
 
 lmFewest :: LevelMetric -> LevelMetric -> LevelMetric
-lmFewest rm rm' = if lmMetric rm < lmMetric rm' then rm else rm'
+lmFewest lm lm' = if lmMetric lm < lmMetric lm' then lm else lm'
 
 lmMost :: LevelMetric -> LevelMetric -> LevelMetric
-lmMost rm rm' = if lmMetric rm > lmMetric rm' then rm else rm'
+lmMost lm lm' = if lmMetric lm > lmMetric lm' then lm else lm'
 
 lmSum :: LevelMetric -> LevelMetric -> LevelMetric
 lmSum lm lm' = LevelMetric
