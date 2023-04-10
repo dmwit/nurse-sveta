@@ -430,6 +430,12 @@ lmFewest rm rm' = if lmMetric rm < lmMetric rm' then rm else rm'
 lmMost :: LevelMetric -> LevelMetric -> LevelMetric
 lmMost rm rm' = if lmMetric rm > lmMetric rm' then rm else rm'
 
+lmSum :: LevelMetric -> LevelMetric -> LevelMetric
+lmSum lm lm' = LevelMetric
+	{ lmMetric = lmMetric lm + lmMetric lm'
+	, lmSource = "<all>"
+	}
+
 lmDouble :: LevelMetric -> Double
 lmDouble = fromIntegral . lmMetric
 
@@ -472,45 +478,49 @@ newCategoryMetrics = CategoryMetrics
 data CategoryMetadata = CategoryMetadata
 	{ cmBest :: CategoryMetrics
 	, cmLatest :: CategoryMetrics
+	, cmCumulative :: CategoryMetrics
 	} deriving (Eq, Ord, Read, Show)
 
-bFieldName, rFieldName :: Key
+bFieldName, rFieldName, cFieldName :: Key
 bFieldName = "best"
 rFieldName = "recent"
+cFieldName = "cumulative"
 
 instance ToJSON CategoryMetadata where
 	toJSON cm = object $ tail [undefined
 		, bFieldName .= cmBest cm
 		, rFieldName .= cmLatest cm
+		, cFieldName .= cmCumulative cm
 		]
 	toEncoding cm = pairs $ mempty
 		<> bFieldName .= cmBest cm
 		<> rFieldName .= cmLatest cm
+		<> cFieldName .= cmCumulative cm
 
 instance FromJSON CategoryMetadata where
 	parseJSON = withObject "CategoryMetadata" $ \v -> pure CategoryMetadata
 		<*> v .: bFieldName
 		<*> v .: rFieldName
+		<*> v .: cFieldName
 
 newCategoryMetadata :: CategoryMetadata
 newCategoryMetadata = CategoryMetadata
 	{ cmBest = newCategoryMetrics
 	, cmLatest = newCategoryMetrics
+	, cmCumulative = newCategoryMetrics
 	}
 
 cmInsert :: FilePath -> Int -> Int -> Int -> CategoryMetadata -> CategoryMetadata
-cmInsert fp startingViruses virusesKilled frames CategoryMetadata { cmBest = b, cmLatest = r } = CategoryMetadata
-	{ cmBest = CategoryMetrics
-		{ cmVirusesKilled = iw lmMost   True   virusesKilled cmVirusesKilled b
-		, cmFramesToWin   = iw lmFewest isWin  frames        cmFramesToWin   b
-		, cmFramesToLoss  = iw lmMost   isLoss frames        cmFramesToLoss  b
-		}
-	, cmLatest = CategoryMetrics
-		{ cmVirusesKilled = iw const    True   virusesKilled cmVirusesKilled r
-		, cmFramesToWin   = iw const    isWin  frames        cmFramesToWin   r
-		, cmFramesToLoss  = iw const    isLoss frames        cmFramesToLoss  r
-		}
+cmInsert fp startingViruses virusesKilled frames CategoryMetadata { cmBest = b, cmLatest = r, cmCumulative = c } = CategoryMetadata
+	{ cmBest       = mkMetrics lmMost lmFewest lmMost b
+	, cmLatest     = mkMetrics const  const    const  r
+	, cmCumulative = mkMetrics lmSum  lmSum    lmSum  c
 	} where
+	mkMetrics vk fw fl cm = CategoryMetrics
+		{ cmVirusesKilled = iw vk True   virusesKilled cmVirusesKilled cm
+		, cmFramesToWin   = iw fw isWin  frames        cmFramesToWin   cm
+		, cmFramesToLoss  = iw fl isLoss frames        cmFramesToLoss  cm
+		}
 	isWin = startingViruses == virusesKilled
 	isLoss = not isWin
 	iw comb cond metric field record = (if cond then IM.insertWith comb startingViruses (LevelMetric metric fp) else id) (field record)
@@ -657,6 +667,11 @@ gameFileToTensorFiles log status dir fp = recallGame dir fp >>= \case
 		                   [cmVirusesKilled, cmFramesToWin, cmFramesToLoss]
 		    logAggregations = zip ["best", "latest" :: String]
 		                          [cmBest, cmLatest]
+		    logAccumulations = zip3 ["viruses", "frames", "days" :: String]
+		                            [cmVirusesKilled . cmCumulative, bothKindsOfFrames, bothKindsOfFrames]
+		                            [1, 1, 60.0988*60*60*24]
+		    bothKindsOfFrames cm = IM.unionWith lmSum (cmFramesToWin (cmCumulative cm)) (cmFramesToLoss (cmCumulative cm))
+
 		traverse_ (schedule log)
 			[ Metric (printf "%s/%s/%02d" k a (stsVirusesOriginal sts)) (lmDouble lm)
 			| categoryT == "train"
@@ -671,6 +686,11 @@ gameFileToTensorFiles log status dir fp = recallGame dir fp >>= \case
 			, (a, fa) <- logAggregations
 			, let im = fk (fa meta)
 			, IM.keys im == [4,8..84]
+			]
+		traverse_ (schedule log)
+			[ Metric (printf "cumulative/%s" k) (lmDouble lm / denominator)
+			| (k, f, denominator) <- logAccumulations
+			, let lm = foldr (lmSum . foldr1 lmSum . f) (LevelMetric 0 "") (bgsMetadata (btsLatestGlobal bts))
 			]
 
 		btsUpdate status $ \bts -> bts
