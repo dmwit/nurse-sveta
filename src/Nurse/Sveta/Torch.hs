@@ -431,6 +431,7 @@ iPos pos = shiftL (x pos) logBoardHeight + y pos
 
 data LossType = LossPriors | LossValuation | LossFallTime | LossOccupied | LossVirusKills | LossWishlist | LossClearLocation | LossClearPill deriving (Bounded, Enum, Eq, Ord, Read, Show)
 
+describeLossType :: LossType -> String
 describeLossType = \case
 	LossPriors -> "priors"
 	LossValuation -> "outcome"
