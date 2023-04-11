@@ -251,21 +251,21 @@ generationThread eval genRef sc = do
 
 		innerLoop threadSpeed gameSpeed moveSpeed t n = do
 			t' <- mcts params s t
-			let move = maximumOn (\_ -> visitCount . statistics) (children t')
+			let topMoves = take 3 . sortOn (negate . snd) $
+			    	[ (p, visitCount (statistics child))
+			    	| (Placement _ p, child) <- HM.toList (children t')
+			    	]
+			    overlay = [(p, min 0.5 (vc / max 1 (sum (snd <$> topMoves)))) | (p, vc) <- topMoves]
 			-- if mcts has thrown an error somewhere that matters, force it
 			-- before we get into the critical section
-			case move of
-				Just (Placement _ p, _, _) -> p `seq` pure ()
-				_ -> pure ()
+			evaluate (last (show overlay))
 
 			let [threadSpeed', gameSpeed', moveSpeed'] = ssInc <$> [threadSpeed, gameSpeed, moveSpeed]
 			    speeds' = [("thread", threadSpeed), ("game", gameSpeed), ("move", moveSpeed)]
 
 			gts <- atomically . modifyTVar genRef $ id
 				. onSpeeds (const speeds')
-				. case move of
-				  	Just (Placement _ p, _, _) -> onRootPosition (sOnSubterm psmOverlayL (sTrySet [(p, 0.3)]))
-				  	_ -> id
+				. onRootPosition (sOnSubterm psmOverlayL (sSet overlay))
 
 			scIO sc
 			case HM.size (children t') of
