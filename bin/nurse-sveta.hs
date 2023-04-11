@@ -922,7 +922,9 @@ trainingThreadLoadBatch rng sc category historySize batchSize = do
 	    	Just n -> pure n
 	latestTensor <- go
 	let earliestTensor = max 0 (latestTensor - historySize)
-	batchIndices <- replicateM batchSize (uniformRM (earliestTensor, latestTensor) rng)
+	batchIndices <- if latestTensor < toInteger batchSize
+		then pure [0..latestTensor]
+		else replicateM batchSize (uniformRM (earliestTensor, latestTensor) rng)
 	batchLoad [dir </> subdirectory (Tensors category) (show ix <.> "nst") | ix <- batchIndices]
 
 data LogMessage
