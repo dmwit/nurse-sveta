@@ -26,7 +26,7 @@ popAll :: BoundedFIFO a -> STM [a]
 popAll bf = do
 	(_, as@(_:_)) <- readTVar (fifo bf)
 	writeTVar (fifo bf) (0, [])
-	pure as
+	pure (reverse as)
 
 newtype Procedure a b = Procedure { comms :: BoundedFIFO (a, TMVar b) }
 
