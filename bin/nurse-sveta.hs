@@ -254,11 +254,11 @@ generationThread eval genRef sc = do
 
 		innerLoop threadSpeed gameSpeed moveSpeed t n = do
 			t' <- mcts params s t
-			let topMoves = take 3 . sortOn (negate . snd) $
+			let topMoves = sortOn (negate . snd)
 			    	[ (p, visitCount (statistics child))
 			    	| (Placement _ p, child) <- HM.toList (children t')
 			    	]
-			    overlay = [(p, min 0.5 (vc / max 1 (sum (snd <$> topMoves)))) | (p, vc) <- topMoves]
+			    overlay = zip (fst <$> topMoves) [0.4, 0.1, 0.1]
 			-- if mcts has thrown an error somewhere that matters, force it
 			-- before we get into the critical section
 			evaluate (last (show overlay))
