@@ -260,6 +260,11 @@ dmPreprocess config eval gen gs t = if not (RNG Blue Blue `HM.member` unexplored
 	moves <- mapproxReachable (board gs) (fp .&. 1 /= fromEnum (originalSensitive gs)) (gravity (speed gs) pu)
 	-- doing fromListWith instead of fromList is probably a bit paranoid, but what the hell
 	let symmetricMoves = HM.fromListWith shorterPath [(p { mpRotations = mpRotations p .&. 1 }, m) | (p, m) <- HM.toList moves]
+	-- TODO: it really seems like it would be better to wait on evaluation
+	-- until we go to expand the child node. practically speaking this is
+	-- costing us a factor of like 8x in neural net evaluations. can we delay
+	-- the calls somehow? maybe have a preprocessing case for the first time we
+	-- visit a non-RNG node, eg?
 	children' <- flip HM.traverseWithKey (unexplored t) $ \(RNG l r) stats -> do
 		future <- schedule eval (gs, l, r)
 		unsafeInterleaveIO $ (,) stats <$> future

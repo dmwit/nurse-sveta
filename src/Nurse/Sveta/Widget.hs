@@ -51,12 +51,12 @@ import Data.HashMap.Strict (HashMap)
 import Data.Int
 import Data.IORef
 import Data.List
-import Data.Monoid
 import Dr.Mario.Model as DM
 import GI.Cairo.Render
 import GI.Cairo.Render.Connector
 import GI.GLib
 import GI.Gtk as G
+import Nurse.Sveta.Cairo
 import Nurse.Sveta.STM
 import Nurse.Sveta.Tomcats (SearchConfiguration(..))
 import Nurse.Sveta.Util
@@ -132,8 +132,7 @@ dgSetRenderer dg draw = drawingAreaSetDrawFunc (dgCanvas dg) . Just $ \_ ctx _ _
 	wCanvas <- #getWidth (dgCanvas dg)
 	hCanvas <- #getHeight (dgCanvas dg)
 	(wGrid, hGrid) <- dgGetSize dg
-	scale (fromIntegral wCanvas / wGrid) (-fromIntegral hCanvas / hGrid)
-	translate 0 (-hGrid)
+	initMath wCanvas hCanvas wGrid hGrid
 	draw
 
 dgWidget :: MonadIO m => DrawingGrid -> m Widget
@@ -158,42 +157,12 @@ psmOverlayL psm = (psmOverlay psm, \o -> psm { psmOverlay = o })
 
 psmRender :: PlayerStateModel -> Render ()
 psmRender psm = do
-	setSourceRGB 0 0 0
-	setLineWidth 0.4
-	setLineCap LineCapRound
-	setLineJoin LineJoinRound
-	centered moveTo (head bottleCoordinates)
-	mapM_ (centered lineTo) (tail bottleCoordinates)
-	stroke
-	for_ (psmLookahead psm) $ \(l, r) -> do
-		renderCell xMid (h+2) (Occupied l West)
-		renderCell (xMid+1) (h+2) (Occupied r East)
-	getAp $ ofoldMapWithKey (\(Position x y) -> Ap . renderCell (fromIntegral x) (fromIntegral y)) b
-	for_ (psmOverlay psm) $ \(pill, opacity) -> do
+	bottleMaybeLookahead (psmBoard psm) (psmLookahead psm)
+	for_ (psmOverlay psm) $ \(p, opacity) -> do
 		pushGroup
-		renderPill pill
+		pill p
 		popGroupToSource
 		paintWithAlpha opacity
-	where
-	b = psmBoard psm
-	xMid = fromIntegral $ (DM.width b-1) `quot` 2
-	w = fromIntegral . DM.width $ b
-	h = fromIntegral . DM.height $ b
-
-	bottleCoordinates = tail [undefined
-		, (xMid-1, h+3)
-		, (xMid-1, h+2)
-		, (xMid, h+2)
-		, (xMid, h+1)
-		, (0, h+1)
-		, (0, 0)
-		, (w+1, 0)
-		, (w+1, h+1)
-		, (xMid+3, h+1)
-		, (xMid+3, h+2)
-		, (xMid+4, h+2)
-		, (xMid+4, h+3)
-		]
 
 data PlayerStateView = PSV
 	{ psvCanvas :: DrawingGrid
@@ -202,12 +171,14 @@ data PlayerStateView = PSV
 
 newPlayerStateView :: MonadIO m => PlayerStateModel -> m PlayerStateView
 newPlayerStateView psm = do
-	dg <- newDrawingGrid (fromIntegral (DM.width b + 2)) (fromIntegral (DM.height b + 4))
+	dg <- newDrawingGrid (fromIntegral w) (fromIntegral h)
 	ref <- liftIO $ newIORef psm
 	dgSetRenderer dg $ liftIO (readIORef ref) >>= psmRender
 	psvUpdateHeightRequest dg psm
 	pure (PSV dg ref)
-	where b = psmBoard psm
+	where
+	b = psmBoard psm
+	(w, h) = bottleSizeRecommendation b
 
 psvUpdateHeightRequest :: MonadIO m => DrawingGrid -> PlayerStateModel -> m ()
 psvUpdateHeightRequest dg psm = do
@@ -244,89 +215,6 @@ psvModify_ psv f = do
 	#queueDraw psv
 
 instance (MonadIO m, a ~ m ()) => Overload.IsLabel "queueDraw" (PlayerStateView -> a) where fromLabel = #queueDraw . psvCanvas
-
-renderPill :: Pill -> Render ()
-renderPill Pill
-	{ content = PillContent
-		{ orientation = dir
-		, bottomLeftColor = bl
-		, otherColor = o
-		}
-	, bottomLeftPosition = Position (fromIntegral -> x) (fromIntegral -> y)
-	} = case dir of
-		Horizontal -> renderCell  x     y    (Occupied bl West )
-		           >> renderCell (x+1)  y    (Occupied o  East )
-		Vertical   -> renderCell  x     y    (Occupied bl South)
-		           >> renderCell  x    (y+1) (Occupied o  North)
-
-renderCell :: Double -> Double -> Cell -> Render ()
-renderCell _ _ Empty = pure ()
-renderCell x_ y_ (Occupied color shape) = do
-	case shape of
-		Virus -> do
-			centered moveTo pos
-			centered arc pos 0.4 0 (2*pi)
-			closePath
-		Disconnected -> do
-			centered moveTo pos
-			centered arc pos 0.3 0 (2*pi)
-			closePath
-		North -> do
-			moveTo (x+0.8) (y+0.5)
-			centered arc pos 0.3 0 pi
-			lineTo (x+0.2) (y+0.1)
-			lineTo (x+0.8) (y+0.1)
-			closePath
-		South -> do
-			moveTo (x+0.2) (y+0.5)
-			centered arc pos 0.3 pi (2*pi)
-			lineTo (x+0.8) (y+0.9)
-			lineTo (x+0.2) (y+0.9)
-			closePath
-		West -> do
-			moveTo (x+0.5) (y+0.8)
-			centered arc pos 0.3 (pi/2) (3*pi/2)
-			lineTo (x+0.9) (y+0.2)
-			lineTo (x+0.9) (y+0.8)
-			closePath
-		East -> do
-			moveTo (x+0.5) (y+0.2)
-			centered arc pos 0.3 (3*pi/2) (5*pi/2)
-			lineTo (x+0.1) (y+0.8)
-			lineTo (x+0.1) (y+0.2)
-			closePath
-
-	setSourceRGB 0 0 0
-	setLineWidth 0.05
-	strokePreserve
-	renderColor color
-	fill
-
-	when (shape == Virus) $ do
-		setSourceRGB 0 0 0
-		moveTo (x+0.35) (y+0.65)
-		arc (x+0.35) (y+0.65) 0.1 0 (2*pi)
-		moveTo (x+0.65) (y+0.65)
-		arc (x+0.65) (y+0.65) 0.1 0 (2*pi)
-		fill
-		setLineWidth 0.1
-		moveTo (x+0.35) (y+0.35)
-		lineTo (x+0.65) (y+0.35)
-		stroke
-
-	where
-	x = x_ + 1
-	y = y_ + 1
-	pos = (x, y)
-
-renderColor :: Color -> Render ()
-renderColor = \case
-	Blue -> setSourceRGB 0.13 0.49 0.72
-	Red -> setSourceRGB 0.99 0.39 0.41
-	Yellow -> setSourceRGB 0.82 0.79 0.26
-
-centered :: (Double -> Double -> a) -> (Double, Double) -> a
-centered f (x,y) = f (x+0.5) (y+0.5)
 
 data SearchConfigurationView = SCV
 	{ scvTop :: Grid

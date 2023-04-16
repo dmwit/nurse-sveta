@@ -37,7 +37,7 @@ import qualified Control.Concurrent.STM.TMVar as Raw
 import qualified Control.Concurrent.STM.TVar as Raw
 
 -- | Just like 'Raw.STM', but pattern match failures call 'retry'.
-newtype STM a = Infallible { fallible :: Raw.STM a } deriving
+newtype STM a = Infallible { fallible :: Raw.STM a } deriving newtype
 	( Functor, Applicative, Monad
 	, Alternative, MonadPlus
 	, MonadFix, MArray TArray e

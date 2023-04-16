@@ -21,13 +21,18 @@ common shared
                         , aeson ^>=2.1
                         , containers ^>=0.6
                         , filepath ^>=1.4
+                        , gi-cairo-render ^>=0.1
                         , gi-gtk ^>=4.0
                         , maryodel ^>=0.1
                         , mwc-random ^>=0.15
                         , text ^>=1.2
                         , unordered-containers ^>=0.2
     default-language:   Haskell2010
-    default-extensions:   FlexibleInstances
+    default-extensions:   DeriveAnyClass
+                        , DeriveGeneric
+                        , DerivingStrategies
+                        , DerivingVia
+                        , FlexibleInstances
                         , GADTs
                         , GeneralizedNewtypeDeriving
                         , LambdaCase
@@ -37,6 +42,7 @@ common shared
                         , OverloadedStrings
                         , RankNTypes
                         , ScopedTypeVariables
+                        , StandaloneDeriving
                         , TypeApplications
                         , TypeFamilies
                         , UndecidableInstances
@@ -66,7 +72,8 @@ common executable
 library
     import:             shared
     hs-source-dirs:     src
-    exposed-modules:      Nurse.Sveta.STM
+    exposed-modules:      Nurse.Sveta.Cairo
+                        , Nurse.Sveta.STM
                         , Nurse.Sveta.STM.BatchProcessor
                         , Nurse.Sveta.Tomcats
                         , Nurse.Sveta.Torch
@@ -74,7 +81,6 @@ library
                         , Nurse.Sveta.Widget
     build-depends:        array ^>=0.5
                         , gi-cairo-connector ^>=0.1
-                        , gi-cairo-render ^>=0.1
                         , gi-glib ^>=2.0
                         , hashable ^>=1.4
                         , mtl ^>=2.2

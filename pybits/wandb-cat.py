@@ -1,7 +1,18 @@
-import wandb
+import os
 import sys
 
+import PIL.Image
+import wandb
+
 def variant(v):
+    # A single ! means use an image; 2 or more is a string that drops the first
+    # one. If you need to log, say, '!wtf.png', you can use '!./!wtf.png'.
+    if v.startswith('!'):
+        v = v[1:]
+        if v.startswith('!'): return v
+        img = wandb.Image(PIL.Image.open(v))
+        if os.environ.get('WANDB_CAT_MODE') != 'retain': os.remove(v)
+        return img
     try: v = int(v)
     except ValueError:
         try: v = float(v)

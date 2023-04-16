@@ -3,6 +3,7 @@
 module Nurse.Sveta.Torch (
 	Net, netSample, netEvaluation, netTrain, netDetailedLoss,
 	netSave, netLoadForInference, netLoadForTraining,
+	HSTensor(..), Prediction(..),
 	LossType(..), describeLossType, LossMask, lossMask, fullLossMask,
 	Optimizer, newOptimizer,
 	Batch, batchLoad,
@@ -29,6 +30,7 @@ import Nurse.Sveta.Util
 import Foreign
 import Foreign.C.String
 import Foreign.C.Types
+import GHC.Generics
 import System.FilePath
 import System.IO
 import System.IO.Unsafe (unsafeInterleaveIO)
@@ -55,9 +57,9 @@ foreign import ccall "load_net" cxx_load_net :: CString -> Ptr (Ptr Net) -> Ptr 
 foreign import ccall "connect_optimizer" cxx_connect_optimizer :: Ptr Net -> IO (Ptr Optimizer)
 foreign import ccall "&discard_optimizer" cxx_discard_optimizer :: FunPtr (Ptr Optimizer -> IO ())
 
-newtype Net = Net (ForeignPtr Net) deriving CWrapper
-newtype Batch = Batch (ForeignPtr Batch) deriving CWrapper
-newtype Optimizer = Optimizer (ForeignPtr Optimizer) deriving CWrapper
+newtype Net = Net (ForeignPtr Net) deriving newtype CWrapper
+newtype Batch = Batch (ForeignPtr Batch) deriving newtype CWrapper
+newtype Optimizer = Optimizer (ForeignPtr Optimizer) deriving newtype CWrapper
 
 mkNet :: Ptr Net -> IO Net
 mkNet ptr = Net <$> newForeignPtr cxx_discard_net ptr
@@ -158,12 +160,13 @@ renderBoard board b = do
 			pokeElemOff board (shiftL (                    toIndex c) logCellCount + j) 1
 			pokeElemOff board (shiftL (indexCount @Color + toIndex s) logCellCount + j) 1
 
-renderScalars :: Ptr CDouble -> GameState -> IO ()
+renderScalars :: Ptr CDouble -> GameState -> IO [Double]
 renderScalars scalars gs = do
 	frames_ <- readIORef (framesPassed gs)
 	let [frames, viruses] = fromIntegral <$> [frames_, originalVirusCount gs]
 	    safeLog = log . max (exp (-1))
 	pokeArray scalars [frames, safeLog frames, sqrt frames, viruses, safeLog viruses, 1/sqrt viruses]
+	pure [realToFrac frames, realToFrac viruses]
 
 render :: Traversable t => t (Int, (GameState, Color, Color)) -> IO (Ptr CChar, Ptr CChar, Ptr CDouble)
 render itriples = do
@@ -307,7 +310,12 @@ data Prediction = Prediction
 	, pClearPillWeight :: HashMap PillContent CDouble
 	, pOccupied :: HashSet Position
 	, pFallWeight :: CUChar
-	} deriving (Eq, Ord, Read, Show)
+	} deriving (Eq, Ord, Read, Show, Generic, ToJSON, FromJSON)
+
+deriving via Word8  instance   ToJSON CUChar
+deriving via Word8  instance FromJSON CUChar
+deriving via Double instance   ToJSON CDouble
+deriving via Double instance FromJSON CDouble
 
 prediction :: Preview -> Int -> Prediction
 prediction pre = \pu -> Prediction
@@ -324,6 +332,15 @@ prediction pre = \pu -> Prediction
 	discountInt rate pu pu' = (1-rate) * discountUnscaled rate pu pu'
 	discountList rate pu = sum . map (discountInt rate pu)
 
+-- A Haskell version of all the data that goes into the tensor files we save.
+data HSTensor = HSTensor
+	{ hstBoard :: Board
+	, hstPrediction :: Prediction
+	, hstScalars :: [Double]
+	, hstLookahead :: (Color, Color)
+	, hstPriors :: HashMap Pill Double
+	} deriving (Eq, Ord, Read, Show, Generic, ToJSON, FromJSON)
+
 data SaveTensorsSummary = SaveTensorsSummary
 	{ stsTensorsSaved :: Integer
 	, stsVirusesOriginal :: Int
@@ -335,15 +352,17 @@ data SaveTensorsSummary = SaveTensorsSummary
 -- distribution, NES vs SNES (vs other?) pathfinding, and then passing info on
 -- which choice was made into the net
 
--- | Arguments: directory to save tensors in; an index; and the game record.
--- They will be saved in files named @<i>.nst@, @<i+1>.nst@, etc., up to
--- @<i+di-1>.nst@, with @i@ being the second argument and @di@ being the return
--- value.
-saveTensors :: FilePath -> Integer -> ((Board, Bool, CoarseSpeed), [GameStep]) -> IO SaveTensorsSummary
-saveTensors dir i0 (b0, steps) = do
+-- | Arguments: directory to save tensors in; directory to save JSON files in;
+-- an index; and the game record. Tensors will be saved in files named
+-- @<i>.nst@, @<i+1>.nst@, etc., up to @<i+di-1>.nst@, with @i@ being the
+-- second argument and @di@ being the return value. (@nst@ is for [N]urse
+-- [S]veta [t]ensor.) JSON will be saved similarly, but with extension @.json@.
+saveTensors :: FilePath -> FilePath -> Integer -> ((Board, Bool, CoarseSpeed), [GameStep]) -> IO SaveTensorsSummary
+saveTensors tdir jsdir i0 (b0, steps) = do
 	currentState <- initialState b0
 	-- summarize mutates its argument, so make a fresh clone to pass to it
 	preview <- initialState b0 >>= \gs -> summarize gs (gsMove <$> steps)
+	hsLookahead <- newIORef (error "Nurse.Sveta.Torch.saveTensors: tried to use lookahead colors before they were initialized")
 	let valuation = realToFrac (pFinalValuation preview) :: CDouble
 
 	reachable <- mallocArray numPriors
@@ -362,6 +381,7 @@ saveTensors dir i0 (b0, steps) = do
 	    	RNG l r -> do
 	    		zeroArray lookaheadSize lookahead
 	    		renderLookahead lookahead l r
+	    		writeIORef hsLookahead (l, r)
 	    		-- dmPlay doesn't do anything, but we call it anyway to defend
 	    		-- against that changing in the future
 	    		go i . HM.fromListWith (++) $ zipWith
@@ -373,9 +393,12 @@ saveTensors dir i0 (b0, steps) = do
 
 	    		zeroArray numPriors reachable
 	    		zeroArray numPriors priors -- probably not needed, but defensive programming
-	    		renderScalars scalars currentState
+	    		hsScalars <- renderScalars scalars currentState
+	    		-- TODO: why is the root's visit count always one bigger than the sum of the children's visit counts?
 	    		-- for double pills, we put half the probability mass in each of the two rotations that give the same result
 	    		let scaling = fromIntegral (length rots) / (max 1 (fromIntegral (sum (length <$> rots)) * visitCount (gsRoot gs)))
+	    		    hsScaling = recip . max 1 . visitCount $ gsRoot gs
+	    		    hsPriors = HM.fromList [(pill, hsScaling * visitCount stats) | (Placement _ pill, stats) <- HM.toList (gsChildren gs)]
 	    		flip HM.traverseWithKey (gsChildren gs) $ \move stats -> case move of
 	    			RNG{} -> hPutStrLn stderr "WARNING: ignoring RNG move that is a sibling of a Placement move"
 	    			Placement bm' pill' -> for_ (HM.findWithDefault [] (content pill') rots) $ \iRot -> do
@@ -398,8 +421,15 @@ saveTensors dir i0 (b0, steps) = do
 	    		zeroArray boardSize cells
 	    		renderBoard cells (board currentState)
 
-	    		-- [N]urse [S]veta [t]ensor
-	    		withCString (dir </> show i <.> "nst") $ \path ->
+	    		hst <- pure HSTensor
+	    			<*> mfreeze (board currentState)
+	    			<*> pure pred
+	    			<*> pure hsScalars
+	    			<*> readIORef hsLookahead
+	    			<*> pure hsPriors
+
+	    		encodeFile (jsdir </> show i <.> "json") hst
+	    		withCString (tdir </> show i <.> "nst") $ \path ->
 	    			cxx_save_example path reachable priors valuation (pFallWeight pred) occupied virusKills wishlist clearLocation clearPill cells lookahead scalars
 	    		go (i+1) rots
 	    	where go i' rots' = dmPlay currentState (gsMove gs) >> loop i' rots' gss
@@ -468,6 +498,7 @@ cellCount = boardWidth*boardHeight; logCellCount = logBoardWidth+logBoardHeight
 boardSize = (indexCount @Shape + indexCount @Color)*cellCount
 lookaheadSize = 2*indexCount @Color
 numPriors = rotations*cellCount; logNumPriors = logRotations+logCellCount
+-- TODO: really should add gravity here
 numScalars = 6 -- frames, log(frames), sqrt(frames), starting viruses, log(starting viruses), 1/sqrt(starting viruses) (in that order)
 lossTypes = 1 + fromEnum (maxBound :: LossType)
 
@@ -495,10 +526,6 @@ newtype WrappedCString = WCS String
 instance CWrapper WrappedCString where
 	type Unwrapped WrappedCString = CString
 	withUnwrapped (WCS s) = withCString s
-
--- the arguments should always have been in this order
-forZipWithM :: Applicative f => [a] -> [b] -> (a -> b -> f c) -> f [c]
-forZipWithM as bs f = zipWithM f as bs
 
 mallocZeroArray :: Storable a => Int -> IO (Ptr a)
 mallocZeroArray n = mallocArray n >>= zeroArray n

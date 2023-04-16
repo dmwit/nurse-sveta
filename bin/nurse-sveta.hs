@@ -18,9 +18,12 @@ import Data.List
 import Data.Maybe
 import Data.Monoid
 import Data.Time (UTCTime)
+import Data.Traversable
 import Dr.Mario.Model
+import GI.Cairo.Render
 import GI.Gtk as G
 import Numeric
+import Nurse.Sveta.Cairo
 import Nurse.Sveta.STM
 import Nurse.Sveta.STM.BatchProcessor
 import Nurse.Sveta.Tomcats
@@ -408,6 +411,13 @@ inferenceThreadLoadNet tensor = do
 nsDataDir :: IO FilePath
 nsDataDir = getUserDataDir "nurse-sveta"
 
+nsRuntimeDir :: IO FilePath
+nsRuntimeDir = (</> "nurse-sveta") <$> do
+	fromEnv <- lookupEnv "XDG_RUNTIME_DIR"
+	case fromEnv of
+		Just fp -> pure fp
+		Nothing -> getTemporaryDirectory
+
 data LevelMetric = LevelMetric
 	{ lmMetric :: Int
 	, lmSource :: FilePath
@@ -651,8 +661,9 @@ gameFileToTensorFiles log status dir fp = recallGame dir fp >>= \case
 			, pure newCategoryMetadata
 			]
 
-		path <- prepareFile dir (Tensors category) ""
-		sts <- saveTensors path firstTensor history
+		tpath <- prepareFile dir (Tensors category) ""
+		jspath <- prepareFile dir (Positions category) ""
+		sts <- saveTensors tpath jspath firstTensor history
 		let meta = cmInsert fp (stsVirusesOriginal sts) (stsVirusesKilled sts) (stsFrames sts) meta_
 
 		relocate dir fp GamesPending (GamesProcessed category)
@@ -731,6 +742,7 @@ data Directory
 	| GamesProcessed FilePath
 	| GamesParseError
 	| Tensors FilePath
+	| Positions FilePath
 	| Weights
 	deriving (Eq, Ord, Read, Show)
 
@@ -740,6 +752,7 @@ subdirectory dir fp = case dir of
 	GamesProcessed category -> "games" </> "processed" </> category </> fp
 	GamesParseError         -> "games" </> "parse-error" </> fp
 	Tensors category        -> "tensors" </> category </> fp
+	Positions category      -> "positions" </> category </> fp
 	Weights                 -> "weights" </> fp
 
 relocate :: FilePath -> FilePath -> Directory -> Directory -> IO ()
@@ -866,12 +879,12 @@ trainingThread log netUpdate ref sc = do
 	    		encodeFileLoop (dir </> subdirectory Weights latestFilename) ten
 	    		atomically . writeTVar netUpdate $ Just ten
 	    		atomically . modifyTVar ref $ \tts -> tts { ttsLastSaved = sSet (Just ten) (ttsLastSaved tts) }
-	    	batch <- trainingThreadLoadBatch rng sc "train" tensorHistoryTrain tensorsPerTrain
+	    	batch <- loadBatch rng sc dir "train" tensorHistoryTrain tensorsPerTrain
 	    	-- TODO: make loss mask configurable
 	    	loss <- netTrain net sgd batch fullLossMask
 	    	schedule log (Metric "loss/train/sum" loss)
 	    	when (ten `mod` tensorsPerDetailReport < tensorsPerTrainI) $ do
-	    		testBatch <- trainingThreadLoadBatch rng sc "test" tensorHistoryTest tensorsPerTest
+	    		testBatch <- loadBatch rng sc dir "test" tensorHistoryTest tensorsPerTest
 	    		trainComponents <- netDetailedLoss net batch
 	    		testComponents <- netDetailedLoss net testBatch
 	    		schedule log $ Metric "loss/test/sum" (sum . map snd $ testComponents)
@@ -880,6 +893,8 @@ trainingThread log netUpdate ref sc = do
 	    			| (category, components) <- [("train", trainComponents), ("test", testComponents)]
 	    			, (ty, loss) <- components
 	    			]
+	    	when (ten `mod` tensorsPerVisualization < tensorsPerTrainI) $ do
+	    		logVisualization log rng sc dir "train" visualizationHistoryTrain
 	    	let ten' = ten+tensorsPerTrainI
 	    	atomically . modifyTVar ref $ \tts -> tts
 	    		{ ttsGenerationHundredths = ssIncBy (ttsGenerationHundredths tts) 100
@@ -900,6 +915,8 @@ trainingThread log netUpdate ref sc = do
 	tensorsPerTest = 100
 	tensorHistoryTrain = 50000
 	tensorHistoryTest = 5000
+	visualizationHistoryTrain = 1000
+	tensorsPerVisualization = 100000
 
 trainingThreadLoadLatestNet :: IO (Integer, Net, Optimizer)
 trainingThreadLoadLatestNet = do
@@ -914,22 +931,49 @@ trainingThreadLoadLatestNet = do
 			(net, sgd) <- netLoadForTraining (dir </> subdirectory Weights (show n <.> "nsn"))
 			pure (n, net, sgd)
 
-trainingThreadLoadBatch :: GenIO -> StatusCheck -> String -> Integer -> Int -> IO Batch
-trainingThreadLoadBatch rng sc category historySize batchSize = do
-	dir <- nsDataDir
+chooseTensors :: GenIO -> StatusCheck -> FilePath -> String -> Integer -> Int -> IO [Integer]
+chooseTensors rng sc dir category historySize batchSize = do
 	let go = readLatestTensor dir category >>= \case
 	    	Nothing -> scIO sc >> threadDelay 1000000 >> go
 	    	Just n -> pure n
 	latestTensor <- go
 	let earliestTensor = max 0 (latestTensor - historySize)
-	batchIndices <- if latestTensor < toInteger batchSize
+	if latestTensor < toInteger batchSize
 		then pure [0..latestTensor]
 		else replicateM batchSize (uniformRM (earliestTensor, latestTensor) rng)
-	batchLoad [dir </> subdirectory (Tensors category) (show ix <.> "nst") | ix <- batchIndices]
+
+loadBatch :: GenIO -> StatusCheck -> FilePath -> String -> Integer -> Int -> IO Batch
+loadBatch rng sc dir category historySize batchSize = do
+	ixs <- chooseTensors rng sc dir category historySize batchSize
+	batchLoad [dir </> subdirectory (Tensors category) (show ix <.> "nst") | ix <- ixs]
+
+logVisualization :: Procedure LogMessage () -> GenIO -> StatusCheck -> FilePath -> String -> Integer -> IO ()
+logVisualization log rng sc dir category historySize = do
+	[ix] <- chooseTensors rng sc dir category historySize 1
+	dataDir <- nsDataDir
+	runtimeDir <- nsRuntimeDir
+	mhst <- decodeFileLoop (dataDir </> subdirectory (Positions category) (show ix <.> "json"))
+	for_ mhst $ \hst -> do
+		let (w, h) = heatmapSizeRecommendation (hstBoard hst)
+		withImageSurface FormatRGB24 (w*scale) (h*scale) $ \img -> do
+			renderWith img $ do
+				initMath (w*scale) (h*scale) (fromIntegral w) (fromIntegral h)
+				heatmap01 (hstBoard hst)
+					[ (pos, prior)
+					| (Pill (PillContent Horizontal bl o) pos, prior) <- HM.toList (hstPriors hst)
+					, (bl, o) == hstLookahead hst
+					]
+			createDirectoryIfMissing True runtimeDir
+			now <- Time.getCurrentTime
+			let fp = runtimeDir </> show now ++ "-" ++ show ix <.> "png"
+			surfaceWriteToPNG img fp
+			schedule log (ImagePath "visualization/priors" fp)
+	where scale=16
 
 data LogMessage
 	= Iteration Integer
 	| Metric String Double
+	| ImagePath String FilePath
 	deriving (Eq, Ord, Read, Show)
 
 -- TODO: this really does not need to update its view 30 times per second, once per hour is enough
@@ -959,6 +1003,12 @@ loggingThread log sc = do
 	    		hPrint h i
 	    		hPutStrLn h k
 	    		hPrint h v
+	    	ImagePath k v -> readIORef iRef >>= \i -> do
+	    		hPrint h i
+	    		hPutStrLn h k
+	    		hPutStrLn h $ case v of
+	    			'!':_ -> "!./" ++ v
+	    			_     -> "!"   ++ v
 
 	forever $ do
 		step <- atomically . asum $ tail [undefined
