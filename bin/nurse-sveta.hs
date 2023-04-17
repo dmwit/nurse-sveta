@@ -20,7 +20,6 @@ import Data.Monoid
 import Data.Time (UTCTime)
 import Data.Traversable
 import Dr.Mario.Model
-import GI.Cairo.Render
 import GI.Gtk as G
 import Numeric
 import Nurse.Sveta.Cairo
@@ -49,6 +48,8 @@ import qualified Data.HashMap.Strict as HM
 import qualified Data.IntMap as IM
 import qualified Data.Text as T
 import qualified Data.Time as Time
+import qualified Data.Vector as V
+import qualified GI.Cairo.Render as G
 
 -- ╭╴w╶──────────────────────╮
 -- │╭╴top╶──────────────────╮│
@@ -894,7 +895,7 @@ trainingThread log netUpdate ref sc = do
 	    			, (ty, loss) <- components
 	    			]
 	    	when (ten `mod` tensorsPerVisualization < tensorsPerTrainI) $ do
-	    		logVisualization log rng sc dir "train" visualizationHistoryTrain
+	    		logVisualization log rng sc net dir "train" visualizationHistoryTrain
 	    	let ten' = ten+tensorsPerTrainI
 	    	atomically . modifyTVar ref $ \tts -> tts
 	    		{ ttsGenerationHundredths = ssIncBy (ttsGenerationHundredths tts) 100
@@ -947,26 +948,56 @@ loadBatch rng sc dir category historySize batchSize = do
 	ixs <- chooseTensors rng sc dir category historySize batchSize
 	batchLoad [dir </> subdirectory (Tensors category) (show ix <.> "nst") | ix <- ixs]
 
-logVisualization :: Procedure LogMessage () -> GenIO -> StatusCheck -> FilePath -> String -> Integer -> IO ()
-logVisualization log rng sc dir category historySize = do
+logVisualization :: Procedure LogMessage () -> GenIO -> StatusCheck -> Net -> FilePath -> String -> Integer -> IO ()
+logVisualization log rng sc net dir category historySize = do
 	[ix] <- chooseTensors rng sc dir category historySize 1
 	dataDir <- nsDataDir
 	runtimeDir <- nsRuntimeDir
+	netIn <- batchLoad [dir </> subdirectory (Tensors category) (show ix <.> "nst")]
+	[netOut] <- netIntrospect net netIn
 	mhst <- decodeFileLoop (dataDir </> subdirectory (Positions category) (show ix <.> "json"))
+
 	for_ mhst $ \hst -> do
 		let (w, h) = heatmapSizeRecommendation (hstBoard hst)
-		withImageSurface FormatRGB24 (w*scale) (h*scale) $ \img -> do
-			renderWith img $ do
-				initMath (w*scale) (h*scale) (fromIntegral w) (fromIntegral h)
-				heatmap01 (hstBoard hst)
-					[ (pos, prior)
-					| (Pill (PillContent Horizontal bl o) pos, prior) <- HM.toList (hstPriors hst)
-					, (bl, o) == hstLookahead hst
-					]
+		    [wi, hi] = (scale*) <$> [w, h]
+		    [wd, hd] = fromIntegral <$> [w, h]
+		    rotatedPCs = iterate (`rotateContent` Clockwise) (uncurry launchContent (hstLookahead hst))
+		    outPriorsSum_ = sum
+		    	[ niPriors netOut V.! rot V.! x V.! y
+		    	| rot <- [0..3]
+		    	, x <- [0..width  (hstBoard hst)-1]
+		    	, y <- [0..height (hstBoard hst)-1]
+		    	, Pill (rotatedPCs !! rot) (Position x y) `HM.member` hstPriors hst
+		    	]
+		    outPriorsSum = if outPriorsSum_ == 0 then 1 else outPriorsSum_
+
+		G.withImageSurface G.FormatRGB24 (4*wi) (3*hi) $ \img -> do
+			G.renderWith img $ do
+				initMath (4*wi) (3*hi) (4*wd) (3*hd)
+				for_ [0..3] $ \roti -> do
+					let correctPC = rotatedPCs !! roti
+					    rotd = fromIntegral roti
+					G.save
+					G.translate (rotd*wd) 0
+					G.translate 0 hd
+					heatmap01 (hstBoard hst)
+						[ (pos, niPriors netOut V.! roti V.! x V.! y / outPriorsSum)
+						| x <- [0..width  (hstBoard hst)-1]
+						, y <- [0..height (hstBoard hst)-1]
+						, let pos = Position x y
+						, Pill correctPC pos `HM.member` hstPriors hst
+						]
+					G.translate 0 hd
+					heatmap01 (hstBoard hst)
+						[ (pos, prior)
+						| (Pill pc pos, prior) <- HM.toList (hstPriors hst)
+						, pc == correctPC
+						]
+					G.restore
 			createDirectoryIfMissing True runtimeDir
 			now <- Time.getCurrentTime
 			let fp = runtimeDir </> show now ++ "-" ++ show ix <.> "png"
-			surfaceWriteToPNG img fp
+			G.surfaceWriteToPNG img fp
 			schedule log (ImagePath "visualization/priors" fp)
 	where scale=16
 

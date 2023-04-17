@@ -1,9 +1,9 @@
 {-# Language AllowAmbiguousTypes #-}
 
 module Nurse.Sveta.Torch (
-	Net, netSample, netEvaluation, netTrain, netDetailedLoss,
+	Net, netSample, netEvaluation, netTrain, netDetailedLoss, netIntrospect,
 	netSave, netLoadForInference, netLoadForTraining,
-	HSTensor(..), Prediction(..),
+	HSTensor(..), Prediction(..), NetIntrospection(..),
 	LossType(..), describeLossType, LossMask, lossMask, fullLossMask,
 	Optimizer, newOptimizer,
 	Batch, batchLoad,
@@ -47,8 +47,10 @@ import qualified Data.Vector.Unboxed.Mutable as MV
 foreign import ccall "sample_net" cxx_sample_net :: Bool -> IO (Ptr Net)
 foreign import ccall "&discard_net" cxx_discard_net :: FunPtr (Ptr Net -> IO ())
 foreign import ccall "evaluate_net" cxx_evaluate_net :: Ptr Net -> CInt -> Ptr CDouble -> Ptr CDouble -> Ptr CChar -> Ptr CChar -> Ptr CDouble -> IO ()
+foreign import ccall "introspect_net" cxx_introspect_net :: Ptr Net -> Ptr Batch -> Ptr CDouble -> Ptr CDouble -> Ptr CDouble -> Ptr CDouble -> Ptr CDouble -> Ptr CDouble -> Ptr CDouble -> Ptr CDouble -> IO ()
 foreign import ccall "save_example" cxx_save_example :: CString -> Ptr CChar -> Ptr CDouble -> CDouble -> CUChar -> Ptr CChar -> Ptr CDouble -> Ptr CDouble -> Ptr CDouble -> Ptr CDouble -> Ptr CChar -> Ptr CChar -> Ptr CDouble -> IO ()
 foreign import ccall "load_batch" cxx_load_batch :: Ptr CString -> CInt -> IO (Ptr Batch)
+foreign import ccall "batch_size" cxx_batch_size :: Ptr Batch -> IO CInt
 foreign import ccall "&discard_batch" cxx_discard_batch :: FunPtr (Ptr Batch -> IO ())
 foreign import ccall "train_net" cxx_train_net :: Ptr Net -> Ptr Optimizer -> Ptr Batch -> CULong -> IO CDouble
 foreign import ccall "detailed_loss" cxx_detailed_loss :: Ptr Net -> Ptr CDouble -> Ptr Batch -> IO ()
@@ -231,6 +233,72 @@ netEvaluation net_ triples = do
 	n = length triples
 	itriples = enumerate triples
 
+-- TODO: There sure are a lot of really similar types in here, e.g.
+-- DetailedEvaluation, Preview, Prediction, HSTensor, not to mention Ptr
+-- CDouble -> Ptr CDouble -> Ptr CDouble -> .... It would probably be good to
+-- take a step back and think about abstraction boundaries and APIs a bit, then
+-- refactor this stuff to be a bit more coherent/consistent.
+data NetIntrospection = NetIntrospection
+	{ niPriors :: Vector (Vector (Vector Double)) -- ^ clockwise rotations, x, y
+	, niValuation :: Double
+	, niFallTime :: Double
+	, niOccupied :: Vector (Vector Double)
+	, niVirusKills :: Vector (Vector Double)
+	, niPlacements :: HashMap PillContent (Vector (Vector Double))
+	, niClearLocation :: Vector (Vector Double)
+	, niClearPill :: HashMap PillContent Double
+	} deriving (Eq, Ord, Read, Show)
+
+parseForIntrospection :: Ptr CDouble -> Ptr CDouble -> Ptr CDouble -> Ptr CDouble -> Ptr CDouble -> Ptr CDouble -> Ptr CDouble -> Ptr CDouble -> IO NetIntrospection
+parseForIntrospection priors valuation fallTime occupied virusKills wishlist clearLocation clearPill = pure NetIntrospection
+	<*> V.generateM rotations (\rot -> boardFullOfDoubles (plusArray priors (shiftL rot logCellCount)))
+	<*> peekD valuation
+	<*> peekD fallTime
+	<*> boardFullOfDoubles occupied
+	<*> boardFullOfDoubles virusKills
+	<*> for pillContentMap (\i -> boardFullOfDoubles (plusArray wishlist (shiftL i logCellCount)))
+	<*> boardFullOfDoubles clearLocation
+	<*> for pillContentMap (peekArrayD clearPill)
+	where
+	peekArrayD :: Ptr CDouble -> Int -> IO Double
+	peekArrayD arr = fmap realToFrac . peek . plusArray arr
+
+	peekD :: Ptr CDouble -> IO Double
+	peekD = fmap realToFrac . peek
+
+	boardFullOfDoubles :: Ptr CDouble -> IO (Vector (Vector Double))
+	boardFullOfDoubles arr =
+		V.generateM boardWidth $ \x -> let ix = shiftL x logBoardHeight in
+		V.generateM boardHeight $ \iy ->
+		peekArrayD arr (ix+iy)
+
+	pillContentMap :: HashMap PillContent Int
+	pillContentMap = HM.fromList [(fromIndex i, i) | i <- [0..indexCount @PillContent-1]]
+
+netIntrospect :: Net -> Batch -> IO [NetIntrospection]
+netIntrospect net_ batch_ = do
+	n <- fromIntegral <$> withUnwrapped batch_ cxx_batch_size
+	let outputSizes = indices n
+	-- don't need to do the ForeignPtr thing here (like we do in netEvaluation) because we're not using unsafeInterleaveIO
+	out <- mallocArray (sum outputSizes)
+	let [priors, valuation, fallTime, occupied, virusKills, wishlist, clearLocation, clearPill, _onePastTheEnd] = scanl plusArray out outputSizes
+
+	withUnwrapped (net_, batch_) $ \(net, batch) ->
+		cxx_introspect_net net batch priors valuation fallTime occupied virusKills wishlist clearLocation clearPill
+	result <- for [0..n-1] $ \i -> do
+		let [priors', valuation', fallTime', occupied', virusKills', wishlist', clearLocation', clearPill'] = zipWith plusArray
+		    	[priors, valuation, fallTime, occupied, virusKills, wishlist, clearLocation, clearPill]
+		    	(indices i)
+		parseForIntrospection priors' valuation' fallTime' occupied' virusKills' wishlist' clearLocation' clearPill'
+
+	free out
+
+	pure result
+	where
+	indices i = [shiftL i logNumPriors, i, i, iCells, iCells, shiftL iPC logCellCount, iCells, iPC] where
+		iCells = shiftL i logCellCount
+		iPC = i*indexCount @PillContent
+
 data GameStep = GameStep
 	{ gsMove :: Move
 	, gsRoot :: Statistics
@@ -409,7 +477,7 @@ saveTensors tdir jsdir i0 (b0, steps) = do
 
 	    		zeroArray cellCount occupied
 	    		zeroArray cellCount virusKills
-	    		zeroArray (indexCount @PillContent*cellCount) wishlist
+	    		zeroArray (shiftL (indexCount @PillContent) logCellCount) wishlist
 	    		zeroArray cellCount clearLocation
 	    		zeroArray (indexCount @PillContent) clearPill
 	    		for_ (pOccupied pred) $ \pos -> pokeElemOff occupied (iPos pos) 1

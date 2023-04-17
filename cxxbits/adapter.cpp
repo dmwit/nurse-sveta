@@ -444,14 +444,15 @@ torch::Tensor detailed_loss(Net &net, const Batch &batch) {
 	return loss;
 }
 
-void tensorcpy(double *out, torch::Tensor &in) {
-	if(in.dtype() != torch::kF64 || in.device() != torch::kCPU) throw 0;
+void tensorcpy(double *out, const torch::Tensor &in) {
+	if(out == NULL) return;
+	if(in.dtype() != torch::kF64) throw 0;
 	int64_t len = 1;
 	for(int i = 0; i < in.dim(); i++) len *= in.size(i);
 
 	// TODO: is it safe to inline the definition of contig_in, or will that
 	// lead to the Tensor being destructed before memcpy finishes?
-	auto contig_in = in.contiguous();
+	auto contig_in = in.to(torch::kCPU).contiguous();
 	std::memcpy(out, contig_in.data_ptr<double>(), len*sizeof(double));
 }
 
@@ -463,8 +464,10 @@ extern "C" {
 	void evaluate_net(Net *net, int n, double *priors, double *valuation, char *boards, char *lookaheads, double *scalars);
 	void save_example(char *path, char *reachable, double *priors, double valuation, unsigned char fall_time, char *occupied, double *virus_kills, double *wishlist, double *clear_location, double *clear_pill, char *board, char *lookahead, double *scalars);
 	Batch *load_batch(char **path, int n);
+	int batch_size(Batch *batch);
 	void discard_batch(Batch *batch);
 	double train_net(Net *net, torch::optim::SGD *optim, Batch *batch, unsigned long loss_mask);
+	void introspect_net(Net *net, Batch *batch, double *priors, double *valuation, double *fall_time, double *occupied, double *virus_kills, double *wishlist, double *clear_location, double *clear_pill);
 	void detailed_loss(Net *net, double *out, Batch *batch);
 	torch::optim::SGD *connect_optimizer(Net *net);
 	void discard_optimizer(torch::optim::SGD *optim);
@@ -507,8 +510,6 @@ void evaluate_net(Net *net, int n, double *priors, double *valuation, char *boar
 	NetInput in(n, boards, lookaheads, scalars); in.to_gpu();
 	NetOutput out = (**net).forward(in);
 
-	out.priors = out.priors.to(torch::kCPU);
-	out.valuation = out.valuation.to(torch::kCPU);
 	tensorcpy(priors,    out.priors);
 	tensorcpy(valuation, out.valuation);
 }
@@ -547,6 +548,7 @@ Batch *load_batch(char **path, int n) {
 	return batch;
 }
 
+int batch_size(Batch *batch) { return batch->reachable.size(0); }
 void discard_batch(Batch *batch) { delete batch; }
 
 double train_net(Net *net, torch::optim::SGD *optim, Batch *batch, unsigned long loss_mask) {
@@ -566,12 +568,30 @@ double train_net(Net *net, torch::optim::SGD *optim, Batch *batch, unsigned long
 	return *loss.data_ptr<double>();
 }
 
+void introspect_net(Net *net, Batch *batch, double *priors, double *valuation, double *fall_time, double *occupied, double *virus_kills, double *wishlist, double *clear_location, double *clear_pill) {
+	torch::NoGradGuard g;
+	bool was_training = (**net).is_training();
+	(**net).train(false);
+
+	auto out = (*net)->forward(batch->in);
+
+	tensorcpy(priors        , out.priors        );
+	tensorcpy(valuation     , out.valuation     );
+	tensorcpy(fall_time     , out.fall_time     );
+	tensorcpy(occupied      , out.occupied      );
+	tensorcpy(virus_kills   , out.virus_kills   );
+	tensorcpy(wishlist      , out.wishlist      );
+	tensorcpy(clear_location, out.clear_location);
+	tensorcpy(clear_pill    , out.clear_pill    );
+
+	(**net).train(was_training);
+}
+
 void detailed_loss(Net *net, double *out, Batch *batch) {
 	torch::NoGradGuard g;
 	bool was_training = (**net).is_training();
 	(**net).train(false); // don't want to accidentally teach our BatchNorm layers about our test vectors...
-	auto loss = detailed_loss(*net, *batch).to(torch::kCPU);
-	tensorcpy(out, loss);
+	tensorcpy(out, detailed_loss(*net, *batch));
 	(**net).train(was_training);
 }
 
