@@ -1,10 +1,11 @@
 module Nurse.Sveta.Cairo (
 	initMath, bottleSizeRecommendation, heatmapSizeRecommendation,
-	heatmap01,
+	heatmap01, heatmapDyn, heatmapRange, heatmapWith,
 	bottleWithLookahead, bottle, bottleMaybeLookahead,
-	bottleOutline, bottleContent, lookahead,
-	fitText, fitTexts, TextRequest(..),
+	bottleOutline, bottleContent, lookahead, lookaheadContent,
 	pill, cell, setColor,
+	fitText, fitTexts, TextRequest(..),
+	HeatmapOptions(..), heatmapOptions01, heatmapOptionsDyn, heatmapOptionsDyn', heatmapOptionsRange,
 	) where
 
 import Control.Applicative
@@ -15,11 +16,13 @@ import Data.Monoid
 import GI.Cairo.Render hiding (RectangleInt(..))
 import GI.Cairo.Render.Matrix (Matrix(..))
 import Dr.Mario.Model
+import GHC.Stack
+import Numeric
 import Nurse.Sveta.Util
 
 -- | Under normal circumstances, cairo coordinates are (0,0) at the top left,
 -- with x increasing to the right and y increasing down. This converts to (0,0)
--- at the bottom left, with x increasing to the right and y increasing down.
+-- at the bottom left, with x increasing to the right and y increasing up.
 --
 -- A call to @initMath w0 h0 w1 h1@ takes converts a coordinate system in which
 -- @(w0, h0)@ is just off-screen to the bottom right to a coordinate system in
@@ -89,9 +92,20 @@ lookahead :: Int -> Int -> Color -> Color -> Render ()
 lookahead w h = lookahead_ (fromIntegral w) (fromIntegral h) (xMidFromWidth w)
 
 lookahead_ :: Double -> Double -> Double -> Color -> Color -> Render ()
-lookahead_ w h xMid l r = do
-	cell  xMid    (h+1.5) (Occupied l West)
-	cell (xMid+1) (h+1.5) (Occupied r East)
+lookahead_ w h xMid l r = lookaheadContent_ w h xMid (PillContent Horizontal l r)
+
+-- | width, height, content
+lookaheadContent :: Int -> Int -> PillContent -> Render ()
+lookaheadContent w h = lookaheadContent_ (fromIntegral w) (fromIntegral h) (xMidFromWidth w)
+
+lookaheadContent_ :: Double -> Double -> Double -> PillContent -> Render ()
+lookaheadContent_ w h xMid pc = case orientation pc of
+	Horizontal -> do
+		cell  xMid      (h+1.5) (Occupied (bottomLeftColor pc) West )
+		cell (xMid+1  ) (h+1.5) (Occupied (     otherColor pc) East )
+	Vertical -> do
+		cell (xMid+0.5) (h+1  ) (Occupied (bottomLeftColor pc) South)
+		cell (xMid+0.5) (h+2  ) (Occupied (     otherColor pc) North)
 
 pill :: Pill -> Render ()
 pill Pill
@@ -189,17 +203,22 @@ gradientStops = tail [undefined
 	, (0.78, 0.78, 0.98)
 	]
 
-gradient :: Double -> Render ()
-gradient n
+bwGradient :: HasCallStack => Double -> Render ()
+bwGradient n
 	| n <= 0 = setSourceRGB 0 0 0
 	| n >= 1 = setSourceRGB 1 1 1
-	| otherwise = setSourceRGB (m*r + m'*r') (m*g + m'*g') (m*b + m'*b')
-	where
+	| otherwise = unsafeGradient n
+
+saturatingGradient :: HasCallStack => Double -> Render ()
+saturatingGradient = unsafeGradient . max 0 . min 1
+
+unsafeGradient :: HasCallStack => Double -> Render ()
+unsafeGradient n = setSourceRGB (m*r + m'*r') (m*g + m'*g') (m*b + m'*b') where
 	segments = fromIntegral (length gradientStops) - 1
 	(d, m_) = n `divMod'` recip segments
 	m' = segments*m_
 	m = 1-m'
-	(r, g, b):(r', g', b'):_ = drop d gradientStops
+	(r, g, b):(r', g', b'):_ = drop d (gradientStops ++ repeat (last gradientStops))
 
 neutral :: Render ()
 neutral = setSourceRGB 0.8 0.8 0.8
@@ -213,27 +232,100 @@ heatmapSizeRecommendation = fmap succ . bottleSizeRecommendation
 -- given list, which should all be in the range [0,1] and at unique positions
 -- that are in-bounds for the board. A legend will be placed at the top.
 heatmap01 :: Board -> [(Position, Double)] -> Render ()
-heatmap01 b heat = do
+heatmap01 = heatmapWith heatmapOptions01
+
+-- | Render a board with some colored background indicating the numbers in the
+-- given list, which should all be at unique positions that are in-bounds for
+-- the board. The minimum and maximum numbers are used to create a gradient,
+-- and a legend will be placed at the top with rounded versions of the minimum
+-- and maximum.
+heatmapDyn :: Board -> [(Position, Double)] -> Render ()
+heatmapDyn b heat = heatmapWith (heatmapOptionsDyn heat) b heat
+
+-- | Render a board with some colored background indicating the numbers in the
+-- given list, which should all be between the first and second arguments and
+-- at unique positions that are in-bounds for the board. A legend labeled by
+-- rounded versions of the first two inputs will be placed at the top.
+heatmapRange :: Double -> Double -> Board -> [(Position, Double)] -> Render ()
+heatmapRange lo hi = heatmapWith (heatmapOptionsRange lo hi)
+
+-- | Render a board with some colored background indicating the numbers in the
+-- given list. They should all be at unique positions that are in-bounds for
+-- the board. See 'HeatmapOptions' for other constraints the caller is expected
+-- to guarantee.
+heatmapWith :: HeatmapOptions -> Board -> [(Position, Double)] -> Render ()
+heatmapWith ho b heat = do
 	rectangle 0 0 w h
 	neutral
 	fill
 	for_ heat $ \(Position x y, n) -> do
 		rectangle (fromIntegral x+1) (fromIntegral y+1) 1 1
-		gradient n
+		hoGradient ho (rescale n)
 		fill
-	withLinearPattern 1.1 h (w-1.1) h $ \pat -> do
-		forZipWithM_ [0..] gradientStops $ \i (r, g, b) ->
-			patternAddColorStopRGB pat (i / fromIntegral (length gradientStops - 1)) r g b
-		rectangle 1.1 (h-0.75) (w-2.2) 0.5
-		setSource pat
-		fill
-	fitTexts $ tail [undefined
-		, TextRequest { trx = 0  , try = h-1, trw = 1, trh = 1, trText = "0" }
-		, TextRequest { trx = w-1, try = h-1, trw = 1, trh = 1, trText = "1" }
-		]
+	for_ (hoLegendLabels ho) $ \(l, r) -> do
+		let skip = 1.5*hoPadding ho + hoLabelWidth ho
+		withLinearPattern skip h (w-skip) h $ \pat -> do
+			forZipWithM_ [0..] gradientStops $ \i (r, g, b) ->
+				patternAddColorStopRGB pat (i / fromIntegral (length gradientStops - 1)) r g b
+			rectangle skip (h-0.75) (w-2*skip) 0.5
+			setSource pat
+			fill
+		setSourceRGB 0 0 0
+		fitTexts $ tail [undefined
+			, TextRequest { trx =                   0.5*hoPadding ho, try = h-1, trw = hoLabelWidth ho, trh = 1, trText = l }
+			, TextRequest { trx = w-hoLabelWidth ho-0.5*hoPadding ho, try = h-1, trw = hoLabelWidth ho, trh = 1, trText = r }
+			]
 	bottle b
 	where
 	(fromIntegral -> w, fromIntegral -> h) = heatmapSizeRecommendation b
+	rescale = case hoRescale ho of
+		Nothing -> id
+		Just (lo, hi)
+			| lo >= hi -> const 0.5
+			| otherwise -> \n -> (n-lo) / (hi-lo)
+
+data HeatmapOptions = HeatmapOptions
+	{ hoRescale :: Maybe (Double, Double) -- ^ the 'hoGradient' generally clips its input to the range [0, 1]; if this is a 'Just', the inputs will be linearly scaled from the given range before 'hoGradient' is called
+	, hoGradient :: Double -> Render () -- ^ an action that sets the background color for a given number
+	, hoLegendLabels :: Maybe (String, String) -- ^ if this is a 'Just', a legend with the given labels will be drawn
+	, hoPadding :: Double -- ^ this much space will be left between elements in the legend row
+	, hoLabelWidth :: Double -- ^ labels will be fit into rectangles of height 1 and the given width at the top left and top right
+	}
+
+-- | Suitable options for when all your numbers are in the range [0, 1].
+heatmapOptions01 :: HeatmapOptions
+heatmapOptions01 = HeatmapOptions
+	{ hoRescale = Nothing
+	, hoGradient = bwGradient
+	, hoPadding = 0.5
+	, hoLabelWidth = 1
+	, hoLegendLabels = Just ("0", "1")
+	}
+
+-- | Suitable options for when you're not sure what range your numbers will be in.
+heatmapOptionsDyn :: [(Position, Double)] -> HeatmapOptions
+heatmapOptionsDyn = heatmapOptionsDyn' . map snd
+
+-- | Suitable options for when you're not sure what range your numbers will be
+-- in and don't want to pre-commit to their positions.
+heatmapOptionsDyn' :: [Double] -> HeatmapOptions
+heatmapOptionsDyn' = \case
+	[] -> heatmapOptions01
+	ns -> heatmapOptionsRange (minimum ns) (maximum ns)
+
+-- | Suitable options for when your numbers are all in a specific range.
+heatmapOptionsRange :: Double -> Double -> HeatmapOptions
+heatmapOptionsRange lo hi
+	| 0 <= lo && lo <= epsilon && 1-epsilon <= hi && hi <= 1 = heatmapOptions01
+	| hi < lo = heatmapOptionsRange hi lo
+	| otherwise = HeatmapOptions
+		{ hoRescale = Just (lo, hi)
+		, hoGradient = saturatingGradient
+		, hoPadding = 0.5
+		, hoLabelWidth = 2
+		, hoLegendLabels = Just (showEFloat (Just 2) lo "", showEFloat (Just 2) hi "")
+		}
+	where epsilon = 0.01
 
 data TextRequest = TextRequest
 	{ trx, try, trw, trh :: Double

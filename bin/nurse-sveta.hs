@@ -961,12 +961,12 @@ logVisualization log rng sc net dir category historySize = do
 		let (w, h) = heatmapSizeRecommendation (hstBoard hst)
 		    [wi, hi] = (scale*) <$> [w, h]
 		    [wd, hd] = fromIntegral <$> [w, h]
+		    wb = width  (hstBoard hst)
+		    hb = height (hstBoard hst)
 		    rotatedPCs = iterate (`rotateContent` Clockwise) (uncurry launchContent (hstLookahead hst))
 		    outPriorsSum_ = sum
 		    	[ niPriors netOut V.! rot V.! x V.! y
-		    	| rot <- [0..3]
-		    	, x <- [0..width  (hstBoard hst)-1]
-		    	, y <- [0..height (hstBoard hst)-1]
+		    	| rot <- [0..3], x <- [0..wb-1], y <- [0..hb-1]
 		    	, Pill (rotatedPCs !! rot) (Position x y) `HM.member` hstPriors hst
 		    	]
 		    outPriorsSum = if outPriorsSum_ == 0 then 1 else outPriorsSum_
@@ -974,31 +974,38 @@ logVisualization log rng sc net dir category historySize = do
 		G.withImageSurface G.FormatRGB24 (4*wi) (3*hi) $ \img -> do
 			G.renderWith img $ do
 				initMath (4*wi) (3*hi) (4*wd) (3*hd)
+				let priorsLo = minimum . fmap minimum . fmap (fmap minimum) $ niPriors netOut
+				    priorsHi = maximum . fmap maximum . fmap (fmap maximum) $ niPriors netOut
 				for_ [0..3] $ \roti -> do
 					let correctPC = rotatedPCs !! roti
 					    rotd = fromIntegral roti
 					G.save
 					G.translate (rotd*wd) 0
+					heatmapRange priorsLo priorsHi (hstBoard hst)
+						[ (Position x y, niPriors netOut V.! roti V.! x V.! y)
+						| x <- [0..wb-1], y <- [0..hb-1]
+						]
+					lookaheadContent wb hb correctPC
 					G.translate 0 hd
 					heatmap01 (hstBoard hst)
 						[ (pos, niPriors netOut V.! roti V.! x V.! y / outPriorsSum)
-						| x <- [0..width  (hstBoard hst)-1]
-						, y <- [0..height (hstBoard hst)-1]
-						, let pos = Position x y
+						| x <- [0..wb-1], y <- [0..hb-1], let pos = Position x y
 						, Pill correctPC pos `HM.member` hstPriors hst
 						]
+					lookaheadContent wb hb correctPC
 					G.translate 0 hd
 					heatmap01 (hstBoard hst)
 						[ (pos, prior)
 						| (Pill pc pos, prior) <- HM.toList (hstPriors hst)
 						, pc == correctPC
 						]
+					lookaheadContent wb hb correctPC
 					G.restore
 			createDirectoryIfMissing True runtimeDir
 			now <- Time.getCurrentTime
 			let fp = runtimeDir </> show now ++ "-" ++ show ix <.> "png"
 			G.surfaceWriteToPNG img fp
-			schedule log (ImagePath "visualization/priors" fp)
+			schedule log (ImagePath ("visualization/" ++ category ++ "/priors") fp)
 	where scale=16
 
 data LogMessage
