@@ -197,8 +197,8 @@ gradient n
 	where
 	segments = fromIntegral (length gradientStops) - 1
 	(d, m_) = n `divMod'` recip segments
-	m = segments*m_
-	m' = 1-m
+	m' = segments*m_
+	m = 1-m'
 	(r, g, b):(r', g', b'):_ = drop d gradientStops
 
 neutral :: Render ()
