@@ -198,7 +198,7 @@ evaluateFinalState gs = do
 	let origViruses = originalVirusCount gs
 	pure $ if clearedViruses == origViruses
 		then winningValuation origViruses (fromIntegral frames)
-		else losingValuation  origViruses (fromIntegral clearedViruses)
+		else  losingValuation origViruses (fromIntegral clearedViruses)
 
 -- We should probably avoid looking at RNG moves in the same order every time,
 -- as that could introduce a bias. So we toss a tiny tiny bit of randomness
