@@ -246,30 +246,30 @@ heatmapSizeRecommendation = fmap succ . bottleSizeRecommendation
 -- | Good for when all your numbers are in the range [0,1]. The gradient used
 -- for this makes it especially easy to spot values that are exactly 0 or
 -- exactly 1.
-heatmap01 :: Board -> [(Position, Double)] -> Render ()
+heatmap01 :: Board -> PillContent -> [(Position, Double)] -> Render ()
 heatmap01 = heatmapWith heatmapOptions01
 
 -- | Good for distributions. The gradient used makes it easy to spot values
 -- that are exactly 0, but doesn't treat values equal to the upper bound
 -- specially.
-heatmap0Max :: Double -> Board -> [(Position, Double)] -> Render ()
+heatmap0Max :: Double -> Board -> PillContent -> [(Position, Double)] -> Render ()
 heatmap0Max = heatmapWith . heatmapOptions0Max
 
 -- | Good when you don't really know ahead of time how big your numbers will
 -- be. Prints rounded versions of the min and max in the legend.
-heatmapDyn :: Board -> [(Position, Double)] -> Render ()
-heatmapDyn b heat = heatmapWith (heatmapOptionsDyn heat) b heat
+heatmapDyn :: Board -> PillContent -> [(Position, Double)] -> Render ()
+heatmapDyn b pc heat = heatmapWith (heatmapOptionsDyn heat) b pc heat
 
 -- | Good for when you know what you want the smallest and largest values in
 -- your legend to be. The bounds are rounded before being printed in the
 -- legend.
-heatmapRange :: Double -> Double -> Board -> [(Position, Double)] -> Render ()
+heatmapRange :: Double -> Double -> Board -> PillContent -> [(Position, Double)] -> Render ()
 heatmapRange lo hi = heatmapWith (heatmapOptionsRange lo hi)
 
 -- | See 'HeatmapOptions' below for more on exactly what knobs you can tweak
 -- here.
-heatmapWith :: HeatmapOptions -> Board -> [(Position, Double)] -> Render ()
-heatmapWith ho b heat = do
+heatmapWith :: HeatmapOptions -> Board -> PillContent -> [(Position, Double)] -> Render ()
+heatmapWith ho b pc heat = do
 	rectangle 0 0 w h
 	neutral
 	fill
@@ -291,6 +291,7 @@ heatmapWith ho b heat = do
 			, TextRequest { trx = w-hoLabelWidth ho-0.5*hoPadding ho, try = h-1, trw = hoLabelWidth ho, trh = 1, trText = r }
 			]
 	bottle b
+	lookaheadContent (width b) (height b) pc
 	where
 	(fromIntegral -> w, fromIntegral -> h) = heatmapSizeRecommendation b
 	rescale = case hoRescale ho of

@@ -988,21 +988,18 @@ logVisualization log rng sc net dir category historySize = do
 					let rotd = fromIntegral roti
 					G.save
 					G.translate (rotd*wd) 0
-					heatmapRange outPriorsLo outPriorsHi (hstBoard hst) rotPriors
-					lookaheadContent wb hb pc
+					heatmapRange outPriorsLo outPriorsHi (hstBoard hst) pc rotPriors
 					G.translate 0 hd
-					heatmap0Max allPriorsHi (hstBoard hst)
+					heatmap0Max allPriorsHi (hstBoard hst) pc
 						[ (pos, p / reachablePriorsSum)
 						| (pos, p) <- reachablePriors !! roti
 						]
-					lookaheadContent wb hb pc
 					G.translate 0 hd
-					heatmap0Max allPriorsHi (hstBoard hst)
+					heatmap0Max allPriorsHi (hstBoard hst) pc
 						[ (pos, prior)
 						| (Pill pc' pos, prior) <- HM.toList (hstPriors hst)
 						, pc' == pc
 						]
-					lookaheadContent wb hb pc
 					G.restore
 			createDirectoryIfMissing True runtimeDir
 			now <- Time.getCurrentTime
