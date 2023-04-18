@@ -1,11 +1,21 @@
 module Nurse.Sveta.Cairo (
-	initMath, bottleSizeRecommendation, heatmapSizeRecommendation,
-	heatmap01, heatmapDyn, heatmapRange, heatmapWith,
+	initMath, bottleSizeRecommendation,
 	bottleWithLookahead, bottle, bottleMaybeLookahead,
 	bottleOutline, bottleContent, lookahead, lookaheadContent,
 	pill, cell, setColor,
 	fitText, fitTexts, TextRequest(..),
-	HeatmapOptions(..), heatmapOptions01, heatmapOptionsDyn, heatmapOptionsDyn', heatmapOptionsRange,
+	-- * Heatmaps
+	--
+	-- | Heatmaps display a board with a colored background to convey numerical
+	-- information associated with positions on the board. When you supply
+	-- numerical information, all the numbers should be at unique board
+	-- positions that are in-bounds for the board. (This is not checked.)
+	-- Heatmaps also come with a legend describing the connection between
+	-- colors and numbers.
+	heatmapSizeRecommendation,
+	heatmap01, heatmap0Max, heatmapDyn, heatmapRange, heatmapWith,
+	HeatmapOptions(..), heatmapOptions01, heatmapOptions0Max, heatmapOptionsDyn, heatmapOptionsDyn', heatmapOptionsRange,
+	bwGradient, saturatingGradient, bSaturatingGradient,
 	) where
 
 import Control.Applicative
@@ -212,6 +222,11 @@ bwGradient n
 saturatingGradient :: HasCallStack => Double -> Render ()
 saturatingGradient = unsafeGradient . max 0 . min 1
 
+bSaturatingGradient :: HasCallStack => Double -> Render ()
+bSaturatingGradient n
+	| n <= 0 = setSourceRGB 0 0 0
+	| otherwise = unsafeGradient $ min 1 n
+
 unsafeGradient :: HasCallStack => Double -> Render ()
 unsafeGradient n = setSourceRGB (m*r + m'*r') (m*g + m'*g') (m*b + m'*b') where
 	segments = fromIntegral (length gradientStops) - 1
@@ -228,31 +243,31 @@ neutral = setSourceRGB 0.8 0.8 0.8
 heatmapSizeRecommendation :: Board -> (Int, Int)
 heatmapSizeRecommendation = fmap succ . bottleSizeRecommendation
 
--- | Render a board with some colored background indicating the numbers in the
--- given list, which should all be in the range [0,1] and at unique positions
--- that are in-bounds for the board. A legend will be placed at the top.
+-- | Good for when all your numbers are in the range [0,1]. The gradient used
+-- for this makes it especially easy to spot values that are exactly 0 or
+-- exactly 1.
 heatmap01 :: Board -> [(Position, Double)] -> Render ()
 heatmap01 = heatmapWith heatmapOptions01
 
--- | Render a board with some colored background indicating the numbers in the
--- given list, which should all be at unique positions that are in-bounds for
--- the board. The minimum and maximum numbers are used to create a gradient,
--- and a legend will be placed at the top with rounded versions of the minimum
--- and maximum.
+-- | Good for distributions. The gradient used makes it easy to spot values
+-- that are exactly 0, but doesn't treat values equal to the upper bound
+-- specially.
+heatmap0Max :: Double -> Board -> [(Position, Double)] -> Render ()
+heatmap0Max = heatmapWith . heatmapOptions0Max
+
+-- | Good when you don't really know ahead of time how big your numbers will
+-- be. Prints rounded versions of the min and max in the legend.
 heatmapDyn :: Board -> [(Position, Double)] -> Render ()
 heatmapDyn b heat = heatmapWith (heatmapOptionsDyn heat) b heat
 
--- | Render a board with some colored background indicating the numbers in the
--- given list, which should all be between the first and second arguments and
--- at unique positions that are in-bounds for the board. A legend labeled by
--- rounded versions of the first two inputs will be placed at the top.
+-- | Good for when you know what you want the smallest and largest values in
+-- your legend to be. The bounds are rounded before being printed in the
+-- legend.
 heatmapRange :: Double -> Double -> Board -> [(Position, Double)] -> Render ()
 heatmapRange lo hi = heatmapWith (heatmapOptionsRange lo hi)
 
--- | Render a board with some colored background indicating the numbers in the
--- given list. They should all be at unique positions that are in-bounds for
--- the board. See 'HeatmapOptions' for other constraints the caller is expected
--- to guarantee.
+-- | See 'HeatmapOptions' below for more on exactly what knobs you can tweak
+-- here.
 heatmapWith :: HeatmapOptions -> Board -> [(Position, Double)] -> Render ()
 heatmapWith ho b heat = do
 	rectangle 0 0 w h
@@ -300,6 +315,17 @@ heatmapOptions01 = HeatmapOptions
 	, hoPadding = 0.5
 	, hoLabelWidth = 1
 	, hoLegendLabels = Just ("0", "1")
+	}
+
+-- | Suitable options for probability distributions. Supply the largest
+-- probability as the argument.
+heatmapOptions0Max :: Double -> HeatmapOptions
+heatmapOptions0Max p = HeatmapOptions
+	{ hoRescale = Just (0, p)
+	, hoGradient = bSaturatingGradient
+	, hoPadding = 0.5
+	, hoLabelWidth = 2
+	, hoLegendLabels = Just ("0", showEFloat (Just 2) p "")
 	}
 
 -- | Suitable options for when you're not sure what range your numbers will be in.

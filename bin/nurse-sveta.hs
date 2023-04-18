@@ -965,42 +965,44 @@ logVisualization log rng sc net dir category historySize = do
 		    wb = width  (hstBoard hst)
 		    hb = height (hstBoard hst)
 		    rotatedPCs = iterate (`rotateContent` Clockwise) (uncurry launchContent (hstLookahead hst))
-		    outPriorsSum_ = sum
-		    	[ niPriors netOut V.! rot V.! x V.! y
-		    	| rot <- [0..3], x <- [0..wb-1], y <- [0..hb-1]
-		    	, Pill (rotatedPCs !! rot) (Position x y) `HM.member` hstPriors hst
+		    outPriors = zip3 [0..] rotatedPCs
+		    	[ [ (Position x y, niPriors netOut V.! roti V.! x V.! y)
+		    	  -- horizontal placements can't occur in the last column
+		    	  | x <- [0..wb - 2 + (roti `rem` 2)], y <- [0..hb-1]
+		    	  ]
+		    	| roti <- [0..3]
 		    	]
-		    outPriorsSum = if outPriorsSum_ == 0 then 1 else outPriorsSum_
+		    reachablePriors = [[p | p <- ps, Pill pc (fst p) `HM.member` hstPriors hst] | (_, pc, ps) <- outPriors]
+		    reachablePriorsSum_ = sum (reachablePriors >>= map snd)
+		    reachablePriorsSum = if reachablePriorsSum_ == 0 then 1 else reachablePriorsSum_
+		    outPriorsLo = minimum [p | (_, _, ps) <- outPriors, (_, p) <- ps]
+		    outPriorsHi = maximum [p | (_, _, ps) <- outPriors, (_, p) <- ps]
+		    allPriorsHi = max
+		    	(if null (hstPriors hst) then 0 else maximum (hstPriors hst))
+		    	(maximum [p / reachablePriorsSum | ps <- reachablePriors, (_, p) <- ps])
 
 		G.withImageSurface G.FormatRGB24 (4*wi) (3*hi) $ \img -> do
 			G.renderWith img $ do
 				initMath (4*wi) (3*hi) (4*wd) (3*hd)
-				let priorsLo = minimum . fmap minimum . fmap (fmap minimum) $ niPriors netOut
-				    priorsHi = maximum . fmap maximum . fmap (fmap maximum) $ niPriors netOut
-				for_ [0..3] $ \roti -> do
-					let correctPC = rotatedPCs !! roti
-					    rotd = fromIntegral roti
+				for_ outPriors $ \(roti, pc, rotPriors) -> do
+					let rotd = fromIntegral roti
 					G.save
 					G.translate (rotd*wd) 0
-					heatmapRange priorsLo priorsHi (hstBoard hst)
-						[ (Position x y, niPriors netOut V.! roti V.! x V.! y)
-						| x <- [0..wb-1], y <- [0..hb-1]
-						]
-					lookaheadContent wb hb correctPC
+					heatmapRange outPriorsLo outPriorsHi (hstBoard hst) rotPriors
+					lookaheadContent wb hb pc
 					G.translate 0 hd
-					heatmap01 (hstBoard hst)
-						[ (pos, niPriors netOut V.! roti V.! x V.! y / outPriorsSum)
-						| x <- [0..wb-1], y <- [0..hb-1], let pos = Position x y
-						, Pill correctPC pos `HM.member` hstPriors hst
+					heatmap0Max allPriorsHi (hstBoard hst)
+						[ (pos, p / reachablePriorsSum)
+						| (pos, p) <- reachablePriors !! roti
 						]
-					lookaheadContent wb hb correctPC
+					lookaheadContent wb hb pc
 					G.translate 0 hd
-					heatmap01 (hstBoard hst)
+					heatmap0Max allPriorsHi (hstBoard hst)
 						[ (pos, prior)
-						| (Pill pc pos, prior) <- HM.toList (hstPriors hst)
-						, pc == correctPC
+						| (Pill pc' pos, prior) <- HM.toList (hstPriors hst)
+						, pc' == pc
 						]
-					lookaheadContent wb hb correctPC
+					lookaheadContent wb hb pc
 					G.restore
 			createDirectoryIfMissing True runtimeDir
 			now <- Time.getCurrentTime
