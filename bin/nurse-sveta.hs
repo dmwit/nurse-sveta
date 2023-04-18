@@ -896,6 +896,7 @@ trainingThread log netUpdate ref sc = do
 	    			]
 	    	when (ten `mod` tensorsPerVisualization < tensorsPerTrainI) $ do
 	    		logVisualization log rng sc net dir "train" visualizationHistoryTrain
+	    		logVisualization log rng sc net dir "test" visualizationHistoryTrain
 	    	let ten' = ten+tensorsPerTrainI
 	    	atomically . modifyTVar ref $ \tts -> tts
 	    		{ ttsGenerationHundredths = ssIncBy (ttsGenerationHundredths tts) 100
