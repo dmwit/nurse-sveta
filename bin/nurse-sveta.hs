@@ -46,6 +46,7 @@ import Util
 import qualified Data.ByteString as BS
 import qualified Data.HashMap.Strict as HM
 import qualified Data.IntMap as IM
+import qualified Data.Map as M
 import qualified Data.Text as T
 import qualified Data.Time as Time
 import qualified Data.Vector as V
@@ -957,14 +958,17 @@ logVisualization log rng sc net dir category historySize = do
 	netIn <- batchLoad [dir </> subdirectory (Tensors category) (show ix <.> "nst")]
 	[netOut] <- netIntrospect net netIn
 	mhst <- decodeFileLoop (dataDir </> subdirectory (Positions category) (show ix <.> "json"))
+	now <- Time.getCurrentTime
 
 	for_ mhst $ \hst -> do
 		let (w, h) = heatmapSizeRecommendation (hstBoard hst)
+		    scale = 16
 		    [wi, hi] = (scale*) <$> [w, h]
 		    [wd, hd] = fromIntegral <$> [w, h]
 		    wb = width  (hstBoard hst)
 		    hb = height (hstBoard hst)
-		    rotatedPCs = iterate (`rotateContent` Clockwise) (uncurry launchContent (hstLookahead hst))
+		    initialPC = uncurry launchContent (hstLookahead hst)
+		    rotatedPCs = iterate (`rotateContent` Clockwise) initialPC
 		    outPriors = zip3 [0..] rotatedPCs
 		    	[ [ (Position x y, niPriors netOut V.! roti V.! x V.! y)
 		    	  -- horizontal placements can't occur in the last column
@@ -981,32 +985,39 @@ logVisualization log rng sc net dir category historySize = do
 		    	(if null (hstPriors hst) then 0 else maximum (hstPriors hst)) -- TODO: scale hstPriors by 0.5 when bottomLeftColor == otherColor
 		    	(maximum [p / reachablePriorsSum | ps <- reachablePriors, (_, p) <- ps])
 
-		G.withImageSurface G.FormatRGB24 (4*wi) (3*hi) $ \img -> do
-			G.renderWith img $ do
-				initMath (4*wi) (3*hi) (4*wd) (3*hd)
-				for_ outPriors $ \(roti, pc, rotPriors) -> do
-					let rotd = fromIntegral roti
-					G.save
-					G.translate (rotd*wd) 0
-					heatmapRange outPriorsLo outPriorsHi (hstBoard hst) pc rotPriors
-					G.translate 0 hd
-					heatmap0Max allPriorsHi (hstBoard hst) pc
-						[ (pos, p / reachablePriorsSum)
-						| (pos, p) <- reachablePriors !! roti
-						]
-					G.translate 0 hd
-					heatmap0Max allPriorsHi (hstBoard hst) pc
-						[ (pos, prior)
-						| (Pill pc' pos, prior) <- HM.toList (hstPriors hst)
-						, pc' == pc
-						]
-					G.restore
-			createDirectoryIfMissing True runtimeDir
-			now <- Time.getCurrentTime
-			let fp = runtimeDir </> show now ++ "-" ++ show ix <.> "png"
-			G.surfaceWriteToPNG img fp
-			schedule log (ImagePath ("visualization/" ++ category ++ "/priors") fp)
-	where scale=16
+		    logHeatmapGrid wg hg nm_ draw = G.withImageSurface G.FormatRGB24 (wg*wi) (hg*hi) $ \img -> do
+		    	let nm = "visualization/" ++ category ++ "/" ++ nm_
+		    	    dir = runtimeDir </> dirEncode nm
+		    	    fp = dir </> show now ++ "-" ++ show ix <.> "png"
+		    	G.renderWith img (initMath (wg*wi) (hg*hi) (fromIntegral wg*wd) (fromIntegral hg*hd) >> draw)
+		    	createDirectoryIfMissing True dir
+		    	G.surfaceWriteToPNG img fp
+		    	schedule log (ImagePath nm fp)
+
+		logHeatmapGrid 4 3 "priors" . for_ outPriors $ \(roti, pc, rotPriors) -> do
+			G.save
+			G.translate (fromIntegral roti*wd) 0
+			heatmapRange outPriorsLo outPriorsHi (hstBoard hst) pc rotPriors
+			G.translate 0 hd
+			heatmap0Max allPriorsHi (hstBoard hst) pc
+				[ (pos, p / reachablePriorsSum)
+				| (pos, p) <- reachablePriors !! roti
+				]
+			G.translate 0 hd
+			heatmap0Max allPriorsHi (hstBoard hst) pc
+				[ (pos, prior)
+				| (Pill pc' pos, prior) <- HM.toList (hstPriors hst)
+				, pc' == pc
+				]
+			G.restore
+
+		logHeatmapGrid 1 2 "virus kills" $ do
+			heatmap0Max
+				(maximum . fmap maximum . niVirusKills $ netOut)
+				(hstBoard hst) initialPC
+				[(Position x y, niVirusKills netOut V.! x V.! y) | x <- [0..wb-1], y <- [0..hb-1]]
+			G.translate 0 hd
+			heatmap01 (hstBoard hst) initialPC . M.assocs . fmap realToFrac . pVirusKillWeight . hstPrediction $ hst
 
 data LogMessage
 	= Iteration Integer
