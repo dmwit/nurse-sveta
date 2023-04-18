@@ -978,7 +978,7 @@ logVisualization log rng sc net dir category historySize = do
 		    outPriorsLo = minimum [p | (_, _, ps) <- outPriors, (_, p) <- ps]
 		    outPriorsHi = maximum [p | (_, _, ps) <- outPriors, (_, p) <- ps]
 		    allPriorsHi = max
-		    	(if null (hstPriors hst) then 0 else maximum (hstPriors hst))
+		    	(if null (hstPriors hst) then 0 else maximum (hstPriors hst)) -- TODO: scale hstPriors by 0.5 when bottomLeftColor == otherColor
 		    	(maximum [p / reachablePriorsSum | ps <- reachablePriors, (_, p) <- ps])
 
 		G.withImageSurface G.FormatRGB24 (4*wi) (3*hi) $ \img -> do
