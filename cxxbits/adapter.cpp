@@ -17,7 +17,7 @@ const int64_t OUTPUT_LAYERS = ROTATIONS + 1 + 1 + PILLCONTENTS + 1 + 1;
 const int64_t OUTPUT_TYPES = 8;
 const int64_t OUTPUT_SCALARS = PILLCONTENTS+2; // clear pills, valuation, fall time
 
-const int64_t FILTERS = 32;
+const int64_t FILTERS = 64;
 const int64_t RESIDUAL_BLOCKS = 20;
 const double LEAKAGE = 0.01;
 
