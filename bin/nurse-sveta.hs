@@ -969,6 +969,7 @@ logVisualization log rng sc net dir category historySize = do
 		    hb = height (hstBoard hst)
 		    initialPC = uncurry launchContent (hstLookahead hst)
 		    rotatedPCs = iterate (`rotateContent` Clockwise) initialPC
+		    onPositions f = [(Position x y, f x y) | x <- [0..wb-1], y <- [0..hb-1]]
 		    outPriors = zip3 [0..] rotatedPCs
 		    	[ [ (Position x y, niPriors netOut V.! roti V.! x V.! y)
 		    	  -- horizontal placements can't occur in the last column
@@ -1011,13 +1012,15 @@ logVisualization log rng sc net dir category historySize = do
 				]
 			G.restore
 
-		logHeatmapGrid 1 2 "virus kills" $ do
-			heatmap0Max
-				(maximum . fmap maximum . niVirusKills $ netOut)
-				(hstBoard hst) initialPC
-				[(Position x y, niVirusKills netOut V.! x V.! y) | x <- [0..wb-1], y <- [0..hb-1]]
+		logHeatmapGrid 1 3 "virus kills" $ do
+			let outKills = onPositions $ \x y -> niVirusKills netOut V.! x V.! y
+			    outKillsHi = maximum . fmap maximum . niVirusKills $ netOut
+			heatmap0Max outKillsHi (hstBoard hst) initialPC outKills
 			G.translate 0 hd
-			heatmap01 (hstBoard hst) initialPC . M.assocs . fmap realToFrac . pVirusKillWeight . hstPrediction $ hst
+			heatmap01 (hstBoard hst) initialPC outKills
+			G.translate 0 hd
+			heatmap01 (hstBoard hst) initialPC . onPositions $ \x y ->
+				realToFrac . M.findWithDefault 0 (Position x y) . pVirusKillWeight . hstPrediction $ hst
 
 data LogMessage
 	= Iteration Integer
