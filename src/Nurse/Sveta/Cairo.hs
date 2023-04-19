@@ -2,7 +2,7 @@ module Nurse.Sveta.Cairo (
 	initMath, bottleSizeRecommendation,
 	bottleWithLookahead, bottle, bottleMaybeLookahead,
 	bottleOutline, bottleContent, lookahead, lookaheadContent,
-	pill, cell, setColor,
+	pill, cell, setColor, neutral,
 	fitText, fitTexts, TextRequest(..),
 	-- * Heatmaps
 	--
@@ -287,8 +287,8 @@ heatmapWith ho b pc heat = do
 			fill
 		setSourceRGB 0 0 0
 		fitTexts $ tail [undefined
-			, TextRequest { trx =                   0.5*hoPadding ho, try = h-1, trw = hoLabelWidth ho, trh = 1, trText = l }
-			, TextRequest { trx = w-hoLabelWidth ho-0.5*hoPadding ho, try = h-1, trw = hoLabelWidth ho, trh = 1, trText = r }
+			, TextRequest { trX =                   0.5*hoPadding ho, trY = h-1, trW = hoLabelWidth ho, trH = 1, trText = l }
+			, TextRequest { trX = w-hoLabelWidth ho-0.5*hoPadding ho, trY = h-1, trW = hoLabelWidth ho, trH = 1, trText = r }
 			]
 	bottle b
 	lookaheadContent (width b) (height b) pc
@@ -355,7 +355,7 @@ heatmapOptionsRange lo hi
 	where epsilon = 0.01
 
 data TextRequest = TextRequest
-	{ trx, try, trw, trh :: Double
+	{ trX, trY, trW, trH :: Double
 	, trText :: String
 	} deriving (Eq, Ord, Read, Show)
 
@@ -380,7 +380,7 @@ eFromRequest = eFromRequests . pure
 eScaling :: Extents -> Double
 eScaling e = minimum . ((1/0):) $ do
 	(tr, ext) <- eTexts e
-	[trh tr / h, trw tr / textExtentsWidth ext]
+	[trH tr / h, trW tr / textExtentsWidth ext]
 	where
 	h = fontExtentsAscent (eFont e) + fontExtentsDescent (eFont e)
 
@@ -390,15 +390,15 @@ eCenter e = do
 	setSourceRGB 0 0 0
 	for_ (eTexts e) $ \(tr, te) -> do
 		moveTo
-			(trx tr - s * textExtentsXbearing te + (trw tr - s * textExtentsWidth te) / 2)
-			(try tr + (trh tr + dh) / 2)
+			(trX tr - s * textExtentsXbearing te + (trW tr - s * textExtentsWidth te) / 2)
+			(trY tr + (trH tr + dh) / 2)
 		showText (trText tr)
 	where
 	s = eScaling e
 	dh = s * (fontExtentsDescent (eFont e) - fontExtentsAscent (eFont e))
 
 fitText :: Double -> Double -> Double -> Double -> String -> Render ()
-fitText x y w h s = eFromRequest TextRequest { trx = x, try = y, trw = w, trh = h, trText = s } >>= eCenter
+fitText x y w h s = eFromRequest TextRequest { trX = x, trY = y, trW = w, trH = h, trText = s } >>= eCenter
 
 fitTexts :: [TextRequest] -> Render ()
 fitTexts = eFromRequests >=> eCenter

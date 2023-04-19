@@ -1022,6 +1022,33 @@ logVisualization log rng sc net dir category historySize = do
 			heatmap01 (hstBoard hst) initialPC . onPositions $ \x y ->
 				realToFrac . M.findWithDefault 0 (Position x y) . pVirusKillWeight . hstPrediction $ hst
 
+		logHeatmapGrid 2 2 "non-heatmaps" $ do
+			G.rectangle 0 0 20 42 >> neutral >> G.fill
+			fitTexts $ tail [undefined
+				, TextRequest { trX =  0  , trY =  0.4, trW = 8  , trH = 1.2, trText = "valuation" }
+				, TextRequest { trX =  8.4, trY =  0.4, trW = 3.2, trH = 1.2, trText = printf "%.2e" (hstValuation hst) }
+				, TextRequest { trX = 14.4, trY =  0.4, trW = 3.2, trH = 1.2, trText = printf "%.2e" (niValuation netOut) }
+				, TextRequest { trX =  0  , trY =  2.4, trW = 8  , trH = 1.2, trText = "fall time" }
+				, TextRequest { trX =  8.4, trY =  2.4, trW = 3.2, trH = 1.2, trText = show . toInteger . pFallWeight . hstPrediction $ hst }
+				, TextRequest { trX = 14.4, trY =  2.4, trW = 3.2, trH = 1.2, trText = printf "%.2f" (niFallTime netOut) }
+				, TextRequest { trX =  0  , trY = 40.4, trW = 8  , trH = 1.2, trText = "category" }
+				, TextRequest { trX =  8.4, trY = 40.4, trW = 5.2, trH = 1.2, trText = "ground truth" }
+				, TextRequest { trX = 14.4, trY = 40.4, trW = 5.2, trH = 1.2, trText = "net output" }
+				]
+			G.rectangle 12 0 2 2 >> bwGradient (hstValuation hst   ) >> G.fill
+			G.rectangle 18 0 2 2 >> bwGradient ( niValuation netOut) >> G.fill
+			forZipWithM_ [0..] [PillContent or bl o | or <- [minBound..maxBound], bl <- [minBound..maxBound], o <- [minBound..maxBound]] $ \i pc -> do
+				let blyI = 4 + 2*i; blyD = fromIntegral blyI
+				    truth = realToFrac . HM.findWithDefault 0 pc . pClearPillWeight $ hstPrediction hst
+				    predicted = HM.findWithDefault 0 pc (niClearPill netOut)
+				pill (Pill pc (Position 2 (blyI-1)))
+				fitTexts $ tail [undefined
+					, TextRequest { trX =  8.4, trY = blyD+0.4, trW = 3.2, trH = 1.2, trText = printf "%.2e" truth }
+					, TextRequest { trX = 14.4, trY = blyD+0.4, trW = 3.2, trH = 1.2, trText = printf "%.2e" predicted }
+					]
+				G.rectangle 12 blyD 2 2 >> bwGradient truth     >> G.fill
+				G.rectangle 18 blyD 2 2 >> bwGradient predicted >> G.fill
+
 data LogMessage
 	= Iteration Integer
 	| Metric String Double

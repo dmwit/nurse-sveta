@@ -407,6 +407,7 @@ data HSTensor = HSTensor
 	, hstScalars :: [Double]
 	, hstLookahead :: (Color, Color)
 	, hstPriors :: HashMap Pill Double
+	, hstValuation :: Double
 	} deriving (Eq, Ord, Read, Show, Generic, ToJSON, FromJSON)
 
 data SaveTensorsSummary = SaveTensorsSummary
@@ -495,6 +496,7 @@ saveTensors tdir jsdir i0 (b0, steps) = do
 	    			<*> pure hsScalars
 	    			<*> readIORef hsLookahead
 	    			<*> pure hsPriors
+	    			<*> pure (pFinalValuation preview)
 
 	    		encodeFile (jsdir </> show i <.> "json") hst
 	    		withCString (tdir </> show i <.> "nst") $ \path ->
