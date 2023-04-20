@@ -45,6 +45,7 @@ import Util
 
 import qualified Data.ByteString as BS
 import qualified Data.HashMap.Strict as HM
+import qualified Data.HashSet as HS
 import qualified Data.IntMap as IM
 import qualified Data.Map as M
 import qualified Data.Text as T
@@ -969,7 +970,11 @@ logVisualization log rng sc net dir category historySize = do
 		    hb = height (hstBoard hst)
 		    initialPC = uncurry launchContent (hstLookahead hst)
 		    rotatedPCs = iterate (`rotateContent` Clockwise) initialPC
-		    onPositions f = [(Position x y, f x y) | x <- [0..wb-1], y <- [0..hb-1]]
+		    pred = hstPrediction hst
+		    allPCs = [PillContent or bl o | or <- [minBound..maxBound], bl <- [minBound..maxBound], o <- [minBound..maxBound]]
+		    onPositions f = [(pos, f pos x y) | x <- [0..wb-1], y <- [0..hb-1], let pos = Position x y]
+		    onPositionsVec f = onPositions (\_ x y -> f netOut V.! x V.! y)
+		    onPositionsC f = onPositions (\pos _ _ -> realToFrac (f pos pred))
 		    outPriors = zip3 [0..] rotatedPCs
 		    	[ [ (Position x y, niPriors netOut V.! roti V.! x V.! y)
 		    	  -- horizontal placements can't occur in the last column
@@ -1013,14 +1018,12 @@ logVisualization log rng sc net dir category historySize = do
 			G.restore
 
 		logHeatmapGrid 1 3 "virus kills" $ do
-			let outKills = onPositions $ \x y -> niVirusKills netOut V.! x V.! y
-			    outKillsHi = maximum . fmap maximum . niVirusKills $ netOut
-			heatmap0Max outKillsHi (hstBoard hst) initialPC outKills
+			let outKills = onPositionsVec niVirusKills
+			heatmap0Dyn (hstBoard hst) initialPC outKills
 			G.translate 0 hd
 			heatmap01 (hstBoard hst) initialPC outKills
 			G.translate 0 hd
-			heatmap01 (hstBoard hst) initialPC . onPositions $ \x y ->
-				realToFrac . M.findWithDefault 0 (Position x y) . pVirusKillWeight . hstPrediction $ hst
+			heatmap01 (hstBoard hst) initialPC . onPositionsC $ \pos -> M.findWithDefault 0 pos . pVirusKillWeight
 
 		logHeatmapGrid 2 2 "non-heatmaps" $ do
 			G.rectangle 0 0 20 42 >> neutral >> G.fill
@@ -1029,7 +1032,7 @@ logVisualization log rng sc net dir category historySize = do
 				, TextRequest { trX =  8.4, trY =  0.4, trW = 3.2, trH = 1.2, trText = printf "%.2e" (hstValuation hst) }
 				, TextRequest { trX = 14.4, trY =  0.4, trW = 3.2, trH = 1.2, trText = printf "%.2e" (niValuation netOut) }
 				, TextRequest { trX =  0  , trY =  2.4, trW = 8  , trH = 1.2, trText = "fall time" }
-				, TextRequest { trX =  8.4, trY =  2.4, trW = 3.2, trH = 1.2, trText = show . toInteger . pFallWeight . hstPrediction $ hst }
+				, TextRequest { trX =  8.4, trY =  2.4, trW = 3.2, trH = 1.2, trText = show . toInteger $ pFallWeight pred }
 				, TextRequest { trX = 14.4, trY =  2.4, trW = 3.2, trH = 1.2, trText = printf "%.2f" (niFallTime netOut) }
 				, TextRequest { trX =  0  , trY = 40.4, trW = 8  , trH = 1.2, trText = "category" }
 				, TextRequest { trX =  8.4, trY = 40.4, trW = 5.2, trH = 1.2, trText = "ground truth" }
@@ -1037,9 +1040,9 @@ logVisualization log rng sc net dir category historySize = do
 				]
 			G.rectangle 12 0 2 2 >> bwGradient (hstValuation hst   ) >> G.fill
 			G.rectangle 18 0 2 2 >> bwGradient ( niValuation netOut) >> G.fill
-			forZipWithM_ [0..] [PillContent or bl o | or <- [minBound..maxBound], bl <- [minBound..maxBound], o <- [minBound..maxBound]] $ \i pc -> do
+			forZipWithM_ [0..] allPCs $ \i pc -> do
 				let blyI = 4 + 2*i; blyD = fromIntegral blyI
-				    truth = realToFrac . HM.findWithDefault 0 pc . pClearPillWeight $ hstPrediction hst
+				    truth = realToFrac . HM.findWithDefault 0 pc $ pClearPillWeight pred
 				    predicted = HM.findWithDefault 0 pc (niClearPill netOut)
 				pill (Pill pc (Position 2 (blyI-1)))
 				fitTexts $ tail [undefined
@@ -1048,6 +1051,34 @@ logVisualization log rng sc net dir category historySize = do
 					]
 				G.rectangle 12 blyD 2 2 >> bwGradient truth     >> G.fill
 				G.rectangle 18 blyD 2 2 >> bwGradient predicted >> G.fill
+
+		logHeatmapGrid 1 3 "final occupation" $ do
+			let outOccupied = onPositionsVec niOccupied
+			heatmap0Dyn (hstBoard hst) initialPC outOccupied
+			G.translate 0 hd
+			heatmap01 (hstBoard hst) initialPC outOccupied
+			G.translate 0 hd
+			heatmap01 (hstBoard hst) initialPC . onPositionsC $ \pos p -> if HS.member pos (pOccupied p) then 1 else 0
+
+		logHeatmapGrid (length allPCs) 2 "future placements" $ do
+			let placementHi = max
+			    	(realToFrac . maximum . (0:) . HM.elems $ pPlacementWeight pred)
+			    	(maximum . fmap maximum . fmap (fmap maximum) $ niPlacements netOut)
+			forZipWithM_ [0..] allPCs $ \i pc -> do
+				G.save
+				G.translate (i*wd) 0
+				heatmap0Max placementHi (hstBoard hst) pc $ onPositionsVec ((HM.! pc) . niPlacements)
+				G.translate 0 hd
+				heatmap0Max placementHi (hstBoard hst) pc . onPositionsC $ \pos -> HM.findWithDefault 0 (Pill pc pos) . pPlacementWeight
+				G.restore
+
+		logHeatmapGrid 1 2 "clear locations" $ do
+			let clearHi = max
+			    	(realToFrac . maximum . (0:) . M.elems $ pClearLocationWeight pred)
+			    	(maximum . fmap maximum $ niClearLocation netOut)
+			heatmap0Max clearHi (hstBoard hst) initialPC (onPositionsVec niClearLocation)
+			G.translate 0 hd
+			heatmap0Max clearHi (hstBoard hst) initialPC . onPositionsC $ \pos -> M.findWithDefault 0 pos . pClearLocationWeight
 
 data LogMessage
 	= Iteration Integer

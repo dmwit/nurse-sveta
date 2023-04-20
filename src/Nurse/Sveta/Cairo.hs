@@ -13,7 +13,7 @@ module Nurse.Sveta.Cairo (
 	-- Heatmaps also come with a legend describing the connection between
 	-- colors and numbers.
 	heatmapSizeRecommendation,
-	heatmap01, heatmap0Max, heatmapDyn, heatmapRange, heatmapWith,
+	heatmap01, heatmap0Dyn, heatmap0Max, heatmapDyn, heatmapRange, heatmapWith,
 	HeatmapOptions(..), heatmapOptions01, heatmapOptions0Max, heatmapOptionsDyn, heatmapOptionsDyn', heatmapOptionsRange,
 	bwGradient, saturatingGradient, bSaturatingGradient,
 	) where
@@ -250,8 +250,14 @@ heatmap01 :: Board -> PillContent -> [(Position, Double)] -> Render ()
 heatmap01 = heatmapWith heatmapOptions01
 
 -- | Good for distributions. The gradient used makes it easy to spot values
--- that are exactly 0, but doesn't treat values equal to the upper bound
--- specially.
+-- that are exactly 0 and scales the upper bound to be near the highest
+-- probability given.
+heatmap0Dyn :: Board -> PillContent -> [(Position, Double)] -> Render ()
+heatmap0Dyn b pc heat = heatmap0Max (maximum (0:map snd heat)) b pc heat
+
+-- | Good for distributions where you expect a probability to be at most a
+-- certain maximum. The gradient used makes it easy to spot values that are
+-- exactly 0, but doesn't treat values equal to the upper bound specially.
 heatmap0Max :: Double -> Board -> PillContent -> [(Position, Double)] -> Render ()
 heatmap0Max = heatmapWith . heatmapOptions0Max
 
