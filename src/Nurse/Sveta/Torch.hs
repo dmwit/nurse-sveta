@@ -387,7 +387,7 @@ deriving via Double instance FromJSON CDouble
 
 prediction :: Preview -> Int -> Prediction
 prediction pre = \pu -> Prediction
-	{ pVirusKillWeight = discountUnscaled 0.9 pu <$> pVirusKills pre
+	{ pVirusKillWeight = discountInt 0.9 pu <$> pVirusKills pre
 	, pPlacementWeight = discountList 0.9 pu <$> pPlacements pre
 	, pClearLocationWeight = discountList 0.9 pu <$> pClearLocation pre
 	, pClearPillWeight = discountList 0.9 pu <$> pClearPill pre
@@ -396,9 +396,8 @@ prediction pre = \pu -> Prediction
 	, pFallWeight = fromIntegral . min 255 . IM.findWithDefault 0 pu . pFallTime $ pre
 	} where
 	occupied = ofoldMapWithKey (\pos c -> case c of Empty -> HS.empty; _ -> HS.singleton pos) (pFinalBoard pre)
-	discountUnscaled rate pu pu' = if pu > pu' then 0 else rate^(pu'-pu)
-	discountInt rate pu pu' = (1-rate) * discountUnscaled rate pu pu'
-	discountList rate pu = sum . map (discountInt rate pu)
+	discountInt rate pu pu' = if pu > pu' then 0 else rate^(pu'-pu)
+	discountList rate pu = min 1 . sum . map (discountInt rate pu)
 
 -- A Haskell version of all the data that goes into the tensor files we save.
 data HSTensor = HSTensor
