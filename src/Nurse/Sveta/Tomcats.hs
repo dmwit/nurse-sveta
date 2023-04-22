@@ -3,9 +3,8 @@ module Nurse.Sveta.Tomcats (
 	GameStateSeed(..), initialTree,
 	mcts, descend, unsafeDescend,
 	evaluateFinalState, DetailedEvaluation, dumbEvaluation,
-	winningValuation, losingValuation, clampCleared,
 	dmFinished, dmPlay, approximateCostModel,
-	SearchConfiguration(..), DMEvaluationProcedure,
+	SearchConfiguration(..),
 	Move(..),
 	GameState(..),
 	A0.Statistics(..),
@@ -50,8 +49,6 @@ data SearchConfiguration = SearchConfiguration
 	, priorNoise :: Double
 	} deriving (Eq, Ord, Read, Show)
 
-type DMEvaluationProcedure = Procedure (GameState, Color, Color) (Double, HashMap PillContent (Vector (Vector Double)))
-
 -- | The 'MidPath' is ignored for 'Eq', 'Ord', and 'Hashable'.
 data Move = RNG Color Color | Placement MidPath Pill deriving (Show, Read)
 
@@ -89,10 +86,14 @@ instance FromJSON Move where
 data GameState = GameState
 	{ board :: IOBoard
 	, virusesKilled, pillsUsed, framesPassed :: IORef Int
+	, lookbehind :: IORef (Color, Color)
 	, originalVirusCount :: Int
 	, originalSensitive :: Bool
 	, speed :: CoarseSpeed
 	}
+
+uninitializedLookbehind :: IO (IORef (Color, Color))
+uninitializedLookbehind = newIORef (error "asked what pill was last launched before any pill was launched")
 
 type DMParameters = Parameters IO Double A0.Statistics Move GameState
 
@@ -106,6 +107,7 @@ instance Gen a ~ GenIO => GameStateSeed (Gen a) where
 		seed <- uniformRM (2, maxBound) g
 		b <- mrandomBoard seed level
 		frameParity <- uniformM g
+		lb <- uninitializedLookbehind
 		coarseSpeed <- ([Med, Hi, Ult] !!) <$> uniformRM (0,2) g
 		vk <- newIORef 0
 		pu <- newIORef 0
@@ -115,6 +117,7 @@ instance Gen a ~ GenIO => GameStateSeed (Gen a) where
 			, virusesKilled = vk
 			, pillsUsed = pu
 			, framesPassed = fp
+			, lookbehind = lb
 			, originalVirusCount = 4*(level + 1)
 			, originalSensitive = frameParity
 			, speed = coarseSpeed
@@ -126,6 +129,7 @@ instance (a ~ Board, b ~ Bool, c ~ CoarseSpeed) => GameStateSeed (a, b, c) where
 		<*> newIORef 0
 		<*> newIORef 0
 		<*> newIORef 0
+		<*> uninitializedLookbehind
 		<*> pure (countViruses b)
 		<*> pure sensitive
 		<*> pure speed
@@ -136,7 +140,7 @@ initialTree params g = do
 	(_, t) <- Tomcats.initialize params s >>= preprocess params s
 	pure (s, t)
 
-dmParameters :: SearchConfiguration -> DMEvaluationProcedure -> GenIO -> DMParameters
+dmParameters :: SearchConfiguration -> Procedure GameState DetailedEvaluation -> GenIO -> DMParameters
 dmParameters config eval gen = Parameters
 	{ score = dmScore config
 	, expand = dmExpand gen
@@ -147,7 +151,7 @@ dmParameters config eval gen = Parameters
 
 dmScore :: SearchConfiguration -> Move -> A0.Statistics -> A0.Statistics -> Double
 -- We should probably avoid looking at RNG moves in the same order every time,
--- as that could introduce a bias. In rngExpansion, we put a bit of randomness
+-- as that could introduce a bias. In dmExpand, we put a bit of randomness
 -- into the priors, which we can use to break ordering ties here.
 dmScore _ RNG{} _ stats = A0.priorProbability stats - A0.visitCount stats
 dmScore config _ parent child = pucbA0 (c_puct config) (A0.priorProbability child) (A0.visitCount parent) (A0.visitCount child) (A0.cumulativeValuation child)
@@ -159,54 +163,32 @@ dmFinished gs = do
 	remaining <- (originalVirusCount gs-) <$> readIORef (virusesKilled gs)
 	pure $ cellL /= Just Empty || cellR /= Just Empty || remaining <= 0
 
-dmExpand :: GenIO -> GameState -> IO (A0.Statistics, HashMap Move A0.Statistics)
-dmExpand gen gs = do
-	finished <- dmFinished gs
-	if finished
-	then evaluateFinalState gs <&> \points -> (A0.Statistics 1 0 points, HM.empty)
-	else rngExpansion gen -- this is a bit weird, but in order to share pathfinding, expansion actually happens in the preprocessor
-
 -- score: 0 or  1/3 for finishing
 --        up to 1/3 for each virus cleared; want the bot to learn early that clearing is good, so reward heavily for the first few viruses
 --        up to 1/3 for clearing quickly if you win; the quicker you get, the harder it is to get quicker, so increase the reward more quickly when it's fast
-
--- | Assign a value to a winning board, given how many viruses the board
--- started with and how many frames it took. The frame count is clamped on your
--- behalf, so don't worry if it's negative or outrageously large or whatever.
-winningValuation :: Int -> Double -> Double
-winningValuation viruses frames_ = 1 - penalty / 3 where
-	penalty = min 1 (frames / maxFrames)**0.5
-	frames = max 1 frames_
-	maxFrames = fromIntegral (shiftL viruses 9)
-
--- | Assign a value to a losing board, given how many viruses the board started
--- with and how many were cleared. You are responsible for clamping the clear
--- count if it might be out of range; see also 'clampCleared'.
-losingValuation :: Int -> Double -> Double
-losingValuation orig cleared = (cleared / fromIntegral orig)**0.5 / 3
-
--- | Given the original number of viruses on a board and a claimed number of
--- clears, clamp the claimed clears to be positive and at most the original
--- number. Useful as a preprocessing step before calling 'losingValuation'.
-clampCleared :: Int -> Double -> Double
-clampCleared orig = max 0 . min (fromIntegral orig)
-
 evaluateFinalState :: GameState -> IO Double
 evaluateFinalState gs = do
 	clearedViruses <- readIORef (virusesKilled gs)
-	frames <- readIORef (framesPassed gs)
+	frames_ <- readIORef (framesPassed gs)
 	let origViruses = originalVirusCount gs
+	    frames = fromIntegral (max 1 frames_)
+	    maxFrames = fromIntegral (shiftL origViruses 9)
 	pure $ if clearedViruses == origViruses
-		then winningValuation origViruses (fromIntegral frames)
-		else  losingValuation origViruses (fromIntegral clearedViruses)
+		then 1 - sqrt (min 1 (frames / maxFrames)) / 3
+		else sqrt (fromIntegral clearedViruses / fromIntegral origViruses) / 3
 
 -- We should probably avoid looking at RNG moves in the same order every time,
 -- as that could introduce a bias. So we toss a tiny tiny bit of randomness
 -- into the priors.
-rngExpansion :: GenIO -> IO (A0.Statistics, HashMap Move A0.Statistics)
-rngExpansion = \gen -> do
+--
+-- Because of the way the preprocessor is set up -- to always convert all
+-- unexplored RNG nodes to child RNG nodes immediately with a shared
+-- pathfinding result -- this expansion is only ever called right after we
+-- place a pill, so we can always produce RNG moves.
+dmExpand :: GenIO -> GameState -> IO (A0.Statistics, HashMap Move A0.Statistics)
+dmExpand = \gen _ -> do
 	perm <- uniformPermutation n gen
-	let mk i [l, r] = (RNG l r, A0.Statistics 0 (1/9 + fromIntegral (perm V.! i - halfn) * 1e-8) 0)
+	let mk i [l, r] = (RNG l r, A0.Statistics 0 (1/fromIntegral n + fromIntegral (perm V.! i - halfn) * 1e-8) 0)
 	pure (mempty, HM.fromList (zipWith mk [0..] (replicateM 2 colors)))
 	where
 	n = length colors^2
@@ -219,6 +201,7 @@ dmClone gs = pure GameState
 	<*> cloneIORef (virusesKilled gs)
 	<*> cloneIORef (pillsUsed gs)
 	<*> cloneIORef (framesPassed gs)
+	<*> cloneIORef (lookbehind gs)
 	<*> pure (originalVirusCount gs)
 	<*> pure (originalSensitive gs)
 	<*> pure (speed gs)
@@ -231,7 +214,7 @@ cloneBoard = mfreeze >=> thaw
 
 dmPlay :: GameState -> Move -> IO ()
 dmPlay gs = \case
-	RNG l0 l1 -> pure ()
+	RNG l r -> writeIORef (lookbehind gs) (l, r)
 	Placement path pill -> mplace (board gs) pill >>= \case
 		Nothing -> pure ()
 		Just counts ->  do
@@ -253,46 +236,60 @@ approximateCostModel move pill counts = 0
 	+ mpPathLength move -- pill maneuvering
 	+ sum [16*n + 20 | n <- rowsFallen counts] -- fall time + clear animation
 
-dmPreprocess :: SearchConfiguration -> DMEvaluationProcedure -> GenIO -> GameState -> Tree A0.Statistics Move -> IO (A0.Statistics, Tree A0.Statistics Move)
-dmPreprocess config eval gen gs t = if not (RNG Blue Blue `HM.member` unexplored t) then pure (mempty, t) else do
-	fp <- readIORef (framesPassed gs)
-	pu <- readIORef (pillsUsed gs)
-	moves <- mapproxReachable (board gs) (fp .&. 1 /= fromEnum (originalSensitive gs)) (gravity (speed gs) pu)
-	-- doing fromListWith instead of fromList is probably a bit paranoid, but what the hell
-	let symmetricMoves = HM.fromListWith shorterPath [(p { mpRotations = mpRotations p .&. 1 }, m) | (p, m) <- HM.toList moves]
-	-- TODO: it really seems like it would be better to wait on evaluation
-	-- until we go to expand the child node. practically speaking this is
-	-- costing us a factor of like 8x in neural net evaluations. can we delay
-	-- the calls somehow? maybe have a preprocessing case for the first time we
-	-- visit a non-RNG node, eg?
-	children' <- flip HM.traverseWithKey (unexplored t) $ \(RNG l r) stats -> do
-		future <- schedule eval (gs, l, r)
-		unsafeInterleaveIO $ (,) stats <$> future
-	-- we do this as a second pass so that we have a chance to schedule a bunch
-	-- of evaluations before forcing any of their results
-	children'' <- flip HM.traverseWithKey children' $ \(RNG l r) (stats, (valueEstimate, moveWeights)) -> do
-		unex <- A0.dirichletA0 (typicalMoves config) (priorNoise config) gen . A0.normalize $ HM.fromList
-			[ (Placement path pill, moveWeights HM.! content pill V.! x V.! y)
-			| (placement, path) <- HM.toList (if l == r then symmetricMoves else moves)
-			, let Position x y = mpBottomLeft placement
-			      pill = mpPill placement l r
-			]
-		pure Tree
-			{ statistics = A0.Statistics 1 (A0.priorProbability stats) valueEstimate
-			, children = HM.empty
-			, unexplored = unex
-			, cachedEvaluation = Nothing
-			}
-	let childStats = (foldMap A0.statistics children'') { A0.priorProbability = 0 }
-	pure (childStats, t { statistics = statistics t <> childStats, children = children'', unexplored = HM.empty })
+dmPreprocess :: SearchConfiguration -> Procedure GameState DetailedEvaluation -> GenIO -> GameState -> Tree A0.Statistics Move -> IO (A0.Statistics, Tree A0.Statistics Move)
+dmPreprocess config eval gen gs t
+	| HM.null (children t) = case HM.keys (unexplored t) of
+		RNG{}:_ -> do
+			fp <- readIORef (framesPassed gs)
+			pu <- readIORef (pillsUsed gs)
+			moves <- HM.toList <$> mapproxReachable (board gs) (fp .&. 1 /= fromEnum (originalSensitive gs)) (gravity (speed gs) pu)
+			let symmetricMoves = HM.toList $ HM.fromListWith shorterPath [(placement { mpRotations = mpRotations placement .&. 1 }, path) | (placement, path) <- moves]
+			pure . (,) mempty $ t
+				{ unexplored = HM.empty
+				, children = flip HM.mapWithKey (unexplored t) $ \(RNG l r) stats -> Tree
+					{ statistics = stats
+					, children = HM.empty
+					, cachedEvaluation = Nothing
+					, unexplored = HM.fromListWithKey deduplicationError
+						[ (Placement path (mpPill placement l r), mempty)
+						| (placement, path) <- if l == r then symmetricMoves else moves
+						]
+					}
+				}
+		Placement{}:_ -> dmFinished gs >>= \case
+			False -> do
+				(valueEstimate, moveWeights) <- call eval gs
+				let stats = singleVisitStats valueEstimate
+				priors <- id
+					. A0.dirichletA0 (typicalMoves config) (priorNoise config) gen
+					. A0.normalize
+					. HM.mapWithKey (\(Placement _ (Pill pc bl)) _ -> moveWeights HM.! pc V.! x bl V.! y bl)
+					$ unexplored t
+				pure (stats, t { statistics = statistics t <> stats, unexplored = priors })
+			True -> evaluateFinalState gs <&> \val -> let stats = singleVisitStats val in (stats, Tree
+				{ statistics = stats <> statistics t
+				, children = HM.empty
+				, unexplored = HM.empty
+				, cachedEvaluation = Just stats
+				})
+		[] -> pure (mempty, t)
+	| otherwise = pure (mempty, t)
+	where
+	singleVisitStats = A0.Statistics 1 0
+	deduplicationError k p1 p2 = error . unwords $ tail [undefined
+		, "dmPreprocess: found duplicate paths (there is a deduplication phase that should have already ruled this out);"
+		, "guru meditation"
+		, show (k, p1, p2)
+		]
 
 type DetailedEvaluation = (Double, HashMap PillContent (Vector (Vector Double)))
 
 -- | Given the game state and the colors for the upcoming pill, guess where
 -- moves will be made and how good the final outcome will be. The Vector's are
 -- indexed by (x, y) position of the bottom left.
-dumbEvaluation :: (GameState, Color, Color) -> IO DetailedEvaluation
-dumbEvaluation = \(s, l, r) -> do
+dumbEvaluation :: GameState -> IO DetailedEvaluation
+dumbEvaluation = \s -> do
+	(l, r) <- readIORef (lookbehind s)
 	points <- evaluateFinalState s
 	pure (points, HM.fromList
 		[ (PillContent orient bl o, vec)

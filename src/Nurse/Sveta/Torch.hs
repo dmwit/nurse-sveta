@@ -144,8 +144,9 @@ instance OneHot PillContent where
 		(n', r) = n `quotRem` indexCount @Color
 		(o , l) = n' `quotRem` indexCount @Color
 
-renderLookahead :: Ptr CChar -> Color -> Color -> IO ()
-renderLookahead lookahead l r = do
+renderLookahead :: Ptr CChar -> GameState -> IO ()
+renderLookahead lookahead gs = do
+	(l, r) <- readIORef (lookbehind gs)
 	pokeElemOff lookahead (toIndex l                    ) 1
 	pokeElemOff lookahead (toIndex r + indexCount @Color) 1
 
@@ -170,23 +171,24 @@ renderScalars scalars gs = do
 	pokeArray scalars [frames, safeLog frames, sqrt frames, viruses, safeLog viruses, 1/sqrt viruses]
 	pure [realToFrac frames, realToFrac viruses]
 
-render :: Traversable t => t (Int, (GameState, Color, Color)) -> IO (Ptr CChar, Ptr CChar, Ptr CDouble)
-render itriples = do
+render :: Traversable t => t (Int, GameState) -> IO (Ptr CChar, Ptr CChar, Ptr CDouble)
+render igs = do
 	boards <- mallocZeroArray (n * boardSize)
 	lookaheads <- mallocZeroArray (n * lookaheadSize)
 	scalars <- mallocArray (n * numScalars)
-	for_ itriples $ \(i, (gs, l, r)) -> do
+	for_ igs $ \(i, gs) -> do
 		renderBoard     (plusArray boards     (i*    boardSize)) (board gs)
-		renderLookahead (plusArray lookaheads (i*lookaheadSize)) l r
+		renderLookahead (plusArray lookaheads (i*lookaheadSize)) gs
 		renderScalars   (plusArray scalars    (i*   numScalars)) gs
 	pure (boards, lookaheads, scalars)
 	where
-	n = length itriples
+	n = length igs
 
 -- It looks like there's a lot of realToFrac calls in this code, but it doesn't
 -- matter, because rewrite rules throw them away.
-parseForEvaluation :: Int -> (GameState, Color, Color) -> ForeignPtr CDouble -> ForeignPtr CDouble -> IO DetailedEvaluation
-parseForEvaluation i (gs, l, r) priors_ valuation_ = withUnwrapped (priors_, valuation_) $ \(priors, valuation) -> do
+parseForEvaluation :: Int -> GameState -> ForeignPtr CDouble -> ForeignPtr CDouble -> IO DetailedEvaluation
+parseForEvaluation i gs priors_ valuation_ = withUnwrapped (priors_, valuation_) $ \(priors, valuation) -> do
+	(l, r) <- readIORef (lookbehind gs)
 	v <- peekElemOff valuation i
 	p <- forZipWithM [0..rotations-1] (iterate (`rotateContent` Clockwise) (PillContent startingOrientation l r)) $ \numRots pc -> do
 		let iNumRots = iPriors + shiftL numRots logCellCount
@@ -200,15 +202,15 @@ parseForEvaluation i (gs, l, r) priors_ valuation_ = withUnwrapped (priors_, val
 	iPriors = shiftL i logNumPriors
 
 -- TODO: I wonder if we could improve throughput by pushing the rendering into the generation thread, like we did with the parsing
-netEvaluation :: Traversable t => Net -> t (GameState, Color, Color) -> IO (t DetailedEvaluation)
-netEvaluation net_ triples = do
+netEvaluation :: Traversable t => Net -> t GameState -> IO (t DetailedEvaluation)
+netEvaluation net_ gss = do
 	[priors_, valuation_] <- mallocForeignPtrArrays [shiftL n logNumPriors, n]
 	-- TODO: can we avoid a ton of allocation here by pooling allocations of each size -- or even just the largest size, per Net, say?
-	(boards, lookaheads, scalars) <- render itriples
+	(boards, lookaheads, scalars) <- render igs
 
 	withUnwrapped (net_, (priors_, valuation_)) $ \(net, (priors, valuation)) ->
 		cxx_evaluate_net net (fromIntegral n) priors valuation boards lookaheads scalars
-	result <- for itriples $ \(i, state) ->
+	result <- for igs $ \(i, gs) ->
 			-- unsafeInterleaveIO: turns out parseForEvaluation is a bottleneck
 			-- to making foreign calls, so spread its work across multiple
 			-- threads by having the consuming thread perform it rather than
@@ -222,7 +224,7 @@ netEvaluation net_ triples = do
 			-- modification will be done by the time we call netEvaluation,
 			-- then it will be thrown away, hence the IORefs won't ever be
 			-- modified again.
-			unsafeInterleaveIO (parseForEvaluation i state priors_ valuation_)
+			unsafeInterleaveIO (parseForEvaluation i gs priors_ valuation_)
 
 	free boards
 	free lookaheads
@@ -230,8 +232,8 @@ netEvaluation net_ triples = do
 
 	pure result
 	where
-	n = length triples
-	itriples = enumerate triples
+	n = length gss
+	igs = enumerate gss
 
 -- TODO: There sure are a lot of really similar types in here, e.g.
 -- DetailedEvaluation, Preview, Prediction, HSTensor, not to mention Ptr
@@ -430,7 +432,6 @@ saveTensors tdir jsdir i0 (b0, steps) = do
 	currentState <- initialState b0
 	-- summarize mutates its argument, so make a fresh clone to pass to it
 	preview <- initialState b0 >>= \gs -> summarize gs (gsMove <$> steps)
-	hsLookahead <- newIORef (error "Nurse.Sveta.Torch.saveTensors: tried to use lookahead colors before they were initialized")
 	let valuation = realToFrac (pFinalValuation preview) :: CDouble
 
 	reachable <- mallocArray numPriors
@@ -444,18 +445,14 @@ saveTensors tdir jsdir i0 (b0, steps) = do
 	lookahead <- mallocArray lookaheadSize
 	scalars <- mallocArray numScalars
 
+	-- TODO: can we remove the rots argument to loop entirely?
 	let loop i rots [] = pure (i-i0)
 	    loop i rots (gs:gss) = case gsMove gs of
-	    	RNG l r -> do
-	    		zeroArray lookaheadSize lookahead
-	    		renderLookahead lookahead l r
-	    		writeIORef hsLookahead (l, r)
-	    		-- dmPlay doesn't do anything, but we call it anyway to defend
-	    		-- against that changing in the future
-	    		go i . HM.fromListWith (++) $ zipWith
-	    			(\iRot pc -> (pc, [iRot]))
-	    			[0..3]
-	    			(iterate (`rotateContent` Clockwise) (PillContent startingOrientation l r))
+	    	-- subtlety: go calls dmPlay, which records (l, r)
+	    	RNG l r -> go i . HM.fromListWith (++) $ zipWith
+	    		(\iRot pc -> (pc, [iRot]))
+	    		[0..3]
+	    		(iterate (`rotateContent` Clockwise) (PillContent startingOrientation l r))
 	    	Placement bm pill -> do
 	    		pred <- prediction preview <$> readIORef (pillsUsed currentState)
 
@@ -487,13 +484,15 @@ saveTensors tdir jsdir i0 (b0, steps) = do
 	    		flip HM.traverseWithKey (pClearPillWeight     pred) $ pokeElemOff clearPill . toIndex
 
 	    		zeroArray boardSize cells
+	    		zeroArray lookaheadSize lookahead
 	    		renderBoard cells (board currentState)
+	    		renderLookahead lookahead currentState
 
 	    		hst <- pure HSTensor
 	    			<*> mfreeze (board currentState)
 	    			<*> pure pred
 	    			<*> pure hsScalars
-	    			<*> readIORef hsLookahead
+	    			<*> readIORef (lookbehind currentState)
 	    			<*> pure hsPriors
 	    			<*> pure (pFinalValuation preview)
 

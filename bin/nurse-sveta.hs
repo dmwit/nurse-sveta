@@ -86,7 +86,7 @@ main = do
 		bur <- newThreadManager "bureaucracy" Green (bureaucracyThreadView loggingProcedure bureaucracyLock)
 		trn <- newThreadManager "training" OS (trainingThreadView loggingProcedure netUpdate)
 		log <- newThreadManager "logging" Green (loggingThreadView loggingProcedure)
-		replicateM_ 3 (tmStartThread gen)
+		replicateM_ 50 (tmStartThread gen)
 		tmStartThread inf
 		tmStartThread bur
 		tmStartThread trn
@@ -159,7 +159,7 @@ onSpeeds f gts = gts { summary = s { speeds = f (speeds s) } } where
 newSearchConfiguration :: SearchConfiguration
 newSearchConfiguration = SearchConfiguration
 	{ c_puct = 1 -- no idea what A0 did here
-	, iterations = 30 -- TODO: A0 used 800 here
+	, iterations = 800
 	, typicalMoves = 40
 	, priorNoise = 0.25
 	}
@@ -178,7 +178,7 @@ acceptConfiguration gts = gts { currentConfiguration = sTrySet (requestedConfigu
 -- │       │╰─────╯││
 -- │       ╰───────╯│
 -- ╰────────────────╯
-generationThreadView :: DMEvaluationProcedure -> IO ThreadView
+generationThreadView :: Procedure GameState DetailedEvaluation -> IO ThreadView
 generationThreadView eval = do
 	genRef <- newTVarIO (newGenerationThreadState newSearchConfiguration)
 
@@ -217,7 +217,7 @@ renderSpeeds spd sss = do
 	where
 	updateLabel n t = gridUpdateLabelAt spd n 0 t (numericLabel t)
 
-generationThread :: DMEvaluationProcedure -> TVar GenerationThreadState -> StatusCheck -> IO ()
+generationThread :: Procedure GameState DetailedEvaluation -> TVar GenerationThreadState -> StatusCheck -> IO ()
 generationThread eval genRef sc = do
 	g <- createSystemRandom
 	threadSpeed <- newSearchSpeed
@@ -304,7 +304,7 @@ itsNewNet its = \case
 		Nothing -> True
 		Just (n', _) -> n /= n'
 
-inferenceThreadView :: DMEvaluationProcedure -> TVar (Maybe Integer) -> IO ThreadView
+inferenceThreadView :: Procedure GameState DetailedEvaluation -> TVar (Maybe Integer) -> IO ThreadView
 inferenceThreadView eval netUpdate = do
 	top <- new Box [#orientation := OrientationVertical]
 	lbl <- descriptionLabel "<initializing net>"
@@ -361,7 +361,7 @@ data InferenceThreadStep
 	| ITSProgress (IO Int)
 	| ITSDie
 
-inferenceThread :: DMEvaluationProcedure -> TVar (Maybe Integer) -> TVar InferenceThreadState -> StatusCheck -> IO ()
+inferenceThread :: Procedure GameState DetailedEvaluation -> TVar (Maybe Integer) -> TVar InferenceThreadState -> StatusCheck -> IO ()
 inferenceThread eval netUpdate itsRef sc = forever $ do
 	step <- atomically $ do
 		its <- readTVar itsRef
@@ -394,7 +394,7 @@ inferenceThread eval netUpdate itsRef sc = forever $ do
 				writeTVar itsRef its' { itsNet = sSet net (itsNet its) }
 		ITSDie -> scIO sc
 	where
-	liftEvaluation :: (forall t. Traversable t => (t (GameState, Color, Color) -> IO (t DetailedEvaluation))) -> STM InferenceThreadStep
+	liftEvaluation :: (forall t. Traversable t => (t GameState -> IO (t DetailedEvaluation))) -> STM InferenceThreadStep
 	liftEvaluation f = ITSProgress <$> serviceCallsSTM eval (fmap (\answers -> (answers, length answers)) . f)
 
 inferenceThreadLoadLatestNet :: IO (Maybe (Integer, Net))
