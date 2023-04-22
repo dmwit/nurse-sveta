@@ -195,7 +195,7 @@ parseForEvaluation i (gs, l, r) priors_ valuation_ = withUnwrapped (priors_, val
 				realToFrac <$> peekElemOff priors iy
 		pure (pc, v)
 
-	pure (realToFrac v, HM.fromList p)
+	pure (realToFrac v, HM.fromListWith (V.zipWith (V.zipWith (+))) p)
 	where
 	iPriors = shiftL i logNumPriors
 
