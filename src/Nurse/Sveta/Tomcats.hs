@@ -298,8 +298,19 @@ dumbEvaluation = \s -> do
 
 -- all the rest of this stuff is just for debugging
 
+ppTreeSparseIO :: Tree A0.Statistics Move -> IO ()
+ppTreeSparseIO = putStrLn . ppTreeSparse ""
+
+ppTreeIO :: Tree A0.Statistics Move -> IO ()
+ppTreeIO = putStrLn . ppTree ""
+
 ppTreeSparse :: String -> Tree A0.Statistics Move -> String
-ppTreeSparse indent (Tree stats cs un cache) = ppStats stats ++ "{\n" ++ ppTreesSparse ('\t':indent) cs ++ indent ++ "}" ++ ppCache cache
+ppTreeSparse indent (Tree stats cs un cache) = ""
+	++ ppStats stats ++ "{"
+	++ case ppTreesSparse ('\t':indent) cs of
+	   	"" -> ""
+	   	s -> "\n" ++ s ++ indent
+	++ "}" ++ ppCache cache
 
 ppTreesSparse :: String -> HashMap Move (Tree A0.Statistics Move) -> String
 ppTreesSparse indent ts = concat
@@ -309,11 +320,16 @@ ppTreesSparse indent ts = concat
 	]
 
 ppTree :: String -> Tree A0.Statistics Move -> String
-ppTree indent (Tree stats cs un cache) = ppStats stats ++ "{\n" ++ ppTrees indent' cs ++ indent' ++ ppStatss un ++ "\n" ++ indent ++ "}" ++ ppCache cache
-	where indent' = '\t':indent
+ppTree indent (Tree stats cs un cache) = ppStats stats ++ "{" ++ rec ++ "}" ++ ppCache cache
+	where
+	indent' = '\t':indent
+	rec = case (ppTrees indent' cs, ppStatss un) of
+		("", "") -> ""
+		(s, "") -> "\n" ++ s ++ indent
+		(s, s') -> "\n" ++ s ++ indent' ++ s' ++ "\n" ++ indent
 
 ppStats :: A0.Statistics -> String
-ppStats (A0.Statistics visits prob val) = show (round (100*prob)) ++ "% " ++ show (fromIntegral (round (100*val))/100) ++ "/" ++ show (round visits)
+ppStats (A0.Statistics visits prob val) = ppPercent prob ++ " " ++ ppPrecision 2 val ++ "/" ++ show (round visits)
 
 ppTrees :: String -> HashMap Move (Tree A0.Statistics Move) -> String
 ppTrees indent ts = concat
@@ -329,7 +345,7 @@ ppStatss ss = concat
 
 ppCache :: Maybe A0.Statistics -> String
 ppCache Nothing = ""
-ppCache (Just stats) = "~" ++ show (fromIntegral (round (100*A0.cumulativeValuation stats))/100)
+ppCache (Just stats) = "~" ++ ppPrecision 2 (A0.cumulativeValuation stats)
 
 ppMove :: Move -> String
 ppMove (RNG l r) = [ppColor l, ppColor r]
@@ -352,3 +368,10 @@ ppColor Yellow = 'y'
 
 ppPosition :: Position -> String
 ppPosition pos = "(" ++ show (x pos) ++ ", " ++ show (y pos) ++ ")"
+
+ppPercent :: Double -> String
+ppPercent p = (if isNaN p then "nan" else show (round (100*p))) ++ "%"
+
+ppPrecision :: Int -> Double -> String
+ppPrecision p n = if isNaN n then "nan" else show (fromInteger (round (pow*n))/pow)
+	where pow = 10^p
