@@ -914,7 +914,7 @@ trainingThread log netUpdate ref sc = do
 	-- TODO: make these configurable
 	tensorsPerSave = 100000
 	tensorsPerDetailReport = 30000
-	tensorsPerTrain = 3500
+	tensorsPerTrain = 1700
 	tensorsPerTrainI = toInteger tensorsPerTrain
 	tensorsPerTest = 100
 	tensorHistoryTrain = 500000
