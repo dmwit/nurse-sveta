@@ -186,10 +186,12 @@ evaluateFinalState gs = do
 -- pathfinding result -- this expansion is only ever called right after we
 -- place a pill, so we can always produce RNG moves.
 dmExpand :: GenIO -> GameState -> IO (A0.Statistics, HashMap Move A0.Statistics)
-dmExpand = \gen _ -> do
-	perm <- uniformPermutation n gen
-	let mk i [l, r] = (RNG l r, A0.Statistics 0 (1/fromIntegral n + fromIntegral (perm V.! i - halfn) * 1e-8) 0)
-	pure (mempty, HM.fromList (zipWith mk [0..] (replicateM 2 colors)))
+dmExpand = \gen gs -> dmFinished gs >>= \case
+	False -> do
+		perm <- uniformPermutation n gen
+		let mk i [l, r] = (RNG l r, A0.Statistics 0 (1/fromIntegral n + fromIntegral (perm V.! i - halfn) * 1e-8) 0)
+		pure (mempty, HM.fromList (zipWith mk [0..] (replicateM 2 colors)))
+	True -> evaluateFinalState gs <&> \score -> (singleVisitStats score, HM.empty)
 	where
 	n = length colors^2
 	halfn = n `div` 2
@@ -256,31 +258,26 @@ dmPreprocess config eval gen gs t
 						]
 					}
 				}
-		Placement{}:_ -> dmFinished gs >>= \case
-			False -> do
-				(valueEstimate, moveWeights) <- call eval gs
-				let stats = singleVisitStats valueEstimate
-				priors <- id
-					. A0.dirichletA0 (typicalMoves config) (priorNoise config) gen
-					. A0.normalize
-					. HM.mapWithKey (\(Placement _ (Pill pc bl)) _ -> moveWeights HM.! pc V.! x bl V.! y bl)
-					$ unexplored t
-				pure (stats, t { statistics = statistics t <> stats, unexplored = priors })
-			True -> evaluateFinalState gs <&> \val -> let stats = singleVisitStats val in (stats, Tree
-				{ statistics = stats <> statistics t
-				, children = HM.empty
-				, unexplored = HM.empty
-				, cachedEvaluation = Just stats
-				})
+		Placement{}:_ -> do
+			(valueEstimate, moveWeights) <- call eval gs
+			let stats = singleVisitStats valueEstimate
+			priors <- id
+				. A0.dirichletA0 (typicalMoves config) (priorNoise config) gen
+				. A0.normalize
+				. HM.mapWithKey (\(Placement _ (Pill pc bl)) _ -> moveWeights HM.! pc V.! x bl V.! y bl)
+				$ unexplored t
+			pure (stats, t { statistics = statistics t <> stats, unexplored = priors })
 		[] -> pure (mempty, t)
 	| otherwise = pure (mempty, t)
 	where
-	singleVisitStats = A0.Statistics 1 0
 	deduplicationError k p1 p2 = error . unwords $ tail [undefined
 		, "dmPreprocess: found duplicate paths (there is a deduplication phase that should have already ruled this out);"
 		, "guru meditation"
 		, show (k, p1, p2)
 		]
+
+singleVisitStats :: Double -> A0.Statistics
+singleVisitStats = A0.Statistics 1 0
 
 type DetailedEvaluation = (Double, HashMap PillContent (Vector (Vector Double)))
 
