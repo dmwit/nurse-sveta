@@ -942,9 +942,7 @@ chooseTensors rng sc dir category historySize batchSize = do
 	    	Just n -> pure n
 	latestTensor <- go
 	let earliestTensor = max 0 (latestTensor - historySize)
-	if latestTensor < toInteger batchSize
-		then pure [0..latestTensor]
-		else replicateM batchSize (uniformRM (earliestTensor, latestTensor) rng)
+	replicateM batchSize (uniformRM (earliestTensor, latestTensor) rng)
 
 loadBatch :: GenIO -> StatusCheck -> FilePath -> String -> Integer -> Int -> IO Batch
 loadBatch rng sc dir category historySize batchSize = do
