@@ -910,7 +910,6 @@ trainingThread log netUpdate ref sc = do
 	    	loop ten'
 	loop ten0
 	where
-	category = "train"
 	-- TODO: make these configurable
 	tensorsPerSave = 100000
 	tensorsPerDetailReport = 30000
