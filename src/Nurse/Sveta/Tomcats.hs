@@ -166,16 +166,27 @@ dmFinished gs = do
 -- score: 0 or  1/3 for finishing
 --        up to 1/3 for each virus cleared; want the bot to learn early that clearing is good, so reward heavily for the first few viruses
 --        up to 1/3 for clearing quickly if you win; the quicker you get, the harder it is to get quicker, so increase the reward more quickly when it's fast
+winningValuation :: GameState -> IO Double
+winningValuation gs = do
+	frames_ <- readIORef (framesPassed gs)
+	let frames = fromIntegral (max 1 frames_)
+	    maxFrames = fromIntegral (shiftL (originalVirusCount gs) 9)
+	pure $ 1 - sqrt (min 1 (frames / maxFrames)) / 3
+
+losingValuation :: GameState -> IO Double
+losingValuation gs = do
+	clearedViruses <- readIORef (virusesKilled gs)
+	pure $ sqrt (fromIntegral clearedViruses / fromIntegral (originalVirusCount gs)) / 3
+
 evaluateFinalState :: GameState -> IO Double
 evaluateFinalState gs = do
 	clearedViruses <- readIORef (virusesKilled gs)
-	frames_ <- readIORef (framesPassed gs)
-	let origViruses = originalVirusCount gs
-	    frames = fromIntegral (max 1 frames_)
-	    maxFrames = fromIntegral (shiftL origViruses 9)
-	pure $ if clearedViruses == origViruses
-		then 1 - sqrt (min 1 (frames / maxFrames)) / 3
-		else sqrt (fromIntegral clearedViruses / fromIntegral origViruses) / 3
+	if clearedViruses == originalVirusCount gs
+		then winningValuation gs
+		else losingValuation gs
+
+evaluationBounds :: GameState -> IO (Double, Double)
+evaluationBounds gs = liftA2 (,) (losingValuation gs) (winningValuation gs)
 
 -- We should probably avoid looking at RNG moves in the same order every time,
 -- as that could introduce a bias. So we toss a tiny tiny bit of randomness
@@ -259,8 +270,11 @@ dmPreprocess config eval gen gs t
 					}
 				}
 		Placement{}:_ -> do
-			(valueEstimate, moveWeights) <- call eval gs
-			let stats = singleVisitStats valueEstimate
+			future <- schedule eval gs
+			(valueLo, valueHi) <- evaluationBounds gs
+			(valueEstimate, moveWeights) <- future
+			-- max before min, because max x nan = x but min x nan = nan
+			let stats = singleVisitStats . min valueHi . max valueLo $ valueEstimate
 			priors <- id
 				. A0.dirichletA0 (typicalMoves config) (priorNoise config) gen
 				. A0.normalize
