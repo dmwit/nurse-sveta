@@ -140,13 +140,13 @@ initialTree params g = do
 	(_, t) <- Tomcats.initialize params s >>= preprocess params s
 	pure (s, t)
 
-dmParameters :: SearchConfiguration -> Procedure GameState DetailedEvaluation -> GenIO -> DMParameters
-dmParameters config eval gen = Parameters
+dmParameters :: SearchConfiguration -> GenIO -> DMParameters
+dmParameters config gen = Parameters
 	{ score = dmScore config
 	, expand = dmExpand gen
 	, clone = dmClone
 	, play = dmPlay
-	, preprocess = dmPreprocess config eval gen
+	, preprocess = dmPreprocess config gen
 	}
 
 dmScore :: SearchConfiguration -> Move -> A0.Statistics -> A0.Statistics -> Double
@@ -249,8 +249,8 @@ approximateCostModel move pill counts = 0
 	+ mpPathLength move -- pill maneuvering
 	+ sum [16*n + 20 | n <- rowsFallen counts] -- fall time + clear animation
 
-dmPreprocess :: SearchConfiguration -> Procedure GameState DetailedEvaluation -> GenIO -> GameState -> Tree A0.Statistics Move -> IO (A0.Statistics, Tree A0.Statistics Move)
-dmPreprocess config eval gen gs t
+dmPreprocess :: SearchConfiguration -> GenIO -> GameState -> Tree A0.Statistics Move -> IO (A0.Statistics, Tree A0.Statistics Move)
+dmPreprocess config gen gs t
 	| HM.null (children t) = case HM.keys (unexplored t) of
 		RNG{}:_ -> do
 			fp <- readIORef (framesPassed gs)
@@ -270,11 +270,8 @@ dmPreprocess config eval gen gs t
 					}
 				}
 		Placement{}:_ -> do
-			future <- schedule eval gs
-			(valueLo, valueHi) <- evaluationBounds gs
-			(valueEstimate, moveWeights) <- future
-			-- max before min, because max x nan = x but min x nan = nan
-			let stats = singleVisitStats . min valueHi . max valueLo $ valueEstimate
+			(valueEstimate, moveWeights) <- dumbEvaluation gs
+			let stats = singleVisitStats valueEstimate
 			priors <- id
 				. A0.dirichletA0 (typicalMoves config) (priorNoise config) gen
 				. A0.normalize

@@ -70,31 +70,24 @@ import qualified GI.Cairo.Render as G
 main :: IO ()
 main = do
 	torchPlusGtkFix
+	setNumCapabilities 7
 	app <- new Application []
 	on app #activate $ do
-		inferenceProcedure <- newProcedure 100
 		loggingProcedure <- newProcedure 10000
 		bureaucracyLock <- newMVar newBureaucracyGlobalState
-		netUpdate <- newTVarIO Nothing
 		mainRef <- newIORef Nothing
 
 		top <- new Box [#orientation := OrientationHorizontal, #spacing := 10]
 		txt <- new Box [#orientation := OrientationVertical]
 
-		gen <- newThreadManager "generation" Green (generationThreadView inferenceProcedure)
-		inf <- newThreadManager "inference" OS (inferenceThreadView inferenceProcedure netUpdate)
+		gen <- newThreadManager "generation" Green generationThreadView
 		bur <- newThreadManager "bureaucracy" Green (bureaucracyThreadView loggingProcedure bureaucracyLock)
-		trn <- newThreadManager "training" OS (trainingThreadView loggingProcedure netUpdate)
 		log <- newThreadManager "logging" Green (loggingThreadView loggingProcedure)
-		replicateM_ 50 (tmStartThread gen)
-		tmStartThread inf
+		replicateM_ 6 (tmStartThread gen)
 		tmStartThread bur
-		tmStartThread trn
 		tmStartThread log
 		tmWidget gen >>= #append top
-		tmWidget inf >>= #append txt
 		tmWidget bur >>= #append txt
-		tmWidget trn >>= #append txt
 		tmWidget log >>= #append txt
 		#append top txt
 
@@ -120,7 +113,7 @@ main = do
 					-- * training threads may block if logging threads die too early
 					-- the undefined looks scary, but it's just to kick off the
 					-- recursion, it's completely ignored
-					writeIORef mainRef (Just [[undefined], [gen, trn], [inf, log, bur]])
+					writeIORef mainRef (Just [[undefined], [gen, log, bur]])
 					quitIfAppropriate
 					pure True
 			]
@@ -159,7 +152,7 @@ onSpeeds f gts = gts { summary = s { speeds = f (speeds s) } } where
 newSearchConfiguration :: SearchConfiguration
 newSearchConfiguration = SearchConfiguration
 	{ c_puct = 1 -- no idea what A0 did here
-	, iterations = 800
+	, iterations = 16000
 	, typicalMoves = 40
 	, priorNoise = 0.25
 	}
@@ -178,8 +171,8 @@ acceptConfiguration gts = gts { currentConfiguration = sTrySet (requestedConfigu
 -- │       │╰─────╯││
 -- │       ╰───────╯│
 -- ╰────────────────╯
-generationThreadView :: Procedure GameState DetailedEvaluation -> IO ThreadView
-generationThreadView eval = do
+generationThreadView :: IO ThreadView
+generationThreadView = do
 	genRef <- newTVarIO (newGenerationThreadState newSearchConfiguration)
 
 	psv <- newPlayerStateView (PSM (emptyBoard 8 16) Nothing [])
@@ -202,7 +195,7 @@ generationThreadView eval = do
 	    	tWhenUpdated psvTracker (rootPosition (summary gts)) (psvSet psv)
 	    	tWhenUpdated scvTracker (currentConfiguration gts) (scvSet scv)
 
-	tvNew top refresh (generationThread eval genRef)
+	tvNew top refresh (generationThread genRef)
 
 renderSpeeds :: Grid -> [(T.Text, SearchSpeed)] -> IO ()
 renderSpeeds spd sss = do
@@ -217,15 +210,15 @@ renderSpeeds spd sss = do
 	where
 	updateLabel n t = gridUpdateLabelAt spd n 0 t (numericLabel t)
 
-generationThread :: Procedure GameState DetailedEvaluation -> TVar GenerationThreadState -> StatusCheck -> IO ()
-generationThread eval genRef sc = do
+generationThread :: TVar GenerationThreadState -> StatusCheck -> IO ()
+generationThread genRef sc = do
 	g <- createSystemRandom
 	threadSpeed <- newSearchSpeed
 	gameLoop g threadSpeed
 	where
 	gameLoop g threadSpeed = do
 		config <- atomically . stateTVar genRef $ \gts -> (requestedConfiguration gts, acceptConfiguration gts)
-		let params = dmParameters config eval g
+		let params = dmParameters config g
 		(s0, t) <- initialTree params g
 		s <- clone params s0
 		gameSpeed <- newSearchSpeed
@@ -1091,39 +1084,14 @@ loggingThreadView log = do
 
 loggingThread :: Procedure LogMessage () -> StatusCheck -> IO ()
 loggingThread log sc = do
-	wandbCat <- getDataFileName "pybits/wandb-cat.py"
-	dir <- nsDataDir
-	createDirectoryIfMissing True (dir </> "wandb")
-	(Just h, Nothing, Nothing, ph) <- createProcess (proc "python3" [wandbCat, "-q"]) { std_in = CreatePipe }
-
-	hPutStrLn h dir
-	hPutStrLn h "Nurse Sveta"
-	Time.getCurrentTime >>= hPrint h
-	hPutStrLn h "" -- no support for resuming (yet?)
-	hPutStrLn h "" -- no reporting of configuration data (yet?)
-	hFlush h
-
-	iRef <- newIORef 0
-	let go = \case
-	    	Iteration i -> writeIORef iRef i
-	    	Metric k v -> readIORef iRef >>= \i -> do
-	    		hPrint h i
-	    		hPutStrLn h k
-	    		hPrint h v
-	    	ImagePath k v -> readIORef iRef >>= \i -> do
-	    		hPrint h i
-	    		hPutStrLn h k
-	    		hPutStrLn h $ case v of
-	    			'!':_ -> "!./" ++ v
-	    			_     -> "!"   ++ v
-
+	let go _ = pure ()
 	forever $ do
 		step <- atomically . asum $ tail [undefined
 			, Left <$> scSTM sc
 			, Right <$> serviceCallsSTM_ log (traverse go)
 			]
 		case step of
-			Left _ -> hClose h >> waitForProcess ph >> scIO sc
+			Left _ -> scIO sc
 			Right act -> act
 
 gridGetLabelAt :: Grid -> Int32 -> Int32 -> IO Label -> IO Label
