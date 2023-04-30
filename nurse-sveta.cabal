@@ -109,6 +109,7 @@ executable nurse-sveta
     main-is:            nurse-sveta.hs
     other-modules:      Paths_nurse_sveta
     build-depends:        bytestring ^>=0.10
+                        , clock ^>=0.8
                         , process ^>=1.6
                         , time ^>=1.9
 

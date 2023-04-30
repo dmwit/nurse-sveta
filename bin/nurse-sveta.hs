@@ -30,6 +30,7 @@ import Nurse.Sveta.Torch
 import Nurse.Sveta.Util
 import Nurse.Sveta.Widget
 import Paths_nurse_sveta
+import System.Clock.Seconds
 import System.Directory
 import System.Environment
 -- TODO: this is now built into the directory package, we should switch to that
@@ -870,12 +871,10 @@ trainingThread log netUpdate ref sc = do
 	rng <- createSystemRandom
 	dir <- nsDataDir
 	let loop ten = do
-	    	-- The log's iteration number defaults to 0. When we're starting
-	    	-- from scratch, that's the right default, but when we load a
-	    	-- partially-trained net, it's not. We want to overwrite the
-	    	-- default as early as possible, so we report the iteration number
-	    	-- straight away.
-	    	schedule log (Iteration ten)
+	    	-- this capitalization is inconsistent with the other metrics we
+	    	-- report, but consistent with the other metrics shown in the
+	    	-- System panel
+	    	schedule log (Metric "System/Backprop Tensor Count" (fromInteger ten))
 	    	when (ten `mod` tensorsPerSave < tensorsPerTrainI) $ do
 	    		path <- prepareFile dir Weights (show ten <.> "nsn")
 	    		netSave net sgd path
@@ -1078,8 +1077,7 @@ logVisualization log rng sc net dir category historySize = do
 			heatmap0Max clearHi (hstBoard hst) initialPC . onPositionsC $ \pos -> M.findWithDefault 0 pos . pClearLocationWeight
 
 data LogMessage
-	= Iteration Integer
-	| Metric String Double
+	= Metric String Double
 	| ImagePath String FilePath
 	deriving (Eq, Ord, Read, Show)
 
@@ -1093,6 +1091,10 @@ loggingThread :: Procedure LogMessage () -> StatusCheck -> IO ()
 loggingThread log sc = do
 	wandbCat <- getDataFileName "pybits/wandb-cat.py"
 	dir <- nsDataDir
+	previousRuntime <- catch (readFile (dir </> "runtime") >>= readIO) \e ->
+		if isDoesNotExistError e
+			then pure 0
+			else throwIO e
 	createDirectoryIfMissing True (dir </> "wandb")
 	(Just h, Nothing, Nothing, ph) <- createProcess (proc "python3" [wandbCat, "-q"]) { std_in = CreatePipe }
 
@@ -1103,19 +1105,18 @@ loggingThread log sc = do
 	hPutStrLn h "" -- no reporting of configuration data (yet?)
 	hFlush h
 
-	iRef <- newIORef 0
+	start <- getTime Monotonic
 	let go = \case
-	    	Iteration i -> writeIORef iRef i
-	    	Metric k v -> readIORef iRef >>= \i -> do
-	    		hPrint h i
-	    		hPutStrLn h k
-	    		hPrint h v
-	    	ImagePath k v -> readIORef iRef >>= \i -> do
-	    		hPrint h i
-	    		hPutStrLn h k
-	    		hPutStrLn h $ case v of
-	    			'!':_ -> "!./" ++ v
-	    			_     -> "!"   ++ v
+	    	Metric    k v -> reportMetric k (show v)
+	    	ImagePath k v -> reportMetric k case v of
+	    		'!':_ -> "!./" ++ v
+	    		_     -> "!"   ++ v
+	    reportMetric k s = do
+	    	hPrint h =<< getRuntime
+	    	hPutStrLn h k
+	    	hPutStrLn h s
+	    saveRuntime = writeFile (dir </> "runtime") . show =<< getRuntime
+	    getRuntime = getTime Monotonic <&> \now -> previousRuntime + round (now - start)
 
 	forever $ do
 		step <- atomically . asum $ tail [undefined
@@ -1123,8 +1124,8 @@ loggingThread log sc = do
 			, Right <$> serviceCallsSTM_ log (traverse go)
 			]
 		case step of
-			Left _ -> hClose h >> waitForProcess ph >> scIO sc
-			Right act -> act
+			Left _ -> hClose h >> saveRuntime >> waitForProcess ph >> scIO sc
+			Right act -> act >> saveRuntime
 
 gridGetLabelAt :: Grid -> Int32 -> Int32 -> IO Label -> IO Label
 gridGetLabelAt grid x y factory = #getChildAt grid x y >>= \case
