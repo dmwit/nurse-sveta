@@ -913,13 +913,15 @@ trainingThread log netUpdate ref sc = do
 	-- TODO: make these configurable
 	tensorsPerSave = 100000
 	tensorsPerDetailReport = 30000
-	tensorsPerTrain = 1700
 	tensorsPerTrainI = toInteger tensorsPerTrain
 	tensorsPerTest = 100
 	tensorHistoryTrain = 500000
 	tensorHistoryTest = 5000
 	visualizationHistoryTrain = 1000
 	tensorsPerVisualization = 1000000
+
+tensorsPerTrain :: Int
+tensorsPerTrain = 1200
 
 trainingThreadLoadLatestNet :: IO (Integer, Net, Optimizer)
 trainingThreadLoadLatestNet = do
@@ -1103,7 +1105,15 @@ loggingThread log sc = do
 	hPutStrLn h "Nurse Sveta"
 	Time.getCurrentTime >>= hPrint h
 	hPutStrLn h "" -- no support for resuming (yet?)
-	hPutStrLn h "" -- no reporting of configuration data (yet?)
+	hPutStr h . unlines $ tail [undefined
+		, "final layer", "convolutional" -- "fully connected"
+		, "float size", "64" -- "32" "16"
+		, "residual design", "batch normalization" -- "fixup"
+		, "mixup", "no" -- "yes"
+		, "residual blocks", "32" -- "doubling"
+		, "epoch size", show tensorsPerTrain
+		, "" -- the config section is null terminated lol
+		]
 	hFlush h
 
 	start <- getTime Monotonic
