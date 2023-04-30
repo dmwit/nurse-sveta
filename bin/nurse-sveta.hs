@@ -274,7 +274,7 @@ generationThread eval genRef sc = do
 				. onSpeeds (const speeds')
 				. onRootPosition (sOnSubterm psmOverlayL (sSet overlay))
 
-			scIO sc
+			scIO_ sc
 			case HM.size (children t') of
 				0 -> recordGame s0 history >> gameLoop g threadSpeed
 				_ -> innerLoop threadSpeed' gameSpeed' moveSpeed' t' (n-1)
@@ -393,7 +393,7 @@ inferenceThread eval netUpdate itsRef sc = forever $ do
 				    	then its { itsNetBatches = batches, itsNetPositions = positions }
 				    	else its
 				writeTVar itsRef its' { itsNet = sSet net (itsNet its) }
-		ITSDie -> scIO sc
+		ITSDie -> scIO_ sc
 	where
 	liftEvaluation :: (forall t. Traversable t => (t GameState -> IO (t DetailedEvaluation))) -> STM InferenceThreadStep
 	liftEvaluation f = ITSProgress <$> serviceCallsSTM eval (fmap (\answers -> (answers, length answers)) . f)
@@ -637,7 +637,7 @@ bureaucracyThread log lock status sc = do
 		btsUpdate status $ \bts -> bts { btsCurrentSplit = btsRequestedSplit bts }
 		-- TODO: comms from other threads to tell us when to try again
 		threadDelay 1000000
-		scIO sc
+		scIO_ sc
 
 gameFileToTensorFiles :: Procedure LogMessage () -> TVar (Stable BureaucracyThreadState) -> FilePath -> FilePath -> IO ()
 gameFileToTensorFiles log status dir fp = recallGame dir fp >>= \case
@@ -875,12 +875,7 @@ trainingThread log netUpdate ref sc = do
 	    	-- report, but consistent with the other metrics shown in the
 	    	-- System panel
 	    	schedule log (Metric "System/Backprop Tensor Count" (fromInteger ten))
-	    	when (ten `mod` tensorsPerSave < tensorsPerTrainI) $ do
-	    		path <- prepareFile dir Weights (show ten <.> "nsn")
-	    		netSave net sgd path
-	    		encodeFileLoop (dir </> subdirectory Weights latestFilename) ten
-	    		atomically . writeTVar netUpdate $ Just ten
-	    		atomically . modifyTVar ref $ \tts -> tts { ttsLastSaved = sSet (Just ten) (ttsLastSaved tts) }
+	    	when (ten `mod` tensorsPerSave < tensorsPerTrainI) (saveWeights ten)
 	    	batch <- loadBatch rng sc dir "train" tensorHistoryTrain tensorsPerTrain
 	    	-- TODO: make loss mask configurable
 	    	loss <- netTrain net sgd batch fullLossMask
@@ -905,8 +900,16 @@ trainingThread log netUpdate ref sc = do
 	    		, ttsCurrent = sSet (Just ten') (ttsCurrent tts)
 	    		, ttsLoss = sSet loss (ttsLoss tts)
 	    		}
-	    	scIO sc -- TODO: do one last netSave
+	    	scIO sc (saveWeights ten')
 	    	loop ten'
+
+	    saveWeights ten = do
+	    		path <- prepareFile dir Weights (show ten <.> "nsn")
+	    		netSave net sgd path
+	    		encodeFileLoop (dir </> subdirectory Weights latestFilename) ten
+	    		atomically . writeTVar netUpdate $ Just ten
+	    		atomically . modifyTVar ref $ \tts -> tts { ttsLastSaved = sSet (Just ten) (ttsLastSaved tts) }
+
 	loop ten0
 	where
 	-- TODO: make these configurable
@@ -936,7 +939,7 @@ trainingThreadLoadLatestNet = do
 chooseTensors :: GenIO -> StatusCheck -> FilePath -> String -> Integer -> Int -> IO [Integer]
 chooseTensors rng sc dir category historySize batchSize = do
 	let go = readLatestTensor dir category >>= \case
-	    	Nothing -> scIO sc >> threadDelay 1000000 >> go
+	    	Nothing -> scIO_ sc >> threadDelay 1000000 >> go
 	    	Just n -> pure n
 	latestTensor <- go
 	let earliestTensor = max 0 (latestTensor - historySize)
@@ -1124,7 +1127,7 @@ loggingThread log sc = do
 			, Right <$> serviceCallsSTM_ log (traverse go)
 			]
 		case step of
-			Left _ -> hClose h >> saveRuntime >> waitForProcess ph >> scIO sc
+			Left _ -> hClose h >> saveRuntime >> waitForProcess ph >> scIO_ sc
 			Right act -> act >> saveRuntime
 
 gridGetLabelAt :: Grid -> Int32 -> Int32 -> IO Label -> IO Label

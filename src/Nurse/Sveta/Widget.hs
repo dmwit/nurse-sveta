@@ -27,7 +27,8 @@ module Nurse.Sveta.Widget (
 	ThreadManager,
 	newThreadManager, tmWidget, tmStartThread, tmDieThen,
 	ThreadView(..), tvNew,
-	StatusCheck(..), Affinity(..),
+	StatusCheck(..), scIO_,
+	Affinity(..),
 
 	-- * Noticing when things change
 	Stable,
@@ -478,9 +479,13 @@ tvNew top refresh compute = do
 		}
 
 data StatusCheck = StatusCheck
-	{ scIO :: IO () -- ^ more efficient, does not block
+	{ scIO :: IO () -> IO () -- ^ more efficient, does not block
 	, scSTM :: STM () -- ^ less efficient, blocks until you should die
 	}
+
+-- | Handy for when you don't need to do any cleanup before shutting down.
+scIO_ :: StatusCheck -> IO ()
+scIO_ sc = scIO sc (pure ())
 
 data ThreadStatus = Live | Dying | Dead SomeException deriving Show
 
@@ -590,10 +595,10 @@ tmStartThread tm = readIORef (tmDying tm) >>= \case
 
 tmCheckStatus :: TVar (Stable ThreadStatus) -> StatusCheck
 tmCheckStatus tsRef = StatusCheck
-	{ scIO = do
+	{ scIO = \cleanup -> do
 		ts <- readTVarIO tsRef
 		case sPayload ts of
-			Dying -> throwIO DiedSuccessfully
+			Dying -> cleanup >> throwIO DiedSuccessfully
 			_ -> pure ()
 	, scSTM = do
 		Stable _ Dying <- readTVar tsRef
