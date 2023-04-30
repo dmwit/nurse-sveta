@@ -29,7 +29,8 @@ common shared
                         , unordered-containers ^>=0.2
                         , vector ^>=0.13
     default-language:   Haskell2010
-    default-extensions:   DeriveAnyClass
+    default-extensions:   BlockArguments
+                        , DeriveAnyClass
                         , DeriveGeneric
                         , DerivingStrategies
                         , DerivingVia
@@ -114,3 +115,8 @@ executable nurse-sveta
 executable nurse-sveta-reset-state
     import:             executable
     main-is:            reset-state.hs
+
+executable nurse-sveta-evaluate-stalls
+    import:             executable
+    main-is:            evaluate-stalls.hs
+    build-depends:        multiset ^>=0.3
