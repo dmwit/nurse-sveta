@@ -87,8 +87,6 @@ main = do
 		bur <- newThreadManager "bureaucracy" Green (bureaucracyThreadView loggingProcedure bureaucracyLock)
 		trn <- newThreadManager "training" OS (trainingThreadView loggingProcedure netUpdate)
 		log <- newThreadManager "logging" Green (loggingThreadView loggingProcedure)
-		replicateM_ 50 (tmStartThread gen)
-		tmStartThread inf
 		tmStartThread bur
 		tmStartThread trn
 		tmStartThread log
