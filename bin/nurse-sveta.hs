@@ -72,6 +72,10 @@ main :: IO ()
 main = do
 	torchPlusGtkFix
 	app <- new Application []
+	(runName, args) <- getArgs >>= \case
+		[] -> fail "USAGE: nurse-sveta RUN_NAME"
+		runName:args -> pure (runName, args)
+
 	on app #activate $ do
 		inferenceProcedure <- newProcedure 100
 		loggingProcedure <- newProcedure 10000
@@ -86,7 +90,7 @@ main = do
 		inf <- newThreadManager "inference" OS (inferenceThreadView inferenceProcedure netUpdate)
 		bur <- newThreadManager "bureaucracy" Green (bureaucracyThreadView loggingProcedure bureaucracyLock)
 		trn <- newThreadManager "training" OS (trainingThreadView loggingProcedure netUpdate)
-		log <- newThreadManager "logging" Green (loggingThreadView loggingProcedure)
+		log <- newThreadManager "logging" Green (loggingThreadView loggingProcedure runName)
 		tmStartThread bur
 		tmStartThread trn
 		tmStartThread log
@@ -124,7 +128,6 @@ main = do
 					pure True
 			]
 		#show w
-	args <- getArgs
 	() <$ #run app (Just args)
 
 tshow :: Show a => a -> T.Text
@@ -1085,13 +1088,13 @@ data LogMessage
 	deriving (Eq, Ord, Read, Show)
 
 -- TODO: this really does not need to update its view 30 times per second, once per hour is enough
-loggingThreadView :: Procedure LogMessage () -> IO ThreadView
-loggingThreadView log = do
+loggingThreadView :: Procedure LogMessage () -> String -> IO ThreadView
+loggingThreadView log runName = do
 	top <- new Box [#orientation := OrientationVertical]
-	tvNew top (pure ()) (loggingThread log)
+	tvNew top (pure ()) (loggingThread log runName)
 
-loggingThread :: Procedure LogMessage () -> StatusCheck -> IO ()
-loggingThread log sc = do
+loggingThread :: Procedure LogMessage () -> String -> StatusCheck -> IO ()
+loggingThread log runName sc = do
 	wandbCat <- getDataFileName "pybits/wandb-cat.py"
 	dir <- nsDataDir
 	previousRuntime <- catch (readFile (dir </> "runtime") >>= readIO) \e ->
@@ -1102,8 +1105,8 @@ loggingThread log sc = do
 	(Just h, Nothing, Nothing, ph) <- createProcess (proc "python3" [wandbCat, "-q"]) { std_in = CreatePipe }
 
 	hPutStrLn h dir
-	hPutStrLn h "Nurse Sveta"
-	Time.getCurrentTime >>= hPrint h
+	hPutStrLn h "Nurse Sveta architecture experiments"
+	hPutStrLn h runName
 	hPutStrLn h "" -- no support for resuming (yet?)
 	hPutStr h . unlines $ tail [undefined
 		, "final layer", "convolutional" -- "fully connected"
