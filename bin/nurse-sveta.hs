@@ -633,15 +633,18 @@ bureaucracyThread log lock status sc = do
 			pending <- catch (listDirectory (dir </> subdirectory GamesPending "")) $ \e ->
 				if isDoesNotExistError e || isAlreadyInUseError e then pure [] else throw e
 			btsUpdate status $ \bts -> bts { btsLatestGlobal = bgs }
-			traverse_ (gameFileToTensorFiles log status dir) (sort pending)
+			let categorization = case splitAt (length pending `div` 10) (sort pending) of
+			    	(test, vis:train) -> [("visualization", [vis]), ("test", test), ("train", train)]
+			    	_ -> []
+			for_ categorization $ \(cat, dat) -> traverse_ (gameFileToTensorFiles log status dir cat) dat
 			btsLatestGlobal . sPayload <$> readTVarIO status
 		btsUpdate status $ \bts -> bts { btsCurrentSplit = btsRequestedSplit bts }
 		-- TODO: comms from other threads to tell us when to try again
 		threadDelay 1000000
 		scIO_ sc
 
-gameFileToTensorFiles :: Procedure LogMessage () -> TVar (Stable BureaucracyThreadState) -> FilePath -> FilePath -> IO ()
-gameFileToTensorFiles log status dir fp = recallGame dir fp >>= \case
+gameFileToTensorFiles :: Procedure LogMessage () -> TVar (Stable BureaucracyThreadState) -> FilePath -> String -> FilePath -> IO ()
+gameFileToTensorFiles log status dir categoryS fp = recallGame dir fp >>= \case
 	GDStillWriting -> pure ()
 	GDParseError -> do
 		relocate dir fp GamesPending GamesParseError
@@ -652,31 +655,31 @@ gameFileToTensorFiles log status dir fp = recallGame dir fp >>= \case
 			}
 	GDSuccess history -> do
 		bts <- sPayload <$> readTVarIO status
-		categoryT <- vsSample (btsCurrentSplit bts)
-		let category = dirEncode (T.unpack categoryT)
+		let categoryD = dirEncode categoryS
+		    categoryT = T.pack categoryS
 		    bgs = btsLatestGlobal bts
 		firstTensor <- asum [empty
 			, maybe empty pure $ HM.lookup categoryT (bgsNextTensor bgs)
-			, maybe empty (pure . succ) =<< decodeFileLoop (dir </> subdirectory (Tensors category) latestFilename)
+			, maybe empty (pure . succ) =<< decodeFileLoop (dir </> subdirectory (Tensors categoryD) latestFilename)
 			, pure 0
 			]
 		meta_ <- asum [empty
 			, maybe empty pure $ HM.lookup categoryT (bgsMetadata bgs)
-			, maybe empty pure =<< decodeFileLoop (dir </> subdirectory (GamesProcessed category) metadataFilename)
+			, maybe empty pure =<< decodeFileLoop (dir </> subdirectory (GamesProcessed categoryD) metadataFilename)
 			, pure newCategoryMetadata
 			]
 
-		tpath <- prepareFile dir (Tensors category) ""
-		jspath <- prepareFile dir (Positions category) ""
+		tpath <- prepareFile dir (Tensors categoryD) ""
+		jspath <- prepareFile dir (Positions categoryD) ""
 		sts <- saveTensors tpath jspath firstTensor history
 		let meta = cmInsert fp (stsVirusesOriginal sts) (stsVirusesKilled sts) (stsFrames sts) meta_
 
-		relocate dir fp GamesPending (GamesProcessed category)
+		relocate dir fp GamesPending (GamesProcessed categoryD)
 		encodeFileLoop
-			(dir </> subdirectory (Tensors category) latestFilename)
+			(dir </> subdirectory (Tensors categoryD) latestFilename)
 			(firstTensor + stsTensorsSaved sts - 1)
 		encodeFileLoop
-			(dir </> subdirectory (GamesProcessed category) metadataFilename)
+			(dir </> subdirectory (GamesProcessed categoryD) metadataFilename)
 			meta
 
 		let logKinds = zip ["viruses", "frames/won", "frames/lost" :: String]
@@ -901,7 +904,7 @@ trainingThread log netUpdate ref sc = do
 	    		, ttsCurrent = sSet (Just ten') (ttsCurrent tts)
 	    		, ttsLoss = sSet loss (ttsLoss tts)
 	    		}
-	    	scIO sc (saveWeights ten')
+	    	scIO sc (saveWeights ten' >> finalVisualization log sc net dir "visualization")
 	    	loop ten'
 
 	    saveWeights ten = do
@@ -953,15 +956,35 @@ loadBatch rng sc dir category historySize batchSize = do
 	ixs <- chooseTensors rng sc dir category historySize batchSize
 	batchLoad [dir </> subdirectory (Tensors category) (show ix <.> "nst") | ix <- ixs]
 
+finalVisualization :: Procedure LogMessage () -> StatusCheck -> Net -> FilePath -> String -> IO ()
+finalVisualization log sc net dir category = do
+	let go = readLatestTensor dir category >>= \case
+	    	Nothing -> scIO_ sc >> threadDelay 1000000 >> go
+	    	Just n -> pure n
+	latestTensor <- go
+	netIn <- batchLoad [dir </> subdirectory (Tensors category) (show i <.> "nst") | i <- [0..latestTensor]]
+	netOut <- netIntrospect net netIn
+	forZipWithM_ [0..latestTensor] netOut \i -> logSingleVisualization
+		log category
+		(\nm -> "final visualization/" ++ nm ++ "/" ++ show i)
+		i
+
 logVisualization :: Procedure LogMessage () -> GenIO -> StatusCheck -> Net -> FilePath -> String -> Integer -> IO ()
 logVisualization log rng sc net dir category historySize = do
 	[ix] <- chooseTensors rng sc dir category historySize 1
-	dataDir <- nsDataDir
-	runtimeDir <- nsRuntimeDir
 	netIn <- batchLoad [dir </> subdirectory (Tensors category) (show ix <.> "nst")]
 	[netOut] <- netIntrospect net netIn
-	mhst <- decodeFileLoop (dataDir </> subdirectory (Positions category) (show ix <.> "json"))
+	logSingleVisualization
+		log category
+		(\nm -> "visualization/" ++ category ++ "/" ++ nm)
+		ix netOut
+
+logSingleVisualization :: Procedure LogMessage () -> String -> (String -> String) -> Integer -> NetIntrospection -> IO ()
+logSingleVisualization log category metricName ix netOut = do
+	dataDir <- nsDataDir
+	runtimeDir <- nsRuntimeDir
 	now <- Time.getCurrentTime
+	mhst <- decodeFileLoop (dataDir </> subdirectory (Positions category) (show ix <.> "json"))
 
 	for_ mhst $ \hst -> do
 		let (w, h) = heatmapSizeRecommendation (hstBoard hst)
@@ -994,7 +1017,7 @@ logVisualization log rng sc net dir category historySize = do
 		    	(maximum [p / reachablePriorsSum | ps <- reachablePriors, (_, p) <- ps])
 
 		    logHeatmapGrid wg hg nm_ draw = G.withImageSurface G.FormatRGB24 (wg*wi) (hg*hi) $ \img -> do
-		    	let nm = "visualization/" ++ category ++ "/" ++ nm_
+		    	let nm = metricName nm_
 		    	    dir = runtimeDir </> dirEncode nm
 		    	    fp = dir </> show now ++ "-" ++ show ix <.> "png"
 		    	G.renderWith img (initMath (wg*wi) (hg*hi) (fromIntegral wg*wd) (fromIntegral hg*hd) >> draw)
