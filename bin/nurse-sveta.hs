@@ -82,6 +82,7 @@ main = do
 		bureaucracyLock <- newMVar newBureaucracyGlobalState
 		netUpdate <- newTVarIO Nothing
 		mainRef <- newIORef Nothing
+		windowLock <- newEmptyMVar
 
 		top <- new Box [#orientation := OrientationHorizontal, #spacing := 10]
 		txt <- new Box [#orientation := OrientationVertical]
@@ -90,7 +91,7 @@ main = do
 		inf <- newThreadManager "inference" OS (inferenceThreadView inferenceProcedure netUpdate)
 		bur <- newThreadManager "bureaucracy" Green (bureaucracyThreadView loggingProcedure bureaucracyLock)
 		trn <- newThreadManager "training" OS (trainingThreadView loggingProcedure netUpdate)
-		log <- newThreadManager "logging" Green (loggingThreadView loggingProcedure runName)
+		log <- newThreadManager "logging" Green (loggingThreadView loggingProcedure windowLock runName)
 		tmStartThread bur
 		tmStartThread trn
 		tmStartThread log
@@ -127,6 +128,7 @@ main = do
 					quitIfAppropriate
 					pure True
 			]
+		putMVar windowLock w
 		#show w
 	() <$ #run app (Just args)
 
@@ -1111,13 +1113,13 @@ data LogMessage
 	deriving (Eq, Ord, Read, Show)
 
 -- TODO: this really does not need to update its view 30 times per second, once per hour is enough
-loggingThreadView :: Procedure LogMessage () -> String -> IO ThreadView
-loggingThreadView log runName = do
+loggingThreadView :: Procedure LogMessage () -> MVar Window -> String -> IO ThreadView
+loggingThreadView log windowLock runName = do
 	top <- new Box [#orientation := OrientationVertical]
-	tvNew top (pure ()) (loggingThread log runName)
+	tvNew top (pure ()) (loggingThread log windowLock runName)
 
-loggingThread :: Procedure LogMessage () -> String -> StatusCheck -> IO ()
-loggingThread log runName sc = do
+loggingThread :: Procedure LogMessage () -> MVar Window -> String -> StatusCheck -> IO ()
+loggingThread log windowLock runName sc = do
 	wandbCat <- getDataFileName "pybits/wandb-cat.py"
 	dir <- nsDataDir
 	previousRuntime <- catch (readFile (dir </> "runtime") >>= readIO) \e ->
@@ -1155,6 +1157,7 @@ loggingThread log runName sc = do
 	    saveRuntime = writeFile (dir </> "runtime") . show =<< getRuntime
 	    getRuntime = getTime Monotonic <&> \now -> previousRuntime + round (now - start)
 
+	fileCloseRequestRef <- newIORef True
 	forever $ do
 		step <- atomically . asum $ tail [undefined
 			, Left <$> scSTM sc
@@ -1163,6 +1166,15 @@ loggingThread log runName sc = do
 		case step of
 			Left _ -> hClose h >> saveRuntime >> waitForProcess ph >> scIO_ sc
 			Right act -> act >> saveRuntime
+		fileCloseRequest <- readIORef fileCloseRequestRef
+		dt <- getRuntime
+		when (fileCloseRequest && dt > fromInteger (3*24*60*60)) do
+			writeIORef fileCloseRequestRef False
+			-- either takeMVar or readMVar will work, but readMVar protects us
+			-- from deadlocking if we accidentally run this twice for some
+			-- reason
+			w <- readMVar windowLock
+			postGUIAsync (SOURCE_REMOVE <$ #close w)
 
 gridGetLabelAt :: Grid -> Int32 -> Int32 -> IO Label -> IO Label
 gridGetLabelAt grid x y factory = #getChildAt grid x y >>= \case
