@@ -39,6 +39,9 @@ module Nurse.Sveta.Widget (
 
 	Tracker,
 	newTracker, tWhenUpdated,
+
+	-- * Other
+	postGUIAsync, Bool(SOURCE_REMOVE, SOURCE_CONTINUE),
 	) where
 
 import Control.Concurrent
@@ -656,6 +659,9 @@ tWhenUpdated t s f = do
 		writeIORef (generationCacheRef t) newGen
 	where
 	newGen = generation s
+
+postGUIAsync :: IO Bool -> IO ()
+postGUIAsync = void . idleAdd PRIORITY_DEFAULT_IDLE
 
 tshow :: Show a => a -> T.Text
 tshow = T.pack . show
