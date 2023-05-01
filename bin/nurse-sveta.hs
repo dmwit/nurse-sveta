@@ -924,7 +924,7 @@ trainingThread log netUpdate ref sc = do
 	tensorHistoryTrain = 500000
 	tensorHistoryTest = 5000
 	visualizationHistoryTrain = 1000
-	tensorsPerVisualization = 1000000
+	tensorsPerVisualization = 10000000
 
 tensorsPerTrain :: Int
 tensorsPerTrain = 1200
