@@ -1140,6 +1140,7 @@ loggingThread log windowLock runName sc = do
 		, "mixup", "no" -- "yes"
 		, "residual blocks", "32" -- "doubling"
 		, "epoch size", show tensorsPerTrain
+		, "loss mask", "0b11111111" -- "0b11110111"
 		, "" -- the config section is null terminated lol
 		]
 	hFlush h
