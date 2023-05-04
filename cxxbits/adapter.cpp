@@ -27,7 +27,10 @@ const int64_t BODY_SIZE = FILTERS * CELLS;
 
 // TODO: A0 started its LR off at 0.2 (!)
 const double INITIAL_LEARNING_RATE = 1e-4;
-const double EPSILON = 1e-10;
+const double EPSILON = 1e-7;
+
+const torch::Dtype C_INTERFACE_FLOAT = torch::kF64;
+const torch::Dtype GPU_FLOAT = torch::kF32;
 
 struct TensorSketch {
 	torch::Device dev;
@@ -113,7 +116,8 @@ struct NetInput {
 	NetInput(int n, char *boards_data, char *lookaheads_data, double *scalars_data) {
 		DebugScope dbg("NetInput(n, boards, lookaheads, scalars)", DEFAULT_CONSTRUCTOR_VERBOSITY);
 		auto  u8Options = torch::TensorOptions().dtype(torch::kU8);
-		auto f64Options = torch::TensorOptions().dtype(torch::kF64);
+		// TODO: cleanup names like this that refer to a physical dtype rather than a logical one
+		auto f64Options = torch::TensorOptions().dtype(C_INTERFACE_FLOAT);
 		boards     = torch::from_blob(    boards_data, {n, CELL_SIZE, BOARD_WIDTH, BOARD_HEIGHT}, [](void *v){},  u8Options);
 		lookaheads = torch::from_blob(lookaheads_data, {n, LOOKAHEAD_SIZE}                      , [](void *v){},  u8Options);
 		scalars    = torch::from_blob(   scalars_data, {n, SCALARS}                             , [](void *v){}, f64Options);
@@ -122,7 +126,7 @@ struct NetInput {
 	NetInput(int n) {
 		DebugScope dbg("NetInput(n)", DEFAULT_CONSTRUCTOR_VERBOSITY);
 		auto  u8Options = torch::TensorOptions().dtype(torch::kU8);
-		auto f64Options = torch::TensorOptions().dtype(torch::kF64);
+		auto f64Options = torch::TensorOptions().dtype(C_INTERFACE_FLOAT);
 		boards     = torch::empty({n, CELL_SIZE, BOARD_WIDTH, BOARD_HEIGHT},  u8Options);
 		lookaheads = torch::empty({n, LOOKAHEAD_SIZE}                      ,  u8Options);
 		scalars    = torch::empty({n, SCALARS}                             , f64Options);
@@ -130,11 +134,9 @@ struct NetInput {
 
 	void to_gpu() {
 		DebugScope dbg("NetInput::to_gpu", DEFAULT_TRANSFER_VERBOSITY);
-		boards     = boards    .to(torch::kCUDA);
-		lookaheads = lookaheads.to(torch::kCUDA);
-		scalars    = scalars   .to(torch::kCUDA);
-		boards     = boards    .to(torch::kF64);
-		lookaheads = lookaheads.to(torch::kF64);
+		boards     = boards    .to(torch::kCUDA).to(GPU_FLOAT);
+		lookaheads = lookaheads.to(torch::kCUDA).to(GPU_FLOAT);
+		scalars    = scalars   .to(torch::kCUDA).to(GPU_FLOAT);
 	}
 
 	void save(torch::serialize::OutputArchive &archive) const {
@@ -187,7 +189,7 @@ struct NetOutput {
 
 	NetOutput(int n, double *priors_data, double *valuation_data, unsigned char *fall_time_data, char *occupied_data, double *virus_kills_data, double *wishlist_data, double *clear_location_data, double *clear_pill_data) {
 		DebugScope dbg("NetOutput(n, ...)", DEFAULT_CONSTRUCTOR_VERBOSITY);
-		auto f64Opts = torch::TensorOptions().dtype(torch::kF64);
+		auto f64Opts = torch::TensorOptions().dtype(C_INTERFACE_FLOAT);
 		auto  u8Opts = torch::TensorOptions().dtype(torch::kU8 );
 
 		priors         = torch::from_blob(        priors_data, {n, ROTATIONS, BOARD_WIDTH, BOARD_HEIGHT                   }, [](void *) {}, f64Opts);
@@ -202,7 +204,7 @@ struct NetOutput {
 
 	NetOutput(int n) {
 		DebugScope dbg("NetOutput(n)", DEFAULT_CONSTRUCTOR_VERBOSITY);
-		auto f64Opts = torch::TensorOptions().dtype(torch::kF64);
+		auto f64Opts = torch::TensorOptions().dtype(C_INTERFACE_FLOAT);
 		auto  u8Opts = torch::TensorOptions().dtype(torch::kU8 );
 		priors         = torch::empty({n, ROTATIONS, BOARD_WIDTH, BOARD_HEIGHT                   }, f64Opts);
 		valuation      = torch::empty({n                                                         }, f64Opts);
@@ -216,28 +218,26 @@ struct NetOutput {
 
 	void to_gpu() {
 		DebugScope dbg("NetOutput::to_gpu", DEFAULT_TRANSFER_VERBOSITY);
-		priors         = priors        .to(torch::kCUDA);
-		valuation      = valuation     .to(torch::kCUDA);
-		fall_time      = fall_time     .to(torch::kCUDA);
-		occupied       = occupied      .to(torch::kCUDA);
-		virus_kills    = virus_kills   .to(torch::kCUDA);
-		wishlist       = wishlist      .to(torch::kCUDA);
-		clear_location = clear_location.to(torch::kCUDA);
-		clear_pill     = clear_pill    .to(torch::kCUDA);
-		fall_time      = fall_time     .to(torch::kF64);
-		occupied       = occupied      .to(torch::kF64);
+		priors         = priors        .to(torch::kCUDA).to(GPU_FLOAT);
+		valuation      = valuation     .to(torch::kCUDA).to(GPU_FLOAT);
+		fall_time      = fall_time     .to(torch::kCUDA).to(GPU_FLOAT);
+		occupied       = occupied      .to(torch::kCUDA).to(GPU_FLOAT);
+		virus_kills    = virus_kills   .to(torch::kCUDA).to(GPU_FLOAT);
+		wishlist       = wishlist      .to(torch::kCUDA).to(GPU_FLOAT);
+		clear_location = clear_location.to(torch::kCUDA).to(GPU_FLOAT);
+		clear_pill     = clear_pill    .to(torch::kCUDA).to(GPU_FLOAT);
 	}
 
 	void to_cpu() {
 		DebugScope dbg("NetOutput::to_cpu", DEFAULT_TRANSFER_VERBOSITY);
-		priors         = priors        .to(torch::kCPU);
-		valuation      = valuation     .to(torch::kCPU);
-		fall_time      = fall_time     .to(torch::kCPU);
-		occupied       = occupied      .to(torch::kCPU);
-		virus_kills    = virus_kills   .to(torch::kCPU);
-		wishlist       = wishlist      .to(torch::kCPU);
-		clear_location = clear_location.to(torch::kCPU);
-		clear_pill     = clear_pill    .to(torch::kCPU);
+		priors         = priors        .to(torch::kCPU).to(C_INTERFACE_FLOAT);
+		valuation      = valuation     .to(torch::kCPU).to(C_INTERFACE_FLOAT);
+		fall_time      = fall_time     .to(torch::kCPU).to(C_INTERFACE_FLOAT);
+		occupied       = occupied      .to(torch::kCPU).to(C_INTERFACE_FLOAT);
+		virus_kills    = virus_kills   .to(torch::kCPU).to(C_INTERFACE_FLOAT);
+		wishlist       = wishlist      .to(torch::kCPU).to(C_INTERFACE_FLOAT);
+		clear_location = clear_location.to(torch::kCPU).to(C_INTERFACE_FLOAT);
+		clear_pill     = clear_pill    .to(torch::kCPU).to(C_INTERFACE_FLOAT);
 	}
 
 	void save(torch::serialize::OutputArchive &archive) const {
@@ -325,8 +325,7 @@ struct Batch {
 		DebugScope dbg("Batch::to_gpu", DEFAULT_TRANSFER_VERBOSITY);
 		in.to_gpu();
 		out.to_gpu();
-		reachable = reachable.to(torch::kCUDA);
-		reachable = reachable.to(torch::kF64);
+		reachable = reachable.to(torch::kCUDA).to(GPU_FLOAT);
 	}
 
 	void save(torch::serialize::OutputArchive &archive) {
@@ -368,7 +367,6 @@ class Conv2dReLUInitImpl : public torch::nn::Module {
 			, conv(torch::nn::Conv2d(torch::nn::Conv2dOptions(iChans, oChans, k).padding(padding)))
 		{
 			DebugScope dbg("Conv2dReLUInitImpl(...)", DEFAULT_CONSTRUCTOR_VERBOSITY);
-			auto opts = torch::TensorOptions().dtype(torch::kFloat64).requires_grad(true);
 			// scaling factor is from Delving Deep into Rectifiers
 			auto scaling = std::sqrt(2 / ((1 + leakage*leakage) * k*k*iChans));
 			torch::autograd::GradMode::set_enabled(false);
@@ -450,7 +448,7 @@ class NetImpl : public torch::nn::Module {
 				register_module("output linear", output_linear);
 
 				to(torch::kCUDA);
-				to(torch::kF64);
+				to(GPU_FLOAT);
 			}
 
 		NetOutput forward(const NetInput &in);
@@ -501,7 +499,7 @@ torch::Tensor detailed_loss(Net &net, const Batch &batch) {
 	DebugScope dbg("detailed_loss(net, batch)");
 	const int n = batch.out.priors.size(0);
 	auto net_out = net->forward(batch.in);
-	auto opts = torch::TensorOptions().dtype(torch::kF64).device(torch::kCUDA);
+	auto opts = torch::TensorOptions().dtype(GPU_FLOAT).device(torch::kCUDA);
 	auto loss = torch::zeros({OUTPUT_TYPES}, opts);
 	int64_t i = 0;
 	// Kullback-Leibler divergence for priors
@@ -530,13 +528,13 @@ torch::Tensor detailed_loss(Net &net, const Batch &batch) {
 void tensorcpy(double *out, const torch::Tensor &in) {
 	DebugScope dbg("tensorcpy", DEFAULT_SERIALIZATION_VERBOSITY);
 	if(out == NULL) return;
-	if(in.dtype() != torch::kF64) throw 0;
+	if(in.dtype() != GPU_FLOAT) throw 0;
 	int64_t len = 1;
 	for(int i = 0; i < in.dim(); i++) len *= in.size(i);
 
 	// TODO: is it safe to inline the definition of contig_in, or will that
 	// lead to the Tensor being destructed before memcpy finishes?
-	auto contig_in = in.to(torch::kCPU).contiguous();
+	auto contig_in = in.to(torch::kCPU).to(C_INTERFACE_FLOAT).contiguous();
 	std::memcpy(out, contig_in.data_ptr<double>(), len*sizeof(double));
 }
 
@@ -656,16 +654,19 @@ double train_net(Net *net, torch::optim::SGD *optim, Batch *batch, unsigned long
 	optim->zero_grad();
 	auto losses = detailed_loss(*net, *batch);
 
-	double loss_mask_array[OUTPUT_TYPES];
+	// TODO: make typedefs for GPU_FLOAT and C_INTERFACE_FLOAT (which should
+	// probably become kGPU_FLOAT and kC_INTERFACE_FLOAT respectively) and
+	// replace all uses of double and float with the appropriate one of them
+	float loss_mask_array[OUTPUT_TYPES];
 	for(int i = 0; i < OUTPUT_TYPES; i++) {
 		loss_mask_array[i] = (loss_mask & (1 << i))?1:0;
 	}
-	auto loss_mask_tensor = torch::from_blob(loss_mask_array, {OUTPUT_TYPES}, [](void *v){}, torch::TensorOptions().dtype(torch::kF64)).to(torch::kCUDA);
+	auto loss_mask_tensor = torch::from_blob(loss_mask_array, {OUTPUT_TYPES}, [](void *v){}, torch::TensorOptions().dtype(GPU_FLOAT)).to(torch::kCUDA);
 	auto loss = (losses * loss_mask_tensor).sum();
 
 	loss.backward();
 	optim->step();
-	loss = loss.to(torch::kCPU);
+	loss = loss.to(torch::kCPU).to(C_INTERFACE_FLOAT);
 	return *loss.data_ptr<double>();
 }
 
