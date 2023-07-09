@@ -929,7 +929,7 @@ trainingThread log netUpdate ref sc = do
 	tensorsPerVisualization = 10000000
 
 tensorsPerTrain :: Int
-tensorsPerTrain = 10
+tensorsPerTrain = 1200
 
 trainingThreadLoadLatestNet :: IO (Integer, Net, Optimizer)
 trainingThreadLoadLatestNet = do

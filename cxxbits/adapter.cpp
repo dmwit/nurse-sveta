@@ -26,7 +26,7 @@ const double LEAKAGE = 0.01;
 const int64_t BODY_SIZE = FILTERS * CELLS;
 
 // TODO: A0 started its LR off at 0.2 (!)
-const double INITIAL_LEARNING_RATE = 1e-4;
+const double INITIAL_LEARNING_RATE = 1e-30;
 const double EPSILON = 1e-7;
 
 const torch::Dtype C_INTERFACE_FLOAT = torch::kF64;
@@ -464,6 +464,7 @@ TORCH_MODULE(Net);
 
 NetOutput NetImpl::forward(const NetInput &in) {
 	DebugScope dbg("NetImpl::forward");
+	in.sketch(dbg << "in.sketch: ") << std::endl;
 	const int64_t n = in.boards.size(0);
 	torch::Tensor t = input_norm->forward(
 		board_convolution->forward(in.boards) +
@@ -472,6 +473,8 @@ NetOutput NetImpl::forward(const NetInput &in) {
 		);
 	for(int64_t i = 0; i < RESIDUAL_BLOCKS; i++) t = residuals[i]->forward(t);
 	t = output_convolution->forward(t);
+	dbg << "t: " << TensorSketch(t) << std::endl;
+	dbg << t << std::endl;
 
 	NetOutput out;
 	int64_t i = 0;
@@ -491,6 +494,8 @@ NetOutput NetImpl::forward(const NetInput &in) {
 	out.valuation  = t.index({all, i}).reshape({n}).sigmoid(); i++;
 	out.fall_time  = t.index({all, i}).reshape({n}); i++;
 	if(i != OUTPUT_SCALARS) throw 0;
+
+	out.sketch(dbg << "out.sketch: ") << std::endl;
 
 	return out;
 }
@@ -608,6 +613,7 @@ void save_example(char *path, char *reachable,
 	char *board, char *lookahead, double *scalars) {
 	DebugScope dbg("save_example", DEFAULT_SERIALIZATION_VERBOSITY);
 	Batch batch(1, reachable, priors, &valuation, &fall_time, occupied, virus_kills, wishlist, clear_location, clear_pill, board, lookahead, scalars);
+	batch.sketch(dbg << "");
 	torch::serialize::OutputArchive archive;
 	batch.save(archive);
 	archive.save_to(path);
@@ -652,6 +658,17 @@ void discard_batch(Batch *batch) {
 double train_net(Net *net, torch::optim::SGD *optim, Batch *batch, unsigned long loss_mask) {
 	DebugScope dbg("train_net");
 	optim->zero_grad();
+
+	dbg << "zero'd gradients" << std::endl;
+	for(torch::Tensor param: (**net).parameters()) {
+		dbg << "parameter sketch: " << TensorSketch(param) << std::endl;
+		dbg << "parameter gradient: " << param.grad() << std::endl;
+	}
+	for(torch::Tensor buffer: (**net).buffers()) {
+		dbg << "buffer sketch: " << TensorSketch(buffer) << std::endl;
+		dbg << "buffer gradient: " << buffer.grad() << std::endl;
+	}
+
 	auto losses = detailed_loss(*net, *batch);
 
 	// TODO: make typedefs for GPU_FLOAT and C_INTERFACE_FLOAT (which should
@@ -662,11 +679,38 @@ double train_net(Net *net, torch::optim::SGD *optim, Batch *batch, unsigned long
 		loss_mask_array[i] = (loss_mask & (1 << i))?1:0;
 	}
 	auto loss_mask_tensor = torch::from_blob(loss_mask_array, {OUTPUT_TYPES}, [](void *v){}, torch::TensorOptions().dtype(GPU_FLOAT)).to(torch::kCUDA);
+	dbg << "loss mask: " << loss_mask << std::endl;
+	dbg << "loss mask tensor: " << loss_mask_tensor << std::endl;
 	auto loss = (losses * loss_mask_tensor).sum();
+	dbg << "losses: " << losses << std::endl;
+	dbg << "loss: " << loss << std::endl;
 
 	loss.backward();
+
+	dbg << "called loss.backward()" << std::endl;
+	for(torch::Tensor param: (**net).parameters()) {
+		dbg << "parameter sketch: " << TensorSketch(param) << std::endl;
+		dbg << "parameter gradient: " << param.grad() << std::endl;
+	}
+	for(torch::Tensor buffer: (**net).buffers()) {
+		dbg << "buffer sketch: " << TensorSketch(buffer) << std::endl;
+		dbg << "buffer gradient: " << buffer.grad() << std::endl;
+	}
+
 	optim->step();
+
+	dbg << "called optim->step()" << std::endl;
+	for(torch::Tensor param: (**net).parameters()) {
+		dbg << "parameter sketch: " << TensorSketch(param) << std::endl;
+		dbg << "parameter gradient: " << param.grad() << std::endl;
+	}
+	for(torch::Tensor buffer: (**net).buffers()) {
+		dbg << "buffer sketch: " << TensorSketch(buffer) << std::endl;
+		dbg << "buffer gradient: " << buffer.grad() << std::endl;
+	}
+
 	loss = loss.to(torch::kCPU).to(C_INTERFACE_FLOAT);
+	dbg << "loss@CPU: " << loss << std::endl;
 	return *loss.data_ptr<double>();
 }
 
