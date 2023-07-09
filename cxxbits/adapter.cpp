@@ -1,5 +1,7 @@
 #include <torch/torch.h>
 
+// #define DEBUG
+
 const int64_t BOARD_WIDTH = 8;
 const int64_t BOARD_HEIGHT = 16;
 const int64_t LOOKAHEAD_SIZE = 6;
@@ -50,15 +52,66 @@ std::ostream &operator<<(std::ostream &o, const TensorSketch sketch) {
 	return o << "]@" << sketch.dev << (sketch.grad?"+":"-");
 }
 
+enum DebugVerbosity
+	{ SILENT = 0
+	, INFO
+	, CALLS
+	, VERBOSE = CALLS
+	};
+
+const DebugVerbosity DEFAULT_LAYER_VERBOSITY = SILENT;
+const DebugVerbosity DEFAULT_CONSTRUCTOR_VERBOSITY = SILENT;
+const DebugVerbosity DEFAULT_SERIALIZATION_VERBOSITY = SILENT;
+const DebugVerbosity DEFAULT_TRANSFER_VERBOSITY = SILENT;
+const DebugVerbosity DEFAULT_VERBOSITY = VERBOSE;
+
+class DebugScope {
+	public:
+		DebugScope(std::string nm, int vrb = DEFAULT_VERBOSITY)
+			: devnull(0) // https://stackoverflow.com/q/7818371/791604
+#ifdef DEBUG
+			, name(nm)
+			, verbosity(vrb)
+			{
+				if(verbosity >= CALLS) std::cerr << "entering " << name << std::endl;
+			}
+#else
+			{}
+#endif
+
+		~DebugScope() {
+#ifdef DEBUG
+			if(verbosity >= CALLS) std::cerr << "exiting  " << name << std::endl;
+#endif
+		}
+
+		template<typename T>
+		std::ostream &operator<<(const T &t) {
+#ifdef DEBUG
+			if(verbosity >= INFO)
+				return std::cerr << "\t" << name << ": " << t;
+#endif
+			return devnull;
+		}
+
+	private:
+#ifdef DEBUG
+		const std::string name;
+		const int verbosity;
+#endif
+		std::ostream devnull;
+};
+
 struct NetInput {
 	// boards: [n, 8, 16]
 	// lookaheads: [n, 6]
 	// scalars: [n, 4]
 	torch::Tensor boards, lookaheads, scalars;
 
-	NetInput() {}
+	NetInput() { DebugScope dbg("NetInput()", DEFAULT_CONSTRUCTOR_VERBOSITY); }
 
 	NetInput(int n, char *boards_data, char *lookaheads_data, double *scalars_data) {
+		DebugScope dbg("NetInput(n, boards, lookaheads, scalars)", DEFAULT_CONSTRUCTOR_VERBOSITY);
 		auto  u8Options = torch::TensorOptions().dtype(torch::kU8);
 		auto f64Options = torch::TensorOptions().dtype(torch::kF64);
 		boards     = torch::from_blob(    boards_data, {n, CELL_SIZE, BOARD_WIDTH, BOARD_HEIGHT}, [](void *v){},  u8Options);
@@ -67,6 +120,7 @@ struct NetInput {
 	}
 
 	NetInput(int n) {
+		DebugScope dbg("NetInput(n)", DEFAULT_CONSTRUCTOR_VERBOSITY);
 		auto  u8Options = torch::TensorOptions().dtype(torch::kU8);
 		auto f64Options = torch::TensorOptions().dtype(torch::kF64);
 		boards     = torch::empty({n, CELL_SIZE, BOARD_WIDTH, BOARD_HEIGHT},  u8Options);
@@ -75,6 +129,7 @@ struct NetInput {
 	}
 
 	void to_gpu() {
+		DebugScope dbg("NetInput::to_gpu", DEFAULT_TRANSFER_VERBOSITY);
 		boards     = boards    .to(torch::kCUDA);
 		lookaheads = lookaheads.to(torch::kCUDA);
 		scalars    = scalars   .to(torch::kCUDA);
@@ -83,18 +138,21 @@ struct NetInput {
 	}
 
 	void save(torch::serialize::OutputArchive &archive) const {
+		DebugScope dbg("NetInput::save", DEFAULT_SERIALIZATION_VERBOSITY);
 		archive.write("boards"    , boards    , true);
 		archive.write("lookaheads", lookaheads, true);
 		archive.write("scalars"   , scalars   , true);
 	}
 
 	void load(torch::serialize::InputArchive &archive) {
+		DebugScope dbg("NetInput::load", DEFAULT_SERIALIZATION_VERBOSITY);
 		archive.read("boards"    , boards    , true);
 		archive.read("lookaheads", lookaheads, true);
 		archive.read("scalars"   , scalars   , true);
 	}
 
 	std::ostream &dump(std::ostream &o) const {
+		DebugScope dbg("NetInput::dump", DEFAULT_SERIALIZATION_VERBOSITY);
 		return o
 			<<     "boards: " << boards     << std::endl
 			<< "lookaheads: " << lookaheads << std::endl
@@ -103,6 +161,7 @@ struct NetInput {
 	}
 
 	std::ostream &sketch(std::ostream &o) const {
+		DebugScope dbg("NetInput::sketch", DEFAULT_SERIALIZATION_VERBOSITY);
 		return o
 			<<     "boards: " << TensorSketch(boards    ) << ", "
 			<< "lookaheads: " << TensorSketch(lookaheads) << ", "
@@ -124,9 +183,10 @@ struct NetOutput {
 	// clear_pill: [n, 2, 3, 3]
 	torch::Tensor priors, valuation, fall_time, occupied, virus_kills, wishlist, clear_location, clear_pill;
 
-	NetOutput() {}
+	NetOutput() { DebugScope dbg("NetOutput()", DEFAULT_CONSTRUCTOR_VERBOSITY); }
 
 	NetOutput(int n, double *priors_data, double *valuation_data, unsigned char *fall_time_data, char *occupied_data, double *virus_kills_data, double *wishlist_data, double *clear_location_data, double *clear_pill_data) {
+		DebugScope dbg("NetOutput(n, ...)", DEFAULT_CONSTRUCTOR_VERBOSITY);
 		auto f64Opts = torch::TensorOptions().dtype(torch::kF64);
 		auto  u8Opts = torch::TensorOptions().dtype(torch::kU8 );
 
@@ -141,6 +201,7 @@ struct NetOutput {
 	}
 
 	NetOutput(int n) {
+		DebugScope dbg("NetOutput(n)", DEFAULT_CONSTRUCTOR_VERBOSITY);
 		auto f64Opts = torch::TensorOptions().dtype(torch::kF64);
 		auto  u8Opts = torch::TensorOptions().dtype(torch::kU8 );
 		priors         = torch::empty({n, ROTATIONS, BOARD_WIDTH, BOARD_HEIGHT                   }, f64Opts);
@@ -154,6 +215,7 @@ struct NetOutput {
 	}
 
 	void to_gpu() {
+		DebugScope dbg("NetOutput::to_gpu", DEFAULT_TRANSFER_VERBOSITY);
 		priors         = priors        .to(torch::kCUDA);
 		valuation      = valuation     .to(torch::kCUDA);
 		fall_time      = fall_time     .to(torch::kCUDA);
@@ -167,6 +229,7 @@ struct NetOutput {
 	}
 
 	void to_cpu() {
+		DebugScope dbg("NetOutput::to_cpu", DEFAULT_TRANSFER_VERBOSITY);
 		priors         = priors        .to(torch::kCPU);
 		valuation      = valuation     .to(torch::kCPU);
 		fall_time      = fall_time     .to(torch::kCPU);
@@ -178,6 +241,7 @@ struct NetOutput {
 	}
 
 	void save(torch::serialize::OutputArchive &archive) const {
+		DebugScope dbg("NetOutput::save", DEFAULT_SERIALIZATION_VERBOSITY);
 		archive.write("priors"        , priors        , true);
 		archive.write("valuation"     , valuation     , true);
 		archive.write("fall_time"     , fall_time     , true);
@@ -189,6 +253,7 @@ struct NetOutput {
 	}
 
 	void load(torch::serialize::InputArchive &archive) {
+		DebugScope dbg("NetOutput::load", DEFAULT_SERIALIZATION_VERBOSITY);
 		archive.read("priors"        , priors        , true);
 		archive.read("valuation"     , valuation     , true);
 		archive.read("fall_time"     , fall_time     , true);
@@ -200,6 +265,7 @@ struct NetOutput {
 	}
 
 	std::ostream &dump(std::ostream &o) const {
+		DebugScope dbg("NetOutput::dump", DEFAULT_SERIALIZATION_VERBOSITY);
 		return o
 			<<         "priors: " << priors         << std::endl
 			<<      "valuation: " << valuation      << std::endl
@@ -213,6 +279,7 @@ struct NetOutput {
 	}
 
 	std::ostream &sketch(std::ostream &o) const {
+		DebugScope dbg("NetOutput::sketch", DEFAULT_SERIALIZATION_VERBOSITY);
 		return o
 			<<         "priors: " << TensorSketch(priors        ) << ", "
 			<<      "valuation: " << TensorSketch(valuation     ) << ", "
@@ -234,9 +301,10 @@ struct Batch {
 	// reachable: [n, 4, 8, 16]
 	torch::Tensor reachable;
 
-	Batch() {}
+	Batch() { DebugScope dbg("Batch()", DEFAULT_CONSTRUCTOR_VERBOSITY); }
 
 	Batch(int n): in(n), out(n) {
+		DebugScope dbg("Batch(n)", DEFAULT_CONSTRUCTOR_VERBOSITY);
 		auto charOptions = torch::TensorOptions().dtype(torch::kU8);
 		reachable = torch::empty({n, ROTATIONS, BOARD_WIDTH, BOARD_HEIGHT}, charOptions);
 	}
@@ -248,11 +316,13 @@ struct Batch {
 		)
 		: in(n, boards_data, lookaheads_data, scalars_data)
 		, out(n, priors_data, valuation_data, fall_time_data, occupied_data, virus_kills_data, wishlist_data, clear_location_data, clear_pill_data) {
+		DebugScope dbg("Batch(n, ...)", DEFAULT_CONSTRUCTOR_VERBOSITY);
 		auto charOptions = torch::TensorOptions().dtype(torch::kU8);
 		reachable = torch::from_blob(reachable_data, {n, ROTATIONS, BOARD_WIDTH, BOARD_HEIGHT}, [](void *){}, charOptions);
 	}
 
 	void to_gpu() {
+		DebugScope dbg("Batch::to_gpu", DEFAULT_TRANSFER_VERBOSITY);
 		in.to_gpu();
 		out.to_gpu();
 		reachable = reachable.to(torch::kCUDA);
@@ -260,18 +330,21 @@ struct Batch {
 	}
 
 	void save(torch::serialize::OutputArchive &archive) {
+		DebugScope dbg("Batch::save", DEFAULT_SERIALIZATION_VERBOSITY);
 		in.save(archive);
 		out.save(archive);
 		archive.write("reachable", reachable, true);
 	}
 
 	void load(torch::serialize::InputArchive &archive) {
+		DebugScope dbg("Batch::load", DEFAULT_SERIALIZATION_VERBOSITY);
 		in.load(archive);
 		out.load(archive);
 		archive.read("reachable", reachable, true);
 	}
 
 	std::ostream &dump(std::ostream &o) const {
+		DebugScope dbg("Batch::dump", DEFAULT_SERIALIZATION_VERBOSITY);
 		return o
 			<< in
 			<< out
@@ -279,6 +352,7 @@ struct Batch {
 	}
 
 	std::ostream &sketch(std::ostream &o) const {
+		DebugScope dbg("Batch::sketch", DEFAULT_SERIALIZATION_VERBOSITY);
 		in.sketch(o) << ", ";
 		out.sketch(o) << ", ";
 		return o << "reachable: " << TensorSketch(reachable);
@@ -293,6 +367,7 @@ class Conv2dReLUInitImpl : public torch::nn::Module {
 			: torch::nn::Module("Conv2d (custom initialization)")
 			, conv(torch::nn::Conv2d(torch::nn::Conv2dOptions(iChans, oChans, k).padding(padding)))
 		{
+			DebugScope dbg("Conv2dReLUInitImpl(...)", DEFAULT_CONSTRUCTOR_VERBOSITY);
 			auto opts = torch::TensorOptions().dtype(torch::kFloat64).requires_grad(true);
 			// scaling factor is from Delving Deep into Rectifiers
 			auto scaling = std::sqrt(2 / ((1 + leakage*leakage) * k*k*iChans));
@@ -303,7 +378,10 @@ class Conv2dReLUInitImpl : public torch::nn::Module {
 			register_module("conv", conv);
 		}
 
-		torch::Tensor forward(const torch::Tensor &in) { return conv->forward(in); }
+		torch::Tensor forward(const torch::Tensor &in) {
+			DebugScope dbg("Conv2dReLUInitImpl::forward", DEFAULT_LAYER_VERBOSITY);
+			return conv->forward(in);
+		}
 
 		torch::nn::Conv2d conv;
 };
@@ -319,6 +397,7 @@ class ResidualImpl : public torch::nn::Module {
 			, norm1(torch::nn::BatchNorm2dOptions(chans))
 			, lrelu(torch::nn::LeakyReLU(torch::nn::LeakyReLUOptions().negative_slope(leakage)))
 		{
+			DebugScope dbg("ResidualImpl(...)", DEFAULT_CONSTRUCTOR_VERBOSITY);
 			register_module("conv0", conv0);
 			register_module("conv1", conv1);
 			register_module("norm0", norm0);
@@ -327,6 +406,7 @@ class ResidualImpl : public torch::nn::Module {
 		}
 
 		torch::Tensor forward(const torch::Tensor &in) {
+			DebugScope dbg("ResidualImpl::forward", DEFAULT_LAYER_VERBOSITY);
 			return lrelu->forward(in +
 				norm1->forward(
 				conv1->forward(
@@ -353,6 +433,7 @@ class NetImpl : public torch::nn::Module {
 			, output_convolution(FILTERS, OUTPUT_LAYERS, LEAKAGE, 0, 1)
 			, output_linear(CELLS, OUTPUT_SCALARS)
 			{
+				DebugScope dbg("NetImpl()", DEFAULT_CONSTRUCTOR_VERBOSITY);
 				register_module("initial board convolution", board_convolution);
 				register_module("fully-connected feed for lookaheads", lookahead_linear);
 				register_module("fully-connected feed for game history statistics", scalar_linear);
@@ -384,6 +465,7 @@ class NetImpl : public torch::nn::Module {
 TORCH_MODULE(Net);
 
 NetOutput NetImpl::forward(const NetInput &in) {
+	DebugScope dbg("NetImpl::forward");
 	const int64_t n = in.boards.size(0);
 	torch::Tensor t = input_norm->forward(
 		board_convolution->forward(in.boards) +
@@ -416,6 +498,7 @@ NetOutput NetImpl::forward(const NetInput &in) {
 }
 
 torch::Tensor detailed_loss(Net &net, const Batch &batch) {
+	DebugScope dbg("detailed_loss(net, batch)");
 	const int n = batch.out.priors.size(0);
 	auto net_out = net->forward(batch.in);
 	auto opts = torch::TensorOptions().dtype(torch::kF64).device(torch::kCUDA);
@@ -445,6 +528,7 @@ torch::Tensor detailed_loss(Net &net, const Batch &batch) {
 }
 
 void tensorcpy(double *out, const torch::Tensor &in) {
+	DebugScope dbg("tensorcpy", DEFAULT_SERIALIZATION_VERBOSITY);
 	if(out == NULL) return;
 	if(in.dtype() != torch::kF64) throw 0;
 	int64_t len = 1;
@@ -474,14 +558,19 @@ extern "C" {
 }
 
 Net *sample_net(bool training) {
+	DebugScope dbg("sample_net", DEFAULT_CONSTRUCTOR_VERBOSITY);
 	Net *net = new Net();
 	// TODO: does this do everything we want? turn off autograd e.g.?
 	(**net).train(training);
 	return net;
 }
-void discard_net(Net *net) { delete net; }
+void discard_net(Net *net) {
+	DebugScope dbg("discard_net", DEFAULT_CONSTRUCTOR_VERBOSITY);
+	delete net;
+}
 
 void save_net(Net *net, torch::optim::SGD *optim, char *path) {
+	DebugScope dbg("save_net", DEFAULT_SERIALIZATION_VERBOSITY);
 	torch::serialize::OutputArchive archive;
 	(**net).save(archive);
 	optim->save(archive);
@@ -489,6 +578,7 @@ void save_net(Net *net, torch::optim::SGD *optim, char *path) {
 }
 
 void load_net(char *path, Net **netptr, torch::optim::SGD **optimptr) {
+	DebugScope dbg("load_net", DEFAULT_SERIALIZATION_VERBOSITY);
 	torch::serialize::InputArchive archive;
 	archive.load_from(path);
 
@@ -506,6 +596,7 @@ void load_net(char *path, Net **netptr, torch::optim::SGD **optimptr) {
 }
 
 void evaluate_net(Net *net, int n, double *priors, double *valuation, char *boards, char *lookaheads, double *scalars) {
+	DebugScope dbg("evaluate_net");
 	torch::NoGradGuard g;
 	NetInput in(n, boards, lookaheads, scalars); in.to_gpu();
 	NetOutput out = (**net).forward(in);
@@ -517,6 +608,7 @@ void evaluate_net(Net *net, int n, double *priors, double *valuation, char *boar
 void save_example(char *path, char *reachable,
 	double *priors, double valuation, unsigned char fall_time, char *occupied, double *virus_kills, double *wishlist, double *clear_location, double *clear_pill,
 	char *board, char *lookahead, double *scalars) {
+	DebugScope dbg("save_example", DEFAULT_SERIALIZATION_VERBOSITY);
 	Batch batch(1, reachable, priors, &valuation, &fall_time, occupied, virus_kills, wishlist, clear_location, clear_pill, board, lookahead, scalars);
 	torch::serialize::OutputArchive archive;
 	batch.save(archive);
@@ -524,6 +616,7 @@ void save_example(char *path, char *reachable,
 }
 
 Batch *load_batch(char **path, int n) {
+	DebugScope dbg("load_batch", DEFAULT_SERIALIZATION_VERBOSITY);
 	Batch *batch = new Batch(n), example;
 	torch::serialize::InputArchive archive;
 
@@ -548,10 +641,18 @@ Batch *load_batch(char **path, int n) {
 	return batch;
 }
 
-int batch_size(Batch *batch) { return batch->reachable.size(0); }
-void discard_batch(Batch *batch) { delete batch; }
+int batch_size(Batch *batch) {
+	DebugScope dbg("batch_size");
+	return batch->reachable.size(0);
+}
+
+void discard_batch(Batch *batch) {
+	DebugScope dbg("discard_batch", DEFAULT_CONSTRUCTOR_VERBOSITY);
+	delete batch;
+}
 
 double train_net(Net *net, torch::optim::SGD *optim, Batch *batch, unsigned long loss_mask) {
+	DebugScope dbg("train_net");
 	optim->zero_grad();
 	auto losses = detailed_loss(*net, *batch);
 
@@ -569,6 +670,7 @@ double train_net(Net *net, torch::optim::SGD *optim, Batch *batch, unsigned long
 }
 
 void introspect_net(Net *net, Batch *batch, double *priors, double *valuation, double *fall_time, double *occupied, double *virus_kills, double *wishlist, double *clear_location, double *clear_pill) {
+	DebugScope dbg("introspect_net");
 	torch::NoGradGuard g;
 	bool was_training = (**net).is_training();
 	(**net).train(false);
@@ -588,6 +690,7 @@ void introspect_net(Net *net, Batch *batch, double *priors, double *valuation, d
 }
 
 void detailed_loss(Net *net, double *out, Batch *batch) {
+	DebugScope dbg("detailed_loss(net, out, batch)");
 	torch::NoGradGuard g;
 	bool was_training = (**net).is_training();
 	(**net).train(false); // don't want to accidentally teach our BatchNorm layers about our test vectors...
@@ -596,8 +699,12 @@ void detailed_loss(Net *net, double *out, Batch *batch) {
 }
 
 torch::optim::SGD *connect_optimizer(Net *net) {
+	DebugScope dbg("connect_optimizer", DEFAULT_CONSTRUCTOR_VERBOSITY);
 	// TODO: allow setting SGD parameters like momentum, learning rate, etc.
 	return new torch::optim::SGD((**net).parameters(), INITIAL_LEARNING_RATE);
 }
 
-void discard_optimizer(torch::optim::SGD *optim) { delete optim; }
+void discard_optimizer(torch::optim::SGD *optim) {
+	DebugScope dbg("discard_optimizer", DEFAULT_CONSTRUCTOR_VERBOSITY);
+	delete optim;
+}
