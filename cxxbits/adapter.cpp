@@ -20,13 +20,13 @@ const int64_t OUTPUT_TYPES = 8;
 const int64_t OUTPUT_SCALARS = PILLCONTENTS+2; // clear pills, valuation, fall time
 
 const int64_t FILTERS = 64;
-const int64_t RESIDUAL_BLOCKS = 32;
+const int64_t RESIDUAL_BLOCKS = 12;
 const double LEAKAGE = 0.01;
 
 const int64_t BODY_SIZE = FILTERS * CELLS;
 
 // TODO: A0 started its LR off at 0.2 (!)
-const double INITIAL_LEARNING_RATE = 1e-30;
+const double INITIAL_LEARNING_RATE = 1e-4;
 const double EPSILON = 1e-7;
 
 const torch::Dtype C_INTERFACE_FLOAT = torch::kF64;
@@ -474,7 +474,6 @@ NetOutput NetImpl::forward(const NetInput &in) {
 	for(int64_t i = 0; i < RESIDUAL_BLOCKS; i++) t = residuals[i]->forward(t);
 	t = output_convolution->forward(t);
 	dbg << "t: " << TensorSketch(t) << std::endl;
-	dbg << t << std::endl;
 
 	NetOutput out;
 	int64_t i = 0;
@@ -517,14 +516,14 @@ torch::Tensor detailed_loss(Net &net, const Batch &batch) {
 	loss.index_put_({i++}, (batch.out.priors * (batch.out.priors.clamp_min(EPSILON) / scaled_priors).log() * batch.reachable).sum());
 	// cross-entropy loss for valuation
 	auto bs = net_out.valuation.clamp(EPSILON, 1-EPSILON);
-	loss.index_put_({i++}, (batch.out.valuation * bs.log() + (1 - batch.out.valuation) * (1 - bs).log()).sum().neg());
+	loss.index_put_({i++}, 0);//(batch.out.valuation * bs.log() + (1 - batch.out.valuation) * (1 - bs).log()).sum().neg());
 	// squared-error loss for everything else
-	loss.index_put_({i++}, (batch.out.fall_time      - net_out.fall_time     ).square().sum());
-	loss.index_put_({i++}, (batch.out.occupied       - net_out.occupied      ).square().sum());
-	loss.index_put_({i++}, (batch.out.virus_kills    - net_out.virus_kills   ).square().sum());
-	loss.index_put_({i++}, (batch.out.wishlist       - net_out.wishlist      ).square().sum());
-	loss.index_put_({i++}, (batch.out.clear_location - net_out.clear_location).square().sum());
-	loss.index_put_({i++}, (batch.out.clear_pill     - net_out.clear_pill    ).square().sum());
+	loss.index_put_({i++}, 0);//(batch.out.fall_time      - net_out.fall_time     ).square().sum());
+	loss.index_put_({i++}, 0);//(batch.out.occupied       - net_out.occupied      ).square().sum());
+	loss.index_put_({i++}, 0);//(batch.out.virus_kills    - net_out.virus_kills   ).square().sum());
+	loss.index_put_({i++}, 0);//(batch.out.wishlist       - net_out.wishlist      ).square().sum());
+	loss.index_put_({i++}, 0);//(batch.out.clear_location - net_out.clear_location).square().sum());
+	loss.index_put_({i++}, 0);//(batch.out.clear_pill     - net_out.clear_pill    ).square().sum());
 	if(i != OUTPUT_TYPES) throw 0;
 	loss /= n;
 	return loss;
@@ -627,18 +626,18 @@ Batch *load_batch(char **path, int n) {
 	for(int i = 0; i < n; i++) {
 		archive.load_from(path[i]);
 		example.load(archive);
-		batch->in .boards        .index_put_({i, "..."}, example.in .boards        );
-		batch->in .lookaheads    .index_put_({i, "..."}, example.in .lookaheads    );
-		batch->in .scalars       .index_put_({i, "..."}, example.in .scalars       );
-		batch->out.priors        .index_put_({i, "..."}, example.out.priors        );
-		batch->out.valuation     .index_put_({i, "..."}, example.out.valuation     );
-		batch->out.fall_time     .index_put_({i, "..."}, example.out.fall_time     );
-		batch->out.occupied      .index_put_({i, "..."}, example.out.occupied      );
-		batch->out.virus_kills   .index_put_({i, "..."}, example.out.virus_kills   );
-		batch->out.wishlist      .index_put_({i, "..."}, example.out.wishlist      );
-		batch->out.clear_location.index_put_({i, "..."}, example.out.clear_location);
-		batch->out.clear_pill    .index_put_({i, "..."}, example.out.clear_pill    );
-		batch->    reachable     .index_put_({i, "..."}, example.    reachable     );
+		batch->in .boards        .index_put_({i, "..."}, /*0.5+0**/example.in .boards        );
+		batch->in .lookaheads    .index_put_({i, "..."}, /*0.5+0**/example.in .lookaheads    );
+		batch->in .scalars       .index_put_({i, "..."}, /*0.5+0**/example.in .scalars       );
+		batch->out.priors        .index_put_({i, "..."}, /*0.5+0**/example.out.priors        );
+		batch->out.valuation     .index_put_({i, "..."}, /*0.5+0**/example.out.valuation     );
+		batch->out.fall_time     .index_put_({i, "..."}, /*1.5+0**/example.out.fall_time     );
+		batch->out.occupied      .index_put_({i, "..."}, /*0.5+0**/example.out.occupied      );
+		batch->out.virus_kills   .index_put_({i, "..."}, /*0.5+0**/example.out.virus_kills   );
+		batch->out.wishlist      .index_put_({i, "..."}, /*0.5+0**/example.out.wishlist      );
+		batch->out.clear_location.index_put_({i, "..."}, /*0.5+0**/example.out.clear_location);
+		batch->out.clear_pill    .index_put_({i, "..."}, /*0.5+0**/example.out.clear_pill    );
+		batch->    reachable     .index_put_({i, "..."}, /*1  +0**/example.    reachable     );
 	}
 
 	batch->to_gpu();
@@ -662,11 +661,11 @@ double train_net(Net *net, torch::optim::SGD *optim, Batch *batch, unsigned long
 	dbg << "zero'd gradients" << std::endl;
 	for(torch::Tensor param: (**net).parameters()) {
 		dbg << "parameter sketch: " << TensorSketch(param) << std::endl;
-		dbg << "parameter gradient: " << param.grad() << std::endl;
+		//dbg << "parameter gradient: " << param.grad() << std::endl;
 	}
 	for(torch::Tensor buffer: (**net).buffers()) {
 		dbg << "buffer sketch: " << TensorSketch(buffer) << std::endl;
-		dbg << "buffer gradient: " << buffer.grad() << std::endl;
+		//dbg << "buffer gradient: " << buffer.grad() << std::endl;
 	}
 
 	auto losses = detailed_loss(*net, *batch);
@@ -690,11 +689,10 @@ double train_net(Net *net, torch::optim::SGD *optim, Batch *batch, unsigned long
 	dbg << "called loss.backward()" << std::endl;
 	for(torch::Tensor param: (**net).parameters()) {
 		dbg << "parameter sketch: " << TensorSketch(param) << std::endl;
-		dbg << "parameter gradient: " << param.grad() << std::endl;
+		//dbg << "parameter gradient: " << param.grad() << std::endl;
 	}
 	for(torch::Tensor buffer: (**net).buffers()) {
 		dbg << "buffer sketch: " << TensorSketch(buffer) << std::endl;
-		dbg << "buffer gradient: " << buffer.grad() << std::endl;
 	}
 
 	optim->step();
@@ -702,11 +700,10 @@ double train_net(Net *net, torch::optim::SGD *optim, Batch *batch, unsigned long
 	dbg << "called optim->step()" << std::endl;
 	for(torch::Tensor param: (**net).parameters()) {
 		dbg << "parameter sketch: " << TensorSketch(param) << std::endl;
-		dbg << "parameter gradient: " << param.grad() << std::endl;
+		//dbg << "parameter gradient: " << param.grad() << std::endl;
 	}
 	for(torch::Tensor buffer: (**net).buffers()) {
 		dbg << "buffer sketch: " << TensorSketch(buffer) << std::endl;
-		dbg << "buffer gradient: " << buffer.grad() << std::endl;
 	}
 
 	loss = loss.to(torch::kCPU).to(C_INTERFACE_FLOAT);
