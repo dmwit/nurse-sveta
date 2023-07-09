@@ -213,8 +213,12 @@ gradientStops = tail [undefined
 	, (0.78, 0.78, 0.98)
 	]
 
+nanError :: Render ()
+nanError = setSourceRGB 1 0 1
+
 bwGradient :: HasCallStack => Double -> Render ()
 bwGradient n
+	| isNaN n = nanError
 	| n <= 0 = setSourceRGB 0 0 0
 	| n >= 1 = setSourceRGB 1 1 1
 	| otherwise = unsafeGradient n
@@ -224,6 +228,7 @@ saturatingGradient = unsafeGradient . max 0 . min 1
 
 bSaturatingGradient :: HasCallStack => Double -> Render ()
 bSaturatingGradient n
+	| isNaN n = nanError
 	| n <= 0 = setSourceRGB 0 0 0
 	| otherwise = unsafeGradient $ min 1 n
 
