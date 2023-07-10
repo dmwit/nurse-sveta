@@ -30,6 +30,7 @@ const double INITIAL_LEARNING_RATE = 1e-4;
 const double EPSILON = 1e-7;
 
 const torch::Dtype C_INTERFACE_FLOAT = torch::kF64;
+const torch::Dtype DISK_FLOAT = torch::kF64;
 const torch::Dtype GPU_FLOAT = torch::kF32;
 
 struct TensorSketch {
@@ -143,7 +144,7 @@ struct NetInput {
 		DebugScope dbg("NetInput::save", DEFAULT_SERIALIZATION_VERBOSITY);
 		archive.write("boards"    , boards    , true);
 		archive.write("lookaheads", lookaheads, true);
-		archive.write("scalars"   , scalars   , true);
+		archive.write("scalars"   , scalars.to(DISK_FLOAT), true);
 	}
 
 	void load(torch::serialize::InputArchive &archive) {
@@ -242,14 +243,14 @@ struct NetOutput {
 
 	void save(torch::serialize::OutputArchive &archive) const {
 		DebugScope dbg("NetOutput::save", DEFAULT_SERIALIZATION_VERBOSITY);
-		archive.write("priors"        , priors        , true);
-		archive.write("valuation"     , valuation     , true);
-		archive.write("fall_time"     , fall_time     , true);
-		archive.write("occupied"      , occupied      , true);
-		archive.write("virus_kills"   , virus_kills   , true);
-		archive.write("wishlist"      , wishlist      , true);
-		archive.write("clear_location", clear_location, true);
-		archive.write("clear_pill"    , clear_pill    , true);
+		archive.write("priors"        , priors        .to(DISK_FLOAT), true);
+		archive.write("valuation"     , valuation     .to(DISK_FLOAT), true);
+		archive.write("fall_time"     , fall_time                    , true);
+		archive.write("occupied"      , occupied                     , true);
+		archive.write("virus_kills"   , virus_kills   .to(DISK_FLOAT), true);
+		archive.write("wishlist"      , wishlist      .to(DISK_FLOAT), true);
+		archive.write("clear_location", clear_location.to(DISK_FLOAT), true);
+		archive.write("clear_pill"    , clear_pill    .to(DISK_FLOAT), true);
 	}
 
 	void load(torch::serialize::InputArchive &archive) {
@@ -569,10 +570,14 @@ void discard_net(Net *net) {
 
 void save_net(Net *net, torch::optim::SGD *optim, char *path) {
 	DebugScope dbg("save_net", DEFAULT_SERIALIZATION_VERBOSITY);
+	(**net).to(DISK_FLOAT);
+
 	torch::serialize::OutputArchive archive;
 	(**net).save(archive);
 	optim->save(archive);
 	archive.save_to(path);
+
+	(**net).to(GPU_FLOAT);
 }
 
 void load_net(char *path, Net **netptr, torch::optim::SGD **optimptr) {
@@ -591,6 +596,8 @@ void load_net(char *path, Net **netptr, torch::optim::SGD **optimptr) {
 		*optimptr = new torch::optim::SGD(net->parameters(), INITIAL_LEARNING_RATE);
 		(**optimptr).load(archive);
 	}
+
+	net->to(GPU_FLOAT);
 }
 
 void evaluate_net(Net *net, int n, double *priors, double *valuation, char *boards, char *lookaheads, double *scalars) {
