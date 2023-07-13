@@ -406,7 +406,7 @@ class ResidualImpl : public torch::nn::Module {
 
 		torch::Tensor forward(const torch::Tensor &in) {
 			DebugScope dbg("ResidualImpl::forward", DEFAULT_LAYER_VERBOSITY);
-			return lrelu->forward(in +
+			return lrelu->forward(0.9*in + 0.1*
 				norm1->forward(
 				conv1->forward(
 				lrelu->forward(
