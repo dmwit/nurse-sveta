@@ -668,7 +668,7 @@ double train_net(Net *net, torch::optim::SGD *optim, Batch *batch, unsigned long
 	for(int i = 0; i < OUTPUT_TYPES; i++) {
 		loss_mask_array[i] = (loss_mask & (1 << i))?1:0;
 	}
-	auto loss_mask_tensor = torch::from_blob(loss_mask_array, {OUTPUT_TYPES}, [](void *v){}, torch::TensorOptions().dtype(GPU_FLOAT)).to(torch::kCUDA);
+	auto loss_mask_tensor = torch::from_blob(loss_mask_array, {OUTPUT_TYPES}, [](void *v){}, torch::TensorOptions().dtype(torch::kF32)).to(torch::kCUDA).to(GPU_FLOAT);
 	auto loss = (losses * loss_mask_tensor).sum();
 
 	loss.backward();
