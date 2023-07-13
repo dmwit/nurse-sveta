@@ -103,7 +103,7 @@ class DebugScope {
 };
 
 struct NetInput {
-	// boards: [n, 8, 16]
+	// boards: [n, 7, 8, 16]
 	// lookaheads: [n, 6]
 	// scalars: [n, 4]
 	torch::Tensor boards, lookaheads, scalars;
