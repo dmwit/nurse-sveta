@@ -929,7 +929,7 @@ trainingThread log netUpdate ref sc = do
 	tensorsPerVisualization = 10000000
 
 tensorsPerTrain :: Int
-tensorsPerTrain = 2400
+tensorsPerTrain = 1200
 
 trainingThreadLoadLatestNet :: IO (Integer, Net, Optimizer)
 trainingThreadLoadLatestNet = do
@@ -1135,7 +1135,7 @@ loggingThread log windowLock runName sc = do
 	hPutStrLn h "" -- no support for resuming (yet?)
 	hPutStr h . unlines $ tail [undefined
 		, "final layer", "convolutional" -- "fully connected"
-		, "float size", "32" -- "64" "16"
+		, "float size", "64" -- "32" "16"
 		, "residual design", "batch normalization + lerp(0.9)" -- "fixup"
 		, "mixup", "no" -- "yes"
 		, "residual blocks", "32" -- "doubling"

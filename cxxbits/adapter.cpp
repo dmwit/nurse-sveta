@@ -31,7 +31,7 @@ const double EPSILON = 1e-7;
 
 const torch::Dtype C_INTERFACE_FLOAT = torch::kF64;
 const torch::Dtype DISK_FLOAT = torch::kF64;
-const torch::Dtype GPU_FLOAT = torch::kF32;
+const torch::Dtype GPU_FLOAT = torch::kF64;
 
 struct TensorSketch {
 	torch::Device dev;
