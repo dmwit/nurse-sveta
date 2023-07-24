@@ -587,6 +587,7 @@ void load_net(char *path, Net **netptr, torch::optim::SGD **optimptr) {
 
 	*netptr = new Net();
 	auto net = **netptr;
+	net->to(DISK_FLOAT);
 	net->load(archive);
 	if(optimptr == NULL) {
 		net->train(false);
