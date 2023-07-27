@@ -1141,6 +1141,7 @@ loggingThread log windowLock runName sc = do
 		, "residual blocks", "32" -- "doubling"
 		, "epoch size", show tensorsPerTrain
 		, "loss mask", "0b11111111" -- "0b11110111"
+		, "learning rate", "5e-3" -- "1e-4"
 		, "" -- the config section is null terminated lol
 		]
 	hFlush h
