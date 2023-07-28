@@ -656,17 +656,20 @@ double train_net(Net *net, torch::optim::SGD *optim, Batch *batch, unsigned long
 	optim->zero_grad();
 	auto losses = detailed_loss(*net, *batch);
 
-	double loss_mask_array[OUTPUT_TYPES];
+	auto opts = torch::TensorOptions().dtype(torch::kF64).device(torch::kCUDA);
+	auto loss_product = torch::ones({}, opts);
+	auto loss_sum = torch::zeros({}, opts);
 	for(int i = 0; i < OUTPUT_TYPES; i++) {
-		loss_mask_array[i] = (loss_mask & (1 << i))?1:0;
+		if(loss_mask & (1 << i)) {
+			loss_product *= losses[i];
+			loss_sum += losses[i];
+		}
 	}
-	auto loss_mask_tensor = torch::from_blob(loss_mask_array, {OUTPUT_TYPES}, [](void *v){}, torch::TensorOptions().dtype(torch::kF64)).to(torch::kCUDA);
-	auto loss = (losses * loss_mask_tensor).sum();
 
-	loss.backward();
+	loss_product.backward();
 	optim->step();
-	loss = loss.to(torch::kCPU);
-	return *loss.data_ptr<double>();
+	loss_sum = loss_sum.to(torch::kCPU);
+	return *loss_sum.data_ptr<double>();
 }
 
 void introspect_net(Net *net, Batch *batch, double *priors, double *valuation, double *fall_time, double *occupied, double *virus_kills, double *wishlist, double *clear_location, double *clear_pill) {
