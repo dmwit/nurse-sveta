@@ -34,22 +34,32 @@ struct TensorSketch {
 	torch::ScalarType ty;
 	std::vector<int> dims;
 	bool grad;
+	bool defined;
 
 	TensorSketch(torch::Tensor t)
-		: dev(t.device()), ty(t.scalar_type()), grad(t.requires_grad())
+		: dev(t.defined()?t.device():c10::Device("cpu"))
 	{
-		for(int i = 0; i < t.dim(); i++) dims.push_back(t.size(i));
+		defined = t.defined();
+		if(defined) {
+			ty = t.scalar_type();
+			grad = t.requires_grad();
+			for(int i = 0; i < t.dim(); i++) dims.push_back(t.size(i));
+		}
 	}
 };
 
 std::ostream &operator<<(std::ostream &o, const TensorSketch sketch) {
-	o << sketch.ty << "[";
-	if(sketch.dims.size() > 0) {
-		o << sketch.dims[0];
-		for(int i = 1; i < sketch.dims.size(); i++)
-			o << ", " << sketch.dims[i];
+	if(sketch.defined) {
+		o << sketch.ty << "[";
+		if(sketch.dims.size() > 0) {
+			o << sketch.dims[0];
+			for(int i = 1; i < sketch.dims.size(); i++)
+				o << ", " << sketch.dims[i];
+		}
+		return o << "]@" << sketch.dev << (sketch.grad?"+":"-");
+	} else {
+		return o << "<undefined>";
 	}
-	return o << "]@" << sketch.dev << (sketch.grad?"+":"-");
 }
 
 enum DebugVerbosity
@@ -59,10 +69,10 @@ enum DebugVerbosity
 	, VERBOSE = CALLS
 	};
 
-const DebugVerbosity DEFAULT_LAYER_VERBOSITY = SILENT;
-const DebugVerbosity DEFAULT_CONSTRUCTOR_VERBOSITY = SILENT;
-const DebugVerbosity DEFAULT_SERIALIZATION_VERBOSITY = SILENT;
-const DebugVerbosity DEFAULT_TRANSFER_VERBOSITY = SILENT;
+const DebugVerbosity DEFAULT_LAYER_VERBOSITY = INFO;
+const DebugVerbosity DEFAULT_CONSTRUCTOR_VERBOSITY = INFO;
+const DebugVerbosity DEFAULT_SERIALIZATION_VERBOSITY = INFO;
+const DebugVerbosity DEFAULT_TRANSFER_VERBOSITY = INFO;
 const DebugVerbosity DEFAULT_VERBOSITY = VERBOSE;
 
 class DebugScope {
