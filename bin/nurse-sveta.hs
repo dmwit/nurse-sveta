@@ -1136,7 +1136,7 @@ loggingThread log windowLock runName sc = do
 	hPutStr h . unlines $ tail [undefined
 		, "final layer", "convolutional" -- "fully connected"
 		, "float size", "64" -- "32" "16"
-		, "residual design", "batch normalization" -- "fixup"
+		, "residual design", "fixup" -- "batch normalization"
 		, "mixup", "no" -- "yes"
 		, "residual blocks", "32" -- "doubling"
 		, "epoch size", show tensorsPerTrain
