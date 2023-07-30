@@ -1,7 +1,7 @@
 {-# Language AllowAmbiguousTypes #-}
 
 module Nurse.Sveta.Torch (
-	Net, netSample, netEvaluation, netTrain, netDetailedLoss, netIntrospect,
+	Net, netSample, netEvaluation, netTrain, netDetailedLoss, netIntrospect, netDouble,
 	netSave, netLoadForInference, netLoadForTraining,
 	HSTensor(..), Prediction(..), NetIntrospection(..),
 	LossType(..), describeLossType, LossMask, lossMask, fullLossMask,
@@ -48,6 +48,7 @@ foreign import ccall "sample_net" cxx_sample_net :: Bool -> IO (Ptr Net)
 foreign import ccall "&discard_net" cxx_discard_net :: FunPtr (Ptr Net -> IO ())
 foreign import ccall "evaluate_net" cxx_evaluate_net :: Ptr Net -> CInt -> Ptr CDouble -> Ptr CDouble -> Ptr CChar -> Ptr CChar -> Ptr CDouble -> IO ()
 foreign import ccall "introspect_net" cxx_introspect_net :: Ptr Net -> Ptr Batch -> Ptr CDouble -> Ptr CDouble -> Ptr CDouble -> Ptr CDouble -> Ptr CDouble -> Ptr CDouble -> Ptr CDouble -> Ptr CDouble -> IO ()
+foreign import ccall "double_net" cxx_double_net :: Ptr Net -> Ptr Optimizer -> IO ()
 foreign import ccall "save_example" cxx_save_example :: CString -> Ptr CChar -> Ptr CDouble -> CDouble -> CUChar -> Ptr CChar -> Ptr CDouble -> Ptr CDouble -> Ptr CDouble -> Ptr CDouble -> Ptr CChar -> Ptr CChar -> Ptr CDouble -> IO ()
 foreign import ccall "load_batch" cxx_load_batch :: Ptr CString -> CInt -> IO (Ptr Batch)
 foreign import ccall "batch_size" cxx_batch_size :: Ptr Batch -> IO CInt
@@ -104,6 +105,10 @@ netDetailedLoss net_ batch_ = withUnwrapped (net_, batch_) $ \(net, batch) ->
 	allocaArray lossTypes $ \out -> do
 		cxx_detailed_loss net out batch
 		zipWith (\ty w -> (ty, realToFrac w)) [minBound..] <$> peekArray lossTypes out
+
+netDouble :: Net -> Optimizer -> IO ()
+netDouble net_ optim_ = withUnwrapped (net_, optim_) $ \(net, optim) ->
+	cxx_double_net net optim
 
 class OneHot a where
 	indexCount :: Int

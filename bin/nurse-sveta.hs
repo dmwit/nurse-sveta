@@ -872,16 +872,21 @@ trainingThreadView log netUpdate = do
 -- TODO: might be nice to show current generation and iterations to next save
 trainingThread :: Procedure LogMessage () -> TVar (Maybe Integer) -> TVar TrainingThreadState -> StatusCheck -> IO ()
 trainingThread log netUpdate ref sc = do
+	start <- getTime Monotonic
+	let getRuntime = getTime Monotonic <&> \now -> round (now - start)
+	    doublingPeriod = 3*24*60*60`div`5
 	(ten0, net, sgd) <- trainingThreadLoadLatestNet
 	atomically . modifyTVar ref $ \tts -> tts { ttsCurrent = sSet (Just ten0) (ttsCurrent tts) }
 	rng <- createSystemRandom
 	dir <- nsDataDir
-	let loop ten = do
+	let loop ten nextDoubling tensorsPerTrain = do
+	    	let tensorsPerTrainI = toInteger tensorsPerTrain
 	    	-- this capitalization is inconsistent with the other metrics we
 	    	-- report, but consistent with the other metrics shown in the
 	    	-- System panel
 	    	schedule log (Metric "System/Backprop Tensor Count" (fromInteger ten))
 	    	when (ten `mod` tensorsPerSave < tensorsPerTrainI) (saveWeights ten)
+	    	dt <- getRuntime
 	    	batch <- loadBatch rng sc dir "train" tensorHistoryTrain tensorsPerTrain
 	    	-- TODO: make loss mask configurable
 	    	loss <- netTrain net sgd batch fullLossMask
@@ -907,7 +912,10 @@ trainingThread log netUpdate ref sc = do
 	    		, ttsLoss = sSet loss (ttsLoss tts)
 	    		}
 	    	scIO sc (saveWeights ten' >> finalVisualization log sc net dir "visualization")
-	    	loop ten'
+	    	(nextDoubling', tensorsPerTrain') <- if dt < nextDoubling
+	    		then pure (nextDoubling, tensorsPerTrain)
+	    		else (nextDoubling + doublingPeriod, tensorsPerTrain `div` 2) <$ netDouble net sgd
+	    	loop ten' nextDoubling' tensorsPerTrain'
 
 	    saveWeights ten = do
 	    		path <- prepareFile dir Weights (show ten <.> "nsn")
@@ -916,20 +924,19 @@ trainingThread log netUpdate ref sc = do
 	    		atomically . writeTVar netUpdate $ Just ten
 	    		atomically . modifyTVar ref $ \tts -> tts { ttsLastSaved = sSet (Just ten) (ttsLastSaved tts) }
 
-	loop ten0
+	loop ten0 doublingPeriod tensorsPerTrain0
 	where
 	-- TODO: make these configurable
 	tensorsPerSave = 100000
 	tensorsPerDetailReport = 30000
-	tensorsPerTrainI = toInteger tensorsPerTrain
 	tensorsPerTest = 100
 	tensorHistoryTrain = 500000
 	tensorHistoryTest = 5000
 	visualizationHistoryTrain = 1000
 	tensorsPerVisualization = 10000000
 
-tensorsPerTrain :: Int
-tensorsPerTrain = 1200
+tensorsPerTrain0 :: Int
+tensorsPerTrain0 = 32*600
 
 trainingThreadLoadLatestNet :: IO (Integer, Net, Optimizer)
 trainingThreadLoadLatestNet = do
@@ -1139,7 +1146,7 @@ loggingThread log windowLock runName sc = do
 		, "residual design", "fixup" -- "batch normalization"
 		, "mixup", "no" -- "yes"
 		, "residual blocks", "32" -- "doubling"
-		, "epoch size", show tensorsPerTrain
+		, "epoch size", "starts at " ++ show tensorsPerTrain0 -- show tensorsPerTrain
 		, "loss mask", "0b11111111" -- "0b11110111"
 		, "" -- the config section is null terminated lol
 		]

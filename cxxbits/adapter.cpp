@@ -20,7 +20,7 @@ const int64_t OUTPUT_TYPES = 8;
 const int64_t OUTPUT_SCALARS = PILLCONTENTS+2; // clear pills, valuation, fall time
 
 const int64_t FILTERS = 64;
-const int64_t RESIDUAL_BLOCKS = 32;
+const int64_t RESIDUAL_BLOCKS = 1;
 const double LEAKAGE = 0.01;
 
 const int64_t BODY_SIZE = FILTERS * CELLS;
@@ -400,7 +400,7 @@ TORCH_MODULE(Conv2dReLUInit);
 // residual design comes from Fixup Initialization: Residual Learning Without Normalization
 class ResidualImpl : public torch::nn::Module {
 	public:
-		ResidualImpl(int64_t chans, double leakage, int64_t padding=1, int64_t k=3)
+		ResidualImpl(int64_t chans, double leakage, int64_t block_count, int64_t padding=1, int64_t k=3)
 			: torch::nn::Module("residual block")
 			, conv0(chans, chans, leakage, padding, k, false)
 			, conv1(chans, chans, leakage, padding, k, false)
@@ -409,7 +409,7 @@ class ResidualImpl : public torch::nn::Module {
 			DebugScope dbg("ResidualImpl(...)", DEFAULT_CONSTRUCTOR_VERBOSITY);
 
 			torch::autograd::GradMode::set_enabled(false);
-			conv0->conv->weight /= std::sqrt(RESIDUAL_BLOCKS);
+			conv0->conv->weight /= std::sqrt(block_count);
 			conv1->conv->weight.zero_();
 			torch::autograd::GradMode::set_enabled(true);
 
@@ -460,7 +460,7 @@ class NetImpl : public torch::nn::Module {
 				for(int64_t i = 0; i < RESIDUAL_BLOCKS; i++) {
 					std::stringstream ss;
 					ss << "main body residual #" << i;
-					residuals.push_back(Residual(FILTERS, LEAKAGE));
+					residuals.push_back(Residual(FILTERS, LEAKAGE, RESIDUAL_BLOCKS));
 					register_module(ss.str(), residuals[i]);
 				}
 
@@ -472,6 +472,7 @@ class NetImpl : public torch::nn::Module {
 			}
 
 		NetOutput forward(const NetInput &in);
+		void double_residual_blocks(torch::optim::SGD *optim);
 
 	private:
 		Conv2dReLUInit board_convolution, output_convolution;
@@ -490,7 +491,7 @@ NetOutput NetImpl::forward(const NetInput &in) {
 		lookahead_linear->forward(in.lookaheads).reshape({n, FILTERS, 1, 1}).expand({n, FILTERS, BOARD_WIDTH, BOARD_HEIGHT}) +
 		   scalar_linear->forward(in.scalars   ).reshape({n, FILTERS, 1, 1}).expand({n, FILTERS, BOARD_WIDTH, BOARD_HEIGHT})
 		);
-	for(int64_t i = 0; i < RESIDUAL_BLOCKS; i++) t = residuals[i]->forward(t);
+	for(auto residual: residuals) t = residual->forward(t);
 	t = output_convolution->forward(t);
 
 	NetOutput out;
@@ -513,6 +514,21 @@ NetOutput NetImpl::forward(const NetInput &in) {
 	if(i != OUTPUT_SCALARS) throw 0;
 
 	return out;
+}
+
+// TODO: save and load code doesn't really understand this properly, I think
+void NetImpl::double_residual_blocks(torch::optim::SGD *optim) {
+	std::vector<Residual> blocks;
+	const size_t n = residuals.size();
+	for(int i = 0; i < n; i++) {
+		Residual block(FILTERS, LEAKAGE, 2*n);
+		block->to(torch::kCUDA);
+		block->to(torch::kF64);
+		blocks.push_back(residuals[i]);
+		blocks.push_back(block);
+		optim->add_parameters(block->parameters());
+	}
+	residuals = blocks;
 }
 
 torch::Tensor detailed_loss(Net &net, const Batch &batch) {
@@ -570,6 +586,7 @@ extern "C" {
 	void discard_batch(Batch *batch);
 	double train_net(Net *net, torch::optim::SGD *optim, Batch *batch, unsigned long loss_mask);
 	void introspect_net(Net *net, Batch *batch, double *priors, double *valuation, double *fall_time, double *occupied, double *virus_kills, double *wishlist, double *clear_location, double *clear_pill);
+	void double_net(Net *net, torch::optim::SGD *optim);
 	void detailed_loss(Net *net, double *out, Batch *batch);
 	torch::optim::SGD *connect_optimizer(Net *net);
 	void discard_optimizer(torch::optim::SGD *optim);
@@ -706,6 +723,8 @@ void introspect_net(Net *net, Batch *batch, double *priors, double *valuation, d
 
 	(**net).train(was_training);
 }
+
+void double_net(Net *net, torch::optim::SGD *optim) { (*net)->double_residual_blocks(optim); }
 
 void detailed_loss(Net *net, double *out, Batch *batch) {
 	DebugScope dbg("detailed_loss(net, out, batch)");
