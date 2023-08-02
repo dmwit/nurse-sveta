@@ -33,8 +33,7 @@ struct TensorSketch {
 	torch::Device dev;
 	torch::ScalarType ty;
 	std::vector<int> dims;
-	bool grad;
-	bool defined;
+	bool grad, defined, has_nan;
 
 	TensorSketch(torch::Tensor t)
 		: dev(t.defined()?t.device():c10::Device("cpu"))
@@ -43,6 +42,7 @@ struct TensorSketch {
 		if(defined) {
 			ty = t.scalar_type();
 			grad = t.requires_grad();
+			has_nan = at::isnan(t).any().item<bool>();
 			for(int i = 0; i < t.dim(); i++) dims.push_back(t.size(i));
 		}
 	}
@@ -56,7 +56,7 @@ std::ostream &operator<<(std::ostream &o, const TensorSketch sketch) {
 			for(int i = 1; i < sketch.dims.size(); i++)
 				o << ", " << sketch.dims[i];
 		}
-		return o << "]@" << sketch.dev << (sketch.grad?"+":"-");
+		return o << "]@" << sketch.dev << (sketch.grad?"+":"-") << (sketch.has_nan?"!":"");
 	} else {
 		return o << "<undefined>";
 	}
