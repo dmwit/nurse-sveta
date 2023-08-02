@@ -450,7 +450,7 @@ lmSum lm lm' = LevelMetric
 	, lmSource = "<all>"
 	}
 
-lmDouble :: LevelMetric -> Double
+lmDouble :: LevelMetric -> Float
 lmDouble = fromIntegral . lmMetric
 
 data CategoryMetrics = CategoryMetrics
@@ -807,7 +807,7 @@ data TrainingThreadState = TrainingThreadState
 	, ttsCurrent :: Stable (Maybe Integer)
 	, ttsGenerationHundredths :: SearchSpeed
 	, ttsTensors :: SearchSpeed
-	, ttsLoss :: Stable Double
+	, ttsLoss :: Stable Float
 	} deriving (Eq, Ord, Read, Show)
 
 trainingThreadView :: Procedure LogMessage () -> TVar (Maybe Integer) -> IO ThreadView
@@ -913,15 +913,15 @@ trainingThread log netUpdate ref sc = do
 	loop ten0
 	where
 	-- TODO: make these configurable
-	tensorsPerSave = 100000
-	tensorsPerDetailReport = 30000
-	tensorsPerTrain = 1700
+	tensorsPerSave = 2000*60*60 -- about once an hour
+	tensorsPerDetailReport = 2000*60*5 -- about every five minutes
+	tensorsPerTrain = 1700 -- can go as high as 3800 without running out of memory, but this has higher throughput; TODO: optimize this choice
 	tensorsPerTrainI = toInteger tensorsPerTrain
 	tensorsPerTest = 100
 	tensorHistoryTrain = 500000
 	tensorHistoryTest = 5000
 	visualizationHistoryTrain = 1000
-	tensorsPerVisualization = 1000000
+	tensorsPerVisualization = 2000*60*60*24 -- about once a day
 
 trainingThreadLoadLatestNet :: IO (Integer, Net, Optimizer)
 trainingThreadLoadLatestNet = do
@@ -1080,7 +1080,7 @@ logVisualization log rng sc net dir category historySize = do
 			heatmap0Max clearHi (hstBoard hst) initialPC . onPositionsC $ \pos -> M.findWithDefault 0 pos . pClearLocationWeight
 
 data LogMessage
-	= Metric String Double
+	= Metric String Float
 	| ImagePath String FilePath
 	deriving (Eq, Ord, Read, Show)
 

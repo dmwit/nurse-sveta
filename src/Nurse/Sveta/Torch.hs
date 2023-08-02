@@ -46,14 +46,14 @@ import qualified Data.Vector.Unboxed.Mutable as MV
 -- plus it made the UI unbearably choppy.
 foreign import ccall "sample_net" cxx_sample_net :: Bool -> IO (Ptr Net)
 foreign import ccall "&discard_net" cxx_discard_net :: FunPtr (Ptr Net -> IO ())
-foreign import ccall "evaluate_net" cxx_evaluate_net :: Ptr Net -> CInt -> Ptr CDouble -> Ptr CDouble -> Ptr CChar -> Ptr CChar -> Ptr CDouble -> IO ()
-foreign import ccall "introspect_net" cxx_introspect_net :: Ptr Net -> Ptr Batch -> Ptr CDouble -> Ptr CDouble -> Ptr CDouble -> Ptr CDouble -> Ptr CDouble -> Ptr CDouble -> Ptr CDouble -> Ptr CDouble -> IO ()
-foreign import ccall "save_example" cxx_save_example :: CString -> Ptr CChar -> Ptr CDouble -> CDouble -> CUChar -> Ptr CChar -> Ptr CDouble -> Ptr CDouble -> Ptr CDouble -> Ptr CDouble -> Ptr CChar -> Ptr CChar -> Ptr CDouble -> IO ()
+foreign import ccall "evaluate_net" cxx_evaluate_net :: Ptr Net -> CInt -> Ptr CFloat -> Ptr CFloat -> Ptr CChar -> Ptr CChar -> Ptr CFloat -> IO ()
+foreign import ccall "introspect_net" cxx_introspect_net :: Ptr Net -> Ptr Batch -> Ptr CFloat -> Ptr CFloat -> Ptr CFloat -> Ptr CFloat -> Ptr CFloat -> Ptr CFloat -> Ptr CFloat -> Ptr CFloat -> IO ()
+foreign import ccall "save_example" cxx_save_example :: CString -> Ptr CChar -> Ptr CFloat -> CFloat -> CUChar -> Ptr CChar -> Ptr CFloat -> Ptr CFloat -> Ptr CFloat -> Ptr CFloat -> Ptr CChar -> Ptr CChar -> Ptr CFloat -> IO ()
 foreign import ccall "load_batch" cxx_load_batch :: Ptr CString -> CInt -> IO (Ptr Batch)
 foreign import ccall "batch_size" cxx_batch_size :: Ptr Batch -> IO CInt
 foreign import ccall "&discard_batch" cxx_discard_batch :: FunPtr (Ptr Batch -> IO ())
-foreign import ccall "train_net" cxx_train_net :: Ptr Net -> Ptr Optimizer -> Ptr Batch -> CULong -> IO CDouble
-foreign import ccall "detailed_loss" cxx_detailed_loss :: Ptr Net -> Ptr CDouble -> Ptr Batch -> IO ()
+foreign import ccall "train_net" cxx_train_net :: Ptr Net -> Ptr Optimizer -> Ptr Batch -> CULong -> IO CFloat
+foreign import ccall "detailed_loss" cxx_detailed_loss :: Ptr Net -> Ptr CFloat -> Ptr Batch -> IO ()
 foreign import ccall "save_net" cxx_save_net :: Ptr Net -> Ptr Optimizer -> CString -> IO ()
 foreign import ccall "load_net" cxx_load_net :: CString -> Ptr (Ptr Net) -> Ptr (Ptr Optimizer) -> IO ()
 foreign import ccall "connect_optimizer" cxx_connect_optimizer :: Ptr Net -> IO (Ptr Optimizer)
@@ -99,7 +99,7 @@ netLoadForTraining path = withUnwrapped (WCS path) $ \cpath -> do
 	cxx_load_net cpath netPtr optimPtr
 	liftM2 (,) (peek netPtr >>= mkNet) (peek optimPtr >>= mkOptimizer)
 
-netDetailedLoss :: Net -> Batch -> IO [(LossType, Double)]
+netDetailedLoss :: Net -> Batch -> IO [(LossType, Float)]
 netDetailedLoss net_ batch_ = withUnwrapped (net_, batch_) $ \(net, batch) ->
 	allocaArray lossTypes $ \out -> do
 		cxx_detailed_loss net out batch
@@ -163,7 +163,7 @@ renderBoard board b = do
 			pokeElemOff board (shiftL (                    toIndex c) logCellCount + j) 1
 			pokeElemOff board (shiftL (indexCount @Color + toIndex s) logCellCount + j) 1
 
-renderScalars :: Ptr CDouble -> GameState -> IO [Double]
+renderScalars :: Ptr CFloat -> GameState -> IO [Float]
 renderScalars scalars gs = do
 	frames_ <- readIORef (framesPassed gs)
 	let [frames, viruses] = fromIntegral <$> [frames_, originalVirusCount gs]
@@ -171,7 +171,7 @@ renderScalars scalars gs = do
 	pokeArray scalars [frames, safeLog frames, sqrt frames, viruses, safeLog viruses, 1/sqrt viruses]
 	pure [realToFrac frames, realToFrac viruses]
 
-render :: Traversable t => t (Int, GameState) -> IO (Ptr CChar, Ptr CChar, Ptr CDouble)
+render :: Traversable t => t (Int, GameState) -> IO (Ptr CChar, Ptr CChar, Ptr CFloat)
 render igs = do
 	boards <- mallocZeroArray (n * boardSize)
 	lookaheads <- mallocZeroArray (n * lookaheadSize)
@@ -186,7 +186,7 @@ render igs = do
 
 -- It looks like there's a lot of realToFrac calls in this code, but it doesn't
 -- matter, because rewrite rules throw them away.
-parseForEvaluation :: Int -> GameState -> ForeignPtr CDouble -> ForeignPtr CDouble -> IO DetailedEvaluation
+parseForEvaluation :: Int -> GameState -> ForeignPtr CFloat -> ForeignPtr CFloat -> IO DetailedEvaluation
 parseForEvaluation i gs priors_ valuation_ = withUnwrapped (priors_, valuation_) $ \(priors, valuation) -> do
 	(l, r) <- readIORef (lookbehind gs)
 	v <- peekElemOff valuation i
@@ -237,39 +237,39 @@ netEvaluation net_ gss = do
 
 -- TODO: There sure are a lot of really similar types in here, e.g.
 -- DetailedEvaluation, Preview, Prediction, HSTensor, not to mention Ptr
--- CDouble -> Ptr CDouble -> Ptr CDouble -> .... It would probably be good to
+-- CFloat -> Ptr CFloat -> Ptr CFloat -> .... It would probably be good to
 -- take a step back and think about abstraction boundaries and APIs a bit, then
 -- refactor this stuff to be a bit more coherent/consistent.
 data NetIntrospection = NetIntrospection
-	{ niPriors :: Vector (Vector (Vector Double)) -- ^ clockwise rotations, x, y
-	, niValuation :: Double
-	, niFallTime :: Double
-	, niOccupied :: Vector (Vector Double)
-	, niVirusKills :: Vector (Vector Double)
-	, niPlacements :: HashMap PillContent (Vector (Vector Double))
-	, niClearLocation :: Vector (Vector Double)
-	, niClearPill :: HashMap PillContent Double
+	{ niPriors :: Vector (Vector (Vector Float)) -- ^ clockwise rotations, x, y
+	, niValuation :: Float
+	, niFallTime :: Float
+	, niOccupied :: Vector (Vector Float)
+	, niVirusKills :: Vector (Vector Float)
+	, niPlacements :: HashMap PillContent (Vector (Vector Float))
+	, niClearLocation :: Vector (Vector Float)
+	, niClearPill :: HashMap PillContent Float
 	} deriving (Eq, Ord, Read, Show)
 
-parseForIntrospection :: Ptr CDouble -> Ptr CDouble -> Ptr CDouble -> Ptr CDouble -> Ptr CDouble -> Ptr CDouble -> Ptr CDouble -> Ptr CDouble -> IO NetIntrospection
+parseForIntrospection :: Ptr CFloat -> Ptr CFloat -> Ptr CFloat -> Ptr CFloat -> Ptr CFloat -> Ptr CFloat -> Ptr CFloat -> Ptr CFloat -> IO NetIntrospection
 parseForIntrospection priors valuation fallTime occupied virusKills wishlist clearLocation clearPill = pure NetIntrospection
-	<*> V.generateM rotations (\rot -> boardFullOfDoubles (plusArray priors (shiftL rot logCellCount)))
+	<*> V.generateM rotations (\rot -> boardFullOfFloats (plusArray priors (shiftL rot logCellCount)))
 	<*> peekD valuation
 	<*> peekD fallTime
-	<*> boardFullOfDoubles occupied
-	<*> boardFullOfDoubles virusKills
-	<*> for pillContentMap (\i -> boardFullOfDoubles (plusArray wishlist (shiftL i logCellCount)))
-	<*> boardFullOfDoubles clearLocation
+	<*> boardFullOfFloats occupied
+	<*> boardFullOfFloats virusKills
+	<*> for pillContentMap (\i -> boardFullOfFloats (plusArray wishlist (shiftL i logCellCount)))
+	<*> boardFullOfFloats clearLocation
 	<*> for pillContentMap (peekArrayD clearPill)
 	where
-	peekArrayD :: Ptr CDouble -> Int -> IO Double
+	peekArrayD :: Ptr CFloat -> Int -> IO Float
 	peekArrayD arr = fmap realToFrac . peek . plusArray arr
 
-	peekD :: Ptr CDouble -> IO Double
+	peekD :: Ptr CFloat -> IO Float
 	peekD = fmap realToFrac . peek
 
-	boardFullOfDoubles :: Ptr CDouble -> IO (Vector (Vector Double))
-	boardFullOfDoubles arr =
+	boardFullOfFloats :: Ptr CFloat -> IO (Vector (Vector Float))
+	boardFullOfFloats arr =
 		V.generateM boardWidth $ \x -> let ix = shiftL x logBoardHeight in
 		V.generateM boardHeight $ \iy ->
 		peekArrayD arr (ix+iy)
@@ -319,7 +319,7 @@ data Preview = Preview
 	, pFallTime :: IntMap Int
 	, pFinalBoard :: Board -- ask the net to predict whether spaces are occupied at game end or not
 	, pTotalFrames :: Int
-	, pFinalValuation :: Double
+	, pFinalValuation :: Float
 	} deriving (Eq, Ord, Read, Show)
 
 summarize :: GameState -> [Move] -> IO Preview
@@ -374,18 +374,18 @@ summarize gs (Placement path pill:ms) = mplaceDetails (board gs) pill >>= \case
 		_ -> 0
 
 data Prediction = Prediction
-	{ pVirusKillWeight :: Map Position CDouble
-	, pPlacementWeight :: HashMap Pill CDouble
-	, pClearLocationWeight :: Map Position CDouble
-	, pClearPillWeight :: HashMap PillContent CDouble
+	{ pVirusKillWeight :: Map Position CFloat
+	, pPlacementWeight :: HashMap Pill CFloat
+	, pClearLocationWeight :: Map Position CFloat
+	, pClearPillWeight :: HashMap PillContent CFloat
 	, pOccupied :: HashSet Position
 	, pFallWeight :: CUChar
 	} deriving (Eq, Ord, Read, Show, Generic, ToJSON, FromJSON)
 
-deriving via Word8  instance   ToJSON CUChar
-deriving via Word8  instance FromJSON CUChar
-deriving via Double instance   ToJSON CDouble
-deriving via Double instance FromJSON CDouble
+deriving via Word8 instance   ToJSON CUChar
+deriving via Word8 instance FromJSON CUChar
+deriving via Float instance   ToJSON CFloat
+deriving via Float instance FromJSON CFloat
 
 prediction :: Preview -> Int -> Prediction
 prediction pre = \pu -> Prediction
@@ -405,10 +405,10 @@ prediction pre = \pu -> Prediction
 data HSTensor = HSTensor
 	{ hstBoard :: Board
 	, hstPrediction :: Prediction
-	, hstScalars :: [Double]
+	, hstScalars :: [Float]
 	, hstLookahead :: (Color, Color)
-	, hstPriors :: HashMap Pill Double
-	, hstValuation :: Double
+	, hstPriors :: HashMap Pill Float
+	, hstValuation :: Float
 	} deriving (Eq, Ord, Read, Show, Generic, ToJSON, FromJSON)
 
 data SaveTensorsSummary = SaveTensorsSummary
@@ -432,7 +432,7 @@ saveTensors tdir jsdir i0 (b0, steps) = do
 	currentState <- initialState b0
 	-- summarize mutates its argument, so make a fresh clone to pass to it
 	preview <- initialState b0 >>= \gs -> summarize gs (gsMove <$> steps)
-	let valuation = realToFrac (pFinalValuation preview) :: CDouble
+	let valuation = realToFrac (pFinalValuation preview) :: CFloat
 
 	reachable <- mallocArray numPriors
 	priors <- mallocArray numPriors
@@ -553,7 +553,7 @@ lossMask = LossMask . bit . fromEnum
 fullLossMask :: LossMask
 fullLossMask = foldMap' lossMask [minBound..]
 
-netTrain :: Net -> Optimizer -> Batch -> LossMask -> IO Double
+netTrain :: Net -> Optimizer -> Batch -> LossMask -> IO Float
 netTrain net_ optim_ batch_ mask_ = withUnwrapped (net_, (batch_, (optim_, mask_))) $ \(net, (batch, (optim, mask))) ->
 	realToFrac <$> cxx_train_net net optim batch mask
 

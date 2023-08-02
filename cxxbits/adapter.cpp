@@ -21,13 +21,13 @@ const int64_t OUTPUT_SCALARS = PILLCONTENTS+2; // clear pills, valuation, fall t
 
 const int64_t FILTERS = 64;
 const int64_t RESIDUAL_BLOCKS = 20;
-const double LEAKAGE = 0.01;
+const float LEAKAGE = 0.01;
 
 const int64_t BODY_SIZE = FILTERS * CELLS;
 
 // TODO: A0 started its LR off at 0.2 (!)
-const double INITIAL_LEARNING_RATE = 1e-4;
-const double EPSILON = 1e-10;
+const float INITIAL_LEARNING_RATE = 1e-4;
+const float EPSILON = 1e-7;
 
 struct TensorSketch {
 	torch::Device dev;
@@ -120,10 +120,10 @@ struct NetInput {
 
 	NetInput() { DebugScope dbg("NetInput()", DEFAULT_CONSTRUCTOR_VERBOSITY); }
 
-	NetInput(int n, char *boards_data, char *lookaheads_data, double *scalars_data) {
+	NetInput(int n, char *boards_data, char *lookaheads_data, float *scalars_data) {
 		DebugScope dbg("NetInput(n, boards, lookaheads, scalars)", DEFAULT_CONSTRUCTOR_VERBOSITY);
 		auto  u8Options = torch::TensorOptions().dtype(torch::kU8);
-		auto f64Options = torch::TensorOptions().dtype(torch::kF64);
+		auto f64Options = torch::TensorOptions().dtype(torch::kF32);
 		boards     = torch::from_blob(    boards_data, {n, CELL_SIZE, BOARD_WIDTH, BOARD_HEIGHT}, [](void *v){},  u8Options);
 		lookaheads = torch::from_blob(lookaheads_data, {n, LOOKAHEAD_SIZE}                      , [](void *v){},  u8Options);
 		scalars    = torch::from_blob(   scalars_data, {n, SCALARS}                             , [](void *v){}, f64Options);
@@ -132,7 +132,7 @@ struct NetInput {
 	NetInput(int n) {
 		DebugScope dbg("NetInput(n)", DEFAULT_CONSTRUCTOR_VERBOSITY);
 		auto  u8Options = torch::TensorOptions().dtype(torch::kU8);
-		auto f64Options = torch::TensorOptions().dtype(torch::kF64);
+		auto f64Options = torch::TensorOptions().dtype(torch::kF32);
 		boards     = torch::empty({n, CELL_SIZE, BOARD_WIDTH, BOARD_HEIGHT},  u8Options);
 		lookaheads = torch::empty({n, LOOKAHEAD_SIZE}                      ,  u8Options);
 		scalars    = torch::empty({n, SCALARS}                             , f64Options);
@@ -143,8 +143,8 @@ struct NetInput {
 		boards     = boards    .to(torch::kCUDA);
 		lookaheads = lookaheads.to(torch::kCUDA);
 		scalars    = scalars   .to(torch::kCUDA);
-		boards     = boards    .to(torch::kF64);
-		lookaheads = lookaheads.to(torch::kF64);
+		boards     = boards    .to(torch::kF32);
+		lookaheads = lookaheads.to(torch::kF32);
 	}
 
 	void save(torch::serialize::OutputArchive &archive) const {
@@ -195,9 +195,9 @@ struct NetOutput {
 
 	NetOutput() { DebugScope dbg("NetOutput()", DEFAULT_CONSTRUCTOR_VERBOSITY); }
 
-	NetOutput(int n, double *priors_data, double *valuation_data, unsigned char *fall_time_data, char *occupied_data, double *virus_kills_data, double *wishlist_data, double *clear_location_data, double *clear_pill_data) {
+	NetOutput(int n, float *priors_data, float *valuation_data, unsigned char *fall_time_data, char *occupied_data, float *virus_kills_data, float *wishlist_data, float *clear_location_data, float *clear_pill_data) {
 		DebugScope dbg("NetOutput(n, ...)", DEFAULT_CONSTRUCTOR_VERBOSITY);
-		auto f64Opts = torch::TensorOptions().dtype(torch::kF64);
+		auto f64Opts = torch::TensorOptions().dtype(torch::kF32);
 		auto  u8Opts = torch::TensorOptions().dtype(torch::kU8 );
 
 		priors         = torch::from_blob(        priors_data, {n, ROTATIONS, BOARD_WIDTH, BOARD_HEIGHT                   }, [](void *) {}, f64Opts);
@@ -212,7 +212,7 @@ struct NetOutput {
 
 	NetOutput(int n) {
 		DebugScope dbg("NetOutput(n)", DEFAULT_CONSTRUCTOR_VERBOSITY);
-		auto f64Opts = torch::TensorOptions().dtype(torch::kF64);
+		auto f64Opts = torch::TensorOptions().dtype(torch::kF32);
 		auto  u8Opts = torch::TensorOptions().dtype(torch::kU8 );
 		priors         = torch::empty({n, ROTATIONS, BOARD_WIDTH, BOARD_HEIGHT                   }, f64Opts);
 		valuation      = torch::empty({n                                                         }, f64Opts);
@@ -234,8 +234,8 @@ struct NetOutput {
 		wishlist       = wishlist      .to(torch::kCUDA);
 		clear_location = clear_location.to(torch::kCUDA);
 		clear_pill     = clear_pill    .to(torch::kCUDA);
-		fall_time      = fall_time     .to(torch::kF64);
-		occupied       = occupied      .to(torch::kF64);
+		fall_time      = fall_time     .to(torch::kF32);
+		occupied       = occupied      .to(torch::kF32);
 	}
 
 	void to_cpu() {
@@ -321,8 +321,8 @@ struct Batch {
 
 	Batch(int n,
 		char *reachable_data,
-		double *priors_data, double *valuation_data, unsigned char *fall_time_data, char *occupied_data, double *virus_kills_data, double *wishlist_data, double *clear_location_data, double *clear_pill_data,
-		char *boards_data, char *lookaheads_data, double *scalars_data
+		float *priors_data, float *valuation_data, unsigned char *fall_time_data, char *occupied_data, float *virus_kills_data, float *wishlist_data, float *clear_location_data, float *clear_pill_data,
+		char *boards_data, char *lookaheads_data, float *scalars_data
 		)
 		: in(n, boards_data, lookaheads_data, scalars_data)
 		, out(n, priors_data, valuation_data, fall_time_data, occupied_data, virus_kills_data, wishlist_data, clear_location_data, clear_pill_data) {
@@ -336,7 +336,7 @@ struct Batch {
 		in.to_gpu();
 		out.to_gpu();
 		reachable = reachable.to(torch::kCUDA);
-		reachable = reachable.to(torch::kF64);
+		reachable = reachable.to(torch::kF32);
 	}
 
 	void save(torch::serialize::OutputArchive &archive) {
@@ -373,7 +373,7 @@ std::ostream &operator<<(std::ostream &o, const Batch &batch) { return batch.dum
 
 class Conv2dReLUInitImpl : public torch::nn::Module {
 	public:
-		Conv2dReLUInitImpl(int64_t iChans, int64_t oChans, double leakage, int64_t padding=1, int64_t k=3)
+		Conv2dReLUInitImpl(int64_t iChans, int64_t oChans, float leakage, int64_t padding=1, int64_t k=3)
 			: torch::nn::Module("Conv2d (custom initialization)")
 			, conv(torch::nn::Conv2d(torch::nn::Conv2dOptions(iChans, oChans, k).padding(padding)))
 		{
@@ -399,7 +399,7 @@ TORCH_MODULE(Conv2dReLUInit);
 
 class ResidualImpl : public torch::nn::Module {
 	public:
-		ResidualImpl(int64_t chans, double leakage, int64_t padding=1, int64_t k=3)
+		ResidualImpl(int64_t chans, float leakage, int64_t padding=1, int64_t k=3)
 			: torch::nn::Module("residual block")
 			, conv0(chans, chans, leakage, padding, k)
 			, conv1(chans, chans, leakage, padding, k)
@@ -460,7 +460,7 @@ class NetImpl : public torch::nn::Module {
 				register_module("output linear", output_linear);
 
 				to(torch::kCUDA);
-				to(torch::kF64);
+				to(torch::kF32);
 			}
 
 		NetOutput forward(const NetInput &in);
@@ -511,7 +511,7 @@ torch::Tensor detailed_loss(Net &net, const Batch &batch) {
 	DebugScope dbg("detailed_loss(net, batch)");
 	const int n = batch.out.priors.size(0);
 	auto net_out = net->forward(batch.in);
-	auto opts = torch::TensorOptions().dtype(torch::kF64).device(torch::kCUDA);
+	auto opts = torch::TensorOptions().dtype(torch::kF32).device(torch::kCUDA);
 	auto loss = torch::zeros({OUTPUT_TYPES}, opts);
 	int64_t i = 0;
 	// Kullback-Leibler divergence for priors
@@ -537,17 +537,17 @@ torch::Tensor detailed_loss(Net &net, const Batch &batch) {
 	return loss;
 }
 
-void tensorcpy(double *out, const torch::Tensor &in) {
+void tensorcpy(float *out, const torch::Tensor &in) {
 	DebugScope dbg("tensorcpy", DEFAULT_SERIALIZATION_VERBOSITY);
 	if(out == NULL) return;
-	if(in.dtype() != torch::kF64) throw 0;
+	if(in.dtype() != torch::kF32) throw 0;
 	int64_t len = 1;
 	for(int i = 0; i < in.dim(); i++) len *= in.size(i);
 
 	// TODO: is it safe to inline the definition of contig_in, or will that
 	// lead to the Tensor being destructed before memcpy finishes?
 	auto contig_in = in.to(torch::kCPU).contiguous();
-	std::memcpy(out, contig_in.data_ptr<double>(), len*sizeof(double));
+	std::memcpy(out, contig_in.data_ptr<float>(), len*sizeof(float));
 }
 
 extern "C" {
@@ -555,14 +555,14 @@ extern "C" {
 	void save_net(Net *net, torch::optim::SGD *optim, char *path);
 	void load_net(char *path, Net **net, torch::optim::SGD **optim);
 	void discard_net(Net *net);
-	void evaluate_net(Net *net, int n, double *priors, double *valuation, char *boards, char *lookaheads, double *scalars);
-	void save_example(char *path, char *reachable, double *priors, double valuation, unsigned char fall_time, char *occupied, double *virus_kills, double *wishlist, double *clear_location, double *clear_pill, char *board, char *lookahead, double *scalars);
+	void evaluate_net(Net *net, int n, float *priors, float *valuation, char *boards, char *lookaheads, float *scalars);
+	void save_example(char *path, char *reachable, float *priors, float valuation, unsigned char fall_time, char *occupied, float *virus_kills, float *wishlist, float *clear_location, float *clear_pill, char *board, char *lookahead, float *scalars);
 	Batch *load_batch(char **path, int n);
 	int batch_size(Batch *batch);
 	void discard_batch(Batch *batch);
-	double train_net(Net *net, torch::optim::SGD *optim, Batch *batch, unsigned long loss_mask);
-	void introspect_net(Net *net, Batch *batch, double *priors, double *valuation, double *fall_time, double *occupied, double *virus_kills, double *wishlist, double *clear_location, double *clear_pill);
-	void detailed_loss(Net *net, double *out, Batch *batch);
+	float train_net(Net *net, torch::optim::SGD *optim, Batch *batch, unsigned long loss_mask);
+	void introspect_net(Net *net, Batch *batch, float *priors, float *valuation, float *fall_time, float *occupied, float *virus_kills, float *wishlist, float *clear_location, float *clear_pill);
+	void detailed_loss(Net *net, float *out, Batch *batch);
 	torch::optim::SGD *connect_optimizer(Net *net);
 	void discard_optimizer(torch::optim::SGD *optim);
 }
@@ -605,7 +605,7 @@ void load_net(char *path, Net **netptr, torch::optim::SGD **optimptr) {
 	}
 }
 
-void evaluate_net(Net *net, int n, double *priors, double *valuation, char *boards, char *lookaheads, double *scalars) {
+void evaluate_net(Net *net, int n, float *priors, float *valuation, char *boards, char *lookaheads, float *scalars) {
 	DebugScope dbg("evaluate_net");
 	torch::NoGradGuard g;
 	NetInput in(n, boards, lookaheads, scalars); in.to_gpu();
@@ -616,8 +616,8 @@ void evaluate_net(Net *net, int n, double *priors, double *valuation, char *boar
 }
 
 void save_example(char *path, char *reachable,
-	double *priors, double valuation, unsigned char fall_time, char *occupied, double *virus_kills, double *wishlist, double *clear_location, double *clear_pill,
-	char *board, char *lookahead, double *scalars) {
+	float *priors, float valuation, unsigned char fall_time, char *occupied, float *virus_kills, float *wishlist, float *clear_location, float *clear_pill,
+	char *board, char *lookahead, float *scalars) {
 	DebugScope dbg("save_example", DEFAULT_SERIALIZATION_VERBOSITY);
 	Batch batch(1, reachable, priors, &valuation, &fall_time, occupied, virus_kills, wishlist, clear_location, clear_pill, board, lookahead, scalars);
 	torch::serialize::OutputArchive archive;
@@ -661,25 +661,24 @@ void discard_batch(Batch *batch) {
 	delete batch;
 }
 
-double train_net(Net *net, torch::optim::SGD *optim, Batch *batch, unsigned long loss_mask) {
+float train_net(Net *net, torch::optim::SGD *optim, Batch *batch, unsigned long loss_mask) {
 	DebugScope dbg("train_net");
 	optim->zero_grad();
 	auto losses = detailed_loss(*net, *batch);
 
-	double loss_mask_array[OUTPUT_TYPES];
+	float loss_mask_array[OUTPUT_TYPES];
 	for(int i = 0; i < OUTPUT_TYPES; i++) {
 		loss_mask_array[i] = (loss_mask & (1 << i))?1:0;
 	}
-	auto loss_mask_tensor = torch::from_blob(loss_mask_array, {OUTPUT_TYPES}, [](void *v){}, torch::TensorOptions().dtype(torch::kF64)).to(torch::kCUDA);
+	auto loss_mask_tensor = torch::from_blob(loss_mask_array, {OUTPUT_TYPES}, [](void *v){}, torch::TensorOptions().dtype(torch::kF32)).to(torch::kCUDA);
 	auto loss = (losses * loss_mask_tensor).sum();
 
 	loss.backward();
 	optim->step();
-	loss = loss.to(torch::kCPU);
-	return *loss.data_ptr<double>();
+	return loss.item<float>();
 }
 
-void introspect_net(Net *net, Batch *batch, double *priors, double *valuation, double *fall_time, double *occupied, double *virus_kills, double *wishlist, double *clear_location, double *clear_pill) {
+void introspect_net(Net *net, Batch *batch, float *priors, float *valuation, float *fall_time, float *occupied, float *virus_kills, float *wishlist, float *clear_location, float *clear_pill) {
 	DebugScope dbg("introspect_net");
 	torch::NoGradGuard g;
 	bool was_training = (**net).is_training();
@@ -699,7 +698,7 @@ void introspect_net(Net *net, Batch *batch, double *priors, double *valuation, d
 	(**net).train(was_training);
 }
 
-void detailed_loss(Net *net, double *out, Batch *batch) {
+void detailed_loss(Net *net, float *out, Batch *batch) {
 	DebugScope dbg("detailed_loss(net, out, batch)");
 	torch::NoGradGuard g;
 	bool was_training = (**net).is_training();

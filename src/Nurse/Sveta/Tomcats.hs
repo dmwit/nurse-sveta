@@ -7,7 +7,7 @@ module Nurse.Sveta.Tomcats (
 	SearchConfiguration(..),
 	Move(..),
 	GameState(..),
-	A0.Statistics(..),
+	Statistics(..),
 	Tree(..),
 	clone,
 	maximumOn,
@@ -31,7 +31,7 @@ import Nurse.Sveta.STM.BatchProcessor
 import System.Random.MWC
 import System.Random.MWC.Distributions
 import System.IO.Unsafe (unsafeInterleaveIO)
-import Tomcats
+import Tomcats hiding (pucbA0)
 
 import qualified Data.HashMap.Strict as HM
 import qualified Data.Vector as V
@@ -43,7 +43,7 @@ import qualified Tomcats.AlphaZero as A0
 -- 	* neural net vs. not
 -- 	* temperature
 data SearchConfiguration = SearchConfiguration
-	{ c_puct :: Double
+	{ c_puct :: Float
 	, iterations :: Int
 	, typicalMoves :: Double
 	, priorNoise :: Double
@@ -95,7 +95,7 @@ data GameState = GameState
 uninitializedLookbehind :: IO (IORef (Color, Color))
 uninitializedLookbehind = newIORef (error "asked what pill was last launched before any pill was launched")
 
-type DMParameters = Parameters IO Double A0.Statistics Move GameState
+type DMParameters = Parameters IO Float Statistics Move GameState
 
 class GameStateSeed a where initialState :: a -> IO GameState
 
@@ -134,7 +134,7 @@ instance (a ~ Board, b ~ Bool, c ~ CoarseSpeed) => GameStateSeed (a, b, c) where
 		<*> pure sensitive
 		<*> pure speed
 
-initialTree :: GameStateSeed a => DMParameters -> a -> IO (GameState, Tree A0.Statistics Move)
+initialTree :: GameStateSeed a => DMParameters -> a -> IO (GameState, Tree Statistics Move)
 initialTree params g = do
 	s <- initialState g
 	(_, t) <- Tomcats.initialize params s >>= preprocess params s
@@ -149,12 +149,12 @@ dmParameters config eval gen = Parameters
 	, preprocess = dmPreprocess config eval gen
 	}
 
-dmScore :: SearchConfiguration -> Move -> A0.Statistics -> A0.Statistics -> Double
+dmScore :: SearchConfiguration -> Move -> Statistics -> Statistics -> Float
 -- We should probably avoid looking at RNG moves in the same order every time,
 -- as that could introduce a bias. In dmExpand, we put a bit of randomness
 -- into the priors, which we can use to break ordering ties here.
-dmScore _ RNG{} _ stats = A0.priorProbability stats - A0.visitCount stats
-dmScore config _ parent child = pucbA0 (c_puct config) (A0.priorProbability child) (A0.visitCount parent) (A0.visitCount child) (A0.cumulativeValuation child)
+dmScore _ RNG{} _ stats = priorProbability stats - visitCount stats
+dmScore config _ parent child = pucbA0 (c_puct config) (priorProbability child) (visitCount parent) (visitCount child) (cumulativeValuation child)
 
 dmFinished :: GameState -> IO Bool
 dmFinished gs = do
@@ -166,26 +166,26 @@ dmFinished gs = do
 -- score: 0 or  1/3 for finishing
 --        up to 1/3 for each virus cleared; want the bot to learn early that clearing is good, so reward heavily for the first few viruses
 --        up to 1/3 for clearing quickly if you win; the quicker you get, the harder it is to get quicker, so increase the reward more quickly when it's fast
-winningValuation :: GameState -> IO Double
+winningValuation :: GameState -> IO Float
 winningValuation gs = do
 	frames_ <- readIORef (framesPassed gs)
 	let frames = fromIntegral (max 1 frames_)
 	    maxFrames = fromIntegral (shiftL (originalVirusCount gs) 9)
 	pure $ 1 - sqrt (min 1 (frames / maxFrames)) / 3
 
-losingValuation :: GameState -> IO Double
+losingValuation :: GameState -> IO Float
 losingValuation gs = do
 	clearedViruses <- readIORef (virusesKilled gs)
 	pure $ sqrt (fromIntegral clearedViruses / fromIntegral (originalVirusCount gs)) / 3
 
-evaluateFinalState :: GameState -> IO Double
+evaluateFinalState :: GameState -> IO Float
 evaluateFinalState gs = do
 	clearedViruses <- readIORef (virusesKilled gs)
 	if clearedViruses == originalVirusCount gs
 		then winningValuation gs
 		else losingValuation gs
 
-evaluationBounds :: GameState -> IO (Double, Double)
+evaluationBounds :: GameState -> IO (Float, Float)
 evaluationBounds gs = liftA2 (,) (losingValuation gs) (winningValuation gs)
 
 -- We should probably avoid looking at RNG moves in the same order every time,
@@ -196,11 +196,11 @@ evaluationBounds gs = liftA2 (,) (losingValuation gs) (winningValuation gs)
 -- unexplored RNG nodes to child RNG nodes immediately with a shared
 -- pathfinding result -- this expansion is only ever called right after we
 -- place a pill, so we can always produce RNG moves.
-dmExpand :: GenIO -> GameState -> IO (A0.Statistics, HashMap Move A0.Statistics)
+dmExpand :: GenIO -> GameState -> IO (Statistics, HashMap Move Statistics)
 dmExpand = \gen gs -> dmFinished gs >>= \case
 	False -> do
 		perm <- uniformPermutation n gen
-		let mk i [l, r] = (RNG l r, A0.Statistics 0 (1/fromIntegral n + fromIntegral (perm V.! i - halfn) * 1e-8) 0)
+		let mk i [l, r] = (RNG l r, Statistics 0 (1/fromIntegral n + fromIntegral (perm V.! i - halfn) * 1e-8) 0)
 		pure (mempty, HM.fromList (zipWith mk [0..] (replicateM 2 colors)))
 	True -> evaluateFinalState gs <&> \score -> (singleVisitStats score, HM.empty)
 	where
@@ -249,7 +249,7 @@ approximateCostModel move pill counts = 0
 	+ mpPathLength move -- pill maneuvering
 	+ sum [16*n + 20 | n <- rowsFallen counts] -- fall time + clear animation
 
-dmPreprocess :: SearchConfiguration -> Procedure GameState DetailedEvaluation -> GenIO -> GameState -> Tree A0.Statistics Move -> IO (A0.Statistics, Tree A0.Statistics Move)
+dmPreprocess :: SearchConfiguration -> Procedure GameState DetailedEvaluation -> GenIO -> GameState -> Tree Statistics Move -> IO (Statistics, Tree Statistics Move)
 dmPreprocess config eval gen gs t
 	| HM.null (children t) = case HM.keys (unexplored t) of
 		RNG{}:_ -> do
@@ -276,9 +276,10 @@ dmPreprocess config eval gen gs t
 			-- max before min, because max x nan = x but min x nan = nan
 			let stats = singleVisitStats . min valueHi . max valueLo $ valueEstimate
 			priors <- id
+				. fmap (fmap roundStatistics)
 				. A0.dirichletA0 (typicalMoves config) (priorNoise config) gen
 				. A0.normalize
-				. HM.mapWithKey (\(Placement _ (Pill pc bl)) _ -> moveWeights HM.! pc V.! x bl V.! y bl)
+				. HM.mapWithKey (\(Placement _ (Pill pc bl)) _ -> realToFrac (moveWeights HM.! pc V.! x bl V.! y bl))
 				$ unexplored t
 			pure (stats, t { statistics = statistics t <> stats, unexplored = priors })
 		[] -> pure (mempty, t)
@@ -290,10 +291,10 @@ dmPreprocess config eval gen gs t
 		, show (k, p1, p2)
 		]
 
-singleVisitStats :: Double -> A0.Statistics
-singleVisitStats = A0.Statistics 1 0
+singleVisitStats :: Float -> Statistics
+singleVisitStats = Statistics 1 0
 
-type DetailedEvaluation = (Double, HashMap PillContent (Vector (Vector Double)))
+type DetailedEvaluation = (Float, HashMap PillContent (Vector (Vector Float)))
 
 -- | Given the game state and the colors for the upcoming pill, guess where
 -- moves will be made and how good the final outcome will be. The Vector's are
@@ -310,15 +311,45 @@ dumbEvaluation = \s -> do
 	-- when horizontal, this has one extra x position. but who cares?
 	where vec = V.replicate 8 (V.replicate 16 1)
 
+-- Just like A0.Statistics, except that it uses Float instead of Double.
+data Statistics = Statistics
+	{ visitCount, priorProbability, cumulativeValuation :: {-# UNPACK #-} !Float
+	}
+	deriving (Eq, Ord, Read, Show)
+
+instance Semigroup Statistics where
+	Statistics vc pp cv <> Statistics vc' pp' cv' = Statistics
+		{ visitCount = vc + vc'
+		-- I know it looks weird to add probabilities. The plan is that the
+		-- statistics that are propagated up the tree always have 0 here, so
+		-- that the initial value computed by expanding a position remains till
+		-- the end of time.
+		, priorProbability = pp + pp'
+		, cumulativeValuation = cv + cv'
+		}
+
+instance Monoid Statistics where mempty = Statistics 0 0 0
+
+instance ToJSON Statistics where toJSON stats = toJSON (visitCount stats, priorProbability stats, cumulativeValuation stats)
+instance FromJSON Statistics where parseJSON v = parseJSON v <&> \(vc, pp, cv) -> Statistics vc pp cv
+
+roundStatistics :: A0.Statistics -> Statistics
+roundStatistics (A0.Statistics vc pp cv) = Statistics (realToFrac vc) (realToFrac pp) (realToFrac cv)
+
+-- Just like Tomcats.pucbA0, except that it uses Float instead of Double.
+pucbA0 :: Float -> Float -> Float -> Float -> Float -> Float
+pucbA0 c_puct p n 0 _ = c_puct * p * sqrt n
+pucbA0 c_puct p n n_i q_i = q_i/n_i + c_puct * p * sqrt n / (1 + n_i)
+
 -- all the rest of this stuff is just for debugging
 
-ppTreeSparseIO :: Tree A0.Statistics Move -> IO ()
+ppTreeSparseIO :: Tree Statistics Move -> IO ()
 ppTreeSparseIO = putStrLn . ppTreeSparse ""
 
-ppTreeIO :: Tree A0.Statistics Move -> IO ()
+ppTreeIO :: Tree Statistics Move -> IO ()
 ppTreeIO = putStrLn . ppTree ""
 
-ppTreeSparse :: String -> Tree A0.Statistics Move -> String
+ppTreeSparse :: String -> Tree Statistics Move -> String
 ppTreeSparse indent (Tree stats cs un cache) = ""
 	++ ppStats stats ++ "{"
 	++ case ppTreesSparse ('\t':indent) cs of
@@ -326,14 +357,14 @@ ppTreeSparse indent (Tree stats cs un cache) = ""
 	   	s -> "\n" ++ s ++ indent
 	++ "}" ++ ppCache cache
 
-ppTreesSparse :: String -> HashMap Move (Tree A0.Statistics Move) -> String
+ppTreesSparse :: String -> HashMap Move (Tree Statistics Move) -> String
 ppTreesSparse indent ts = concat
 	[ indent ++ ppMove move ++ "↦" ++ ppTreeSparse indent t ++ ",\n"
 	| (move, t) <- HM.toList ts
-	, A0.visitCount (statistics t) > 0
+	, visitCount (statistics t) > 0
 	]
 
-ppTree :: String -> Tree A0.Statistics Move -> String
+ppTree :: String -> Tree Statistics Move -> String
 ppTree indent (Tree stats cs un cache) = ppStats stats ++ "{" ++ rec ++ "}" ++ ppCache cache
 	where
 	indent' = '\t':indent
@@ -342,24 +373,24 @@ ppTree indent (Tree stats cs un cache) = ppStats stats ++ "{" ++ rec ++ "}" ++ p
 		(s, "") -> "\n" ++ s ++ indent
 		(s, s') -> "\n" ++ s ++ indent' ++ s' ++ "\n" ++ indent
 
-ppStats :: A0.Statistics -> String
-ppStats (A0.Statistics visits prob val) = ppPercent prob ++ " " ++ ppPrecision 2 val ++ "/" ++ show (round visits)
+ppStats :: Statistics -> String
+ppStats (Statistics visits prob val) = ppPercent prob ++ " " ++ ppPrecision 2 val ++ "/" ++ show (round visits)
 
-ppTrees :: String -> HashMap Move (Tree A0.Statistics Move) -> String
+ppTrees :: String -> HashMap Move (Tree Statistics Move) -> String
 ppTrees indent ts = concat
 	[ indent ++ ppMove move ++ "↦" ++ ppTree indent t ++ ",\n"
 	| (move, t) <- HM.toList ts
 	]
 
-ppStatss :: HashMap Move A0.Statistics -> String
+ppStatss :: HashMap Move Statistics -> String
 ppStatss ss = concat
 	[ ppMove move ++ "⇨" ++ ppStats stats ++ ", "
 	| (move, stats) <- HM.toList ss
 	]
 
-ppCache :: Maybe A0.Statistics -> String
+ppCache :: Maybe Statistics -> String
 ppCache Nothing = ""
-ppCache (Just stats) = "~" ++ ppPrecision 2 (A0.cumulativeValuation stats)
+ppCache (Just stats) = "~" ++ ppPrecision 2 (cumulativeValuation stats)
 
 ppMove :: Move -> String
 ppMove (RNG l r) = [ppColor l, ppColor r]
@@ -383,9 +414,9 @@ ppColor Yellow = 'y'
 ppPosition :: Position -> String
 ppPosition pos = "(" ++ show (x pos) ++ ", " ++ show (y pos) ++ ")"
 
-ppPercent :: Double -> String
+ppPercent :: Float -> String
 ppPercent p = (if isNaN p then "nan" else show (round (100*p))) ++ "%"
 
-ppPrecision :: Int -> Double -> String
+ppPrecision :: Int -> Float -> String
 ppPrecision p n = if isNaN n then "nan" else show (fromInteger (round (pow*n))/pow)
 	where pow = 10^p

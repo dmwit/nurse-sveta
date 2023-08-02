@@ -219,7 +219,7 @@ instance (MonadIO m, a ~ m ()) => Overload.IsLabel "queueDraw" (PlayerStateView 
 
 data SearchConfigurationView = SCV
 	{ scvTop :: Grid
-	, scvC_puct :: ConfigurationRequestView Double
+	, scvC_puct :: ConfigurationRequestView Float
 	, scvIterations :: ConfigurationRequestView Int
 	, scvTypicalMoves :: ConfigurationRequestView Double
 	, scvPriorNoise :: ConfigurationRequestView Double

@@ -216,27 +216,27 @@ gradientStops = tail [undefined
 nanError :: Render ()
 nanError = setSourceRGB 1 0 1
 
-bwGradient :: HasCallStack => Double -> Render ()
+bwGradient :: HasCallStack => Float -> Render ()
 bwGradient n
 	| isNaN n = nanError
 	| n <= 0 = setSourceRGB 0 0 0
 	| n >= 1 = setSourceRGB 1 1 1
 	| otherwise = unsafeGradient n
 
-saturatingGradient :: HasCallStack => Double -> Render ()
+saturatingGradient :: HasCallStack => Float -> Render ()
 saturatingGradient = unsafeGradient . max 0 . min 1
 
-bSaturatingGradient :: HasCallStack => Double -> Render ()
+bSaturatingGradient :: HasCallStack => Float -> Render ()
 bSaturatingGradient n
 	| isNaN n = nanError
 	| n <= 0 = setSourceRGB 0 0 0
 	| otherwise = unsafeGradient $ min 1 n
 
-unsafeGradient :: HasCallStack => Double -> Render ()
+unsafeGradient :: HasCallStack => Float -> Render ()
 unsafeGradient n = setSourceRGB (m*r + m'*r') (m*g + m'*g') (m*b + m'*b') where
 	segments = fromIntegral (length gradientStops) - 1
 	(d, m_) = n `divMod'` recip segments
-	m' = segments*m_
+	m' = realToFrac (segments*m_)
 	m = 1-m'
 	(r, g, b):(r', g', b'):_ = drop d (gradientStops ++ repeat (last gradientStops))
 
@@ -251,35 +251,35 @@ heatmapSizeRecommendation = fmap succ . bottleSizeRecommendation
 -- | Good for when all your numbers are in the range [0,1]. The gradient used
 -- for this makes it especially easy to spot values that are exactly 0 or
 -- exactly 1.
-heatmap01 :: Board -> PillContent -> [(Position, Double)] -> Render ()
+heatmap01 :: Board -> PillContent -> [(Position, Float)] -> Render ()
 heatmap01 = heatmapWith heatmapOptions01
 
 -- | Good for distributions. The gradient used makes it easy to spot values
 -- that are exactly 0 and scales the upper bound to be near the highest
 -- probability given.
-heatmap0Dyn :: Board -> PillContent -> [(Position, Double)] -> Render ()
+heatmap0Dyn :: Board -> PillContent -> [(Position, Float)] -> Render ()
 heatmap0Dyn b pc heat = heatmap0Max (maximum (0:map snd heat)) b pc heat
 
 -- | Good for distributions where you expect a probability to be at most a
 -- certain maximum. The gradient used makes it easy to spot values that are
 -- exactly 0, but doesn't treat values equal to the upper bound specially.
-heatmap0Max :: Double -> Board -> PillContent -> [(Position, Double)] -> Render ()
+heatmap0Max :: Float -> Board -> PillContent -> [(Position, Float)] -> Render ()
 heatmap0Max = heatmapWith . heatmapOptions0Max
 
 -- | Good when you don't really know ahead of time how big your numbers will
 -- be. Prints rounded versions of the min and max in the legend.
-heatmapDyn :: Board -> PillContent -> [(Position, Double)] -> Render ()
+heatmapDyn :: Board -> PillContent -> [(Position, Float)] -> Render ()
 heatmapDyn b pc heat = heatmapWith (heatmapOptionsDyn heat) b pc heat
 
 -- | Good for when you know what you want the smallest and largest values in
 -- your legend to be. The bounds are rounded before being printed in the
 -- legend.
-heatmapRange :: Double -> Double -> Board -> PillContent -> [(Position, Double)] -> Render ()
+heatmapRange :: Float -> Float -> Board -> PillContent -> [(Position, Float)] -> Render ()
 heatmapRange lo hi = heatmapWith (heatmapOptionsRange lo hi)
 
 -- | See 'HeatmapOptions' below for more on exactly what knobs you can tweak
 -- here.
-heatmapWith :: HeatmapOptions -> Board -> PillContent -> [(Position, Double)] -> Render ()
+heatmapWith :: HeatmapOptions -> Board -> PillContent -> [(Position, Float)] -> Render ()
 heatmapWith ho b pc heat = do
 	rectangle 0 0 w h
 	neutral
@@ -312,8 +312,8 @@ heatmapWith ho b pc heat = do
 			| otherwise -> \n -> (n-lo) / (hi-lo)
 
 data HeatmapOptions = HeatmapOptions
-	{ hoRescale :: Maybe (Double, Double) -- ^ the 'hoGradient' generally clips its input to the range [0, 1]; if this is a 'Just', the inputs will be linearly scaled from the given range before 'hoGradient' is called
-	, hoGradient :: Double -> Render () -- ^ an action that sets the background color for a given number
+	{ hoRescale :: Maybe (Float, Float) -- ^ the 'hoGradient' generally clips its input to the range [0, 1]; if this is a 'Just', the inputs will be linearly scaled from the given range before 'hoGradient' is called
+	, hoGradient :: Float -> Render () -- ^ an action that sets the background color for a given number
 	, hoLegendLabels :: Maybe (String, String) -- ^ if this is a 'Just', a legend with the given labels will be drawn
 	, hoPadding :: Double -- ^ this much space will be left between elements in the legend row
 	, hoLabelWidth :: Double -- ^ labels will be fit into rectangles of height 1 and the given width at the top left and top right
@@ -331,7 +331,7 @@ heatmapOptions01 = HeatmapOptions
 
 -- | Suitable options for probability distributions. Supply the largest
 -- probability as the argument.
-heatmapOptions0Max :: Double -> HeatmapOptions
+heatmapOptions0Max :: Float -> HeatmapOptions
 heatmapOptions0Max p = HeatmapOptions
 	{ hoRescale = Just (0, p)
 	, hoGradient = bSaturatingGradient
@@ -341,18 +341,18 @@ heatmapOptions0Max p = HeatmapOptions
 	}
 
 -- | Suitable options for when you're not sure what range your numbers will be in.
-heatmapOptionsDyn :: [(Position, Double)] -> HeatmapOptions
+heatmapOptionsDyn :: [(Position, Float)] -> HeatmapOptions
 heatmapOptionsDyn = heatmapOptionsDyn' . map snd
 
 -- | Suitable options for when you're not sure what range your numbers will be
 -- in and don't want to pre-commit to their positions.
-heatmapOptionsDyn' :: [Double] -> HeatmapOptions
+heatmapOptionsDyn' :: [Float] -> HeatmapOptions
 heatmapOptionsDyn' = \case
 	[] -> heatmapOptions01
 	ns -> heatmapOptionsRange (minimum ns) (maximum ns)
 
 -- | Suitable options for when your numbers are all in a specific range.
-heatmapOptionsRange :: Double -> Double -> HeatmapOptions
+heatmapOptionsRange :: Float -> Float -> HeatmapOptions
 heatmapOptionsRange lo hi
 	| 0 <= lo && lo <= epsilon && 1-epsilon <= hi && hi <= 1 = heatmapOptions01
 	| hi < lo = heatmapOptionsRange hi lo
