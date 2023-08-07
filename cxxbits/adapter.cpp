@@ -666,6 +666,7 @@ double train_net(Net *net, torch::optim::SGD *optim, Batch *batch, unsigned long
 		}
 	}
 
+	loss_product = loss_product.pow(0.25);
 	loss_product.backward();
 	optim->step();
 	loss_sum = loss_sum.to(torch::kCPU);
