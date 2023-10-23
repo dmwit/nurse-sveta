@@ -1,0 +1,8 @@
+dnf install ghc-prof {gtk4,gobject-introspection,atk}-devel
+pip install wandb
+grab libtorch 2.1.0 from pytorch.org and unzip to a place you like
+CPATH=.../libtorch/include/torch/csrc/api/include:.../libtorch/include:"$CPATH"
+LIBRARY_PATH=.../libtorch/lib:"$LIBRARY_PATH"
+LD_LIBRARY_PATH=.../libtorch/lib:"$LIBRARY_PATH"
+# if using ROCm
+ROCBLAS_TENSILE_LIBPATH=.../libtorch/lib/rocblas/library
