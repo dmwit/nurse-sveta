@@ -17,15 +17,15 @@ flag debug
     manual:      True
 
 common shared
-    build-depends:        base ^>=4.14.1.0
-                        , aeson ^>=2.1
+    build-depends:        base >=4.14 && <4.17
+                        , aeson >=2.1 && <2.3
                         , containers ^>=0.6
                         , filepath ^>=1.4
                         , gi-cairo-render ^>=0.1
-                        , gi-gtk ^>=4.0
+                        , gi-gtk ^>=4.0.8
                         , maryodel ^>=0.1
                         , mwc-random ^>=0.15
-                        , text ^>=1.2
+                        , text ^>=2.1
                         , unordered-containers ^>=0.2
                         , vector ^>=0.13
     default-language:   Haskell2010
@@ -86,7 +86,7 @@ library
                         , gi-glib ^>=2.0
                         , hashable ^>=1.4
                         , mtl ^>=2.2
-                        , primitive ^>=0.7
+                        , primitive >=0.7 && <0.10
                         , stm ^>=2.5.1
                         , tomcats ^>=0.1
     cxx-sources:        cxxbits/adapter.cpp
@@ -108,10 +108,10 @@ executable nurse-sveta
     import:             executable
     main-is:            nurse-sveta.hs
     other-modules:      Paths_nurse_sveta
-    build-depends:        bytestring ^>=0.10
+    build-depends:        bytestring >=0.10 && <0.12
                         , clock ^>=0.8
                         , process ^>=1.6
-                        , time ^>=1.9
+                        , time >=1.9 && <1.12
 
 executable nurse-sveta-reset-state
     import:             executable

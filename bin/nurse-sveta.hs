@@ -50,6 +50,7 @@ import qualified Data.HashSet as HS
 import qualified Data.IntMap as IM
 import qualified Data.Map as M
 import qualified Data.Text as T
+import qualified Data.Text.Internal.Encoding.Utf8 as T
 import qualified Data.Time as Time
 import qualified Data.Vector as V
 import qualified GI.Cairo.Render as G
@@ -1154,10 +1155,14 @@ numericLabel :: T.Text -> IO Label
 numericLabel t = do
 	lbl <- new Label [#label := t, #justify := JustificationRight, #halign := AlignEnd, #cssClasses := ["mono"]]
 	cssPrv <- new CssProvider []
-	#loadFromData cssPrv ".mono { font-family: \"monospace\"; }"
+	loadFromDataLen cssPrv ".mono { font-family: \"monospace\"; }"
 	cssCtx <- #getStyleContext lbl
 	#addProvider cssCtx cssPrv (fromIntegral STYLE_PROVIDER_PRIORITY_APPLICATION)
 	pure lbl
+
+loadFromDataLen :: CssProvider -> T.Text -> IO ()
+loadFromDataLen cssPrv t = #loadFromData cssPrv t tLen where
+	tLen = fromIntegral $ T.foldl' (\len c -> len + T.utf8Length c) 0 t
 
 dirEncode :: String -> FilePath
 dirEncode "" = "q"
