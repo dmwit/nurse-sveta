@@ -373,9 +373,9 @@ std::ostream &operator<<(std::ostream &o, const Batch &batch) { return batch.dum
 
 class Conv2dReLUInitImpl : public torch::nn::Module {
 	public:
-		Conv2dReLUInitImpl(int64_t iChans, int64_t oChans, float leakage, int64_t padding=1, int64_t k=3)
+		Conv2dReLUInitImpl(int64_t iChans, int64_t oChans, float leakage, int64_t padding=1, int64_t k=3, bool bias=true)
 			: torch::nn::Module("Conv2d (custom initialization)")
-			, conv(torch::nn::Conv2d(torch::nn::Conv2dOptions(iChans, oChans, k).padding(padding)))
+			, conv(torch::nn::Conv2d(torch::nn::Conv2dOptions(iChans, oChans, k).padding(padding).bias(bias)))
 		{
 			DebugScope dbg("Conv2dReLUInitImpl(...)", DEFAULT_CONSTRUCTOR_VERBOSITY);
 			auto opts = torch::TensorOptions().dtype(torch::kFloat64).requires_grad(true);
@@ -383,7 +383,7 @@ class Conv2dReLUInitImpl : public torch::nn::Module {
 			auto scaling = std::sqrt(2 / ((1 + leakage*leakage) * k*k*iChans));
 			torch::autograd::GradMode::set_enabled(false);
 			conv->weight.normal_(0, scaling);
-			conv->bias.normal_(0, 1);
+			if(bias) conv->bias.normal_(0, 1);
 			torch::autograd::GradMode::set_enabled(true);
 			register_module("conv", conv);
 		}
@@ -397,17 +397,24 @@ class Conv2dReLUInitImpl : public torch::nn::Module {
 };
 TORCH_MODULE(Conv2dReLUInit);
 
+// Residual design is inspired by Fixup Initialization: Residual Learning Without Normalization
 class ResidualImpl : public torch::nn::Module {
 	public:
 		ResidualImpl(int64_t chans, float leakage, int64_t padding=1, int64_t k=3)
 			: torch::nn::Module("residual block")
 			, conv0(chans, chans, leakage, padding, k)
-			, conv1(chans, chans, leakage, padding, k)
+			, conv1(chans, chans, leakage, padding, k, false)
 			, norm0(torch::nn::BatchNorm2dOptions(chans))
 			, norm1(torch::nn::BatchNorm2dOptions(chans))
 			, lrelu(torch::nn::LeakyReLU(torch::nn::LeakyReLUOptions().negative_slope(leakage)))
 		{
 			DebugScope dbg("ResidualImpl(...)", DEFAULT_CONSTRUCTOR_VERBOSITY);
+
+			torch::autograd::GradMode::set_enabled(false);
+			conv0->conv->weight /= std::sqrt(RESIDUAL_BLOCKS);
+			conv1->conv->weight.zero_();
+			torch::autograd::GradMode::set_enabled(true);
+
 			register_module("conv0", conv0);
 			register_module("conv1", conv1);
 			register_module("norm0", norm0);
@@ -417,7 +424,7 @@ class ResidualImpl : public torch::nn::Module {
 
 		torch::Tensor forward(const torch::Tensor &in) {
 			DebugScope dbg("ResidualImpl::forward", DEFAULT_LAYER_VERBOSITY);
-			return lrelu->forward(in +
+			return lrelu->forward(0.9*in + 0.1*
 				norm1->forward(
 				conv1->forward(
 				lrelu->forward(
