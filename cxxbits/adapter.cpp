@@ -25,6 +25,10 @@ const float LEAKAGE = 0.01;
 
 const int64_t BODY_SIZE = FILTERS * CELLS;
 
+const torch::TensorOptions CPU_BYTE  = torch::TensorOptions().dtype(torch::kU8);
+const torch::TensorOptions CPU_FLOAT = torch::TensorOptions().dtype(torch::kF32);
+const torch::TensorOptions GPU_FLOAT = CPU_FLOAT.device(torch::kCUDA);
+
 // TODO: A0 started its LR off at 0.2 (!)
 const float INITIAL_LEARNING_RATE = 1e-4;
 const float EPSILON = 1e-7;
@@ -122,20 +126,16 @@ struct NetInput {
 
 	NetInput(int n, char *boards_data, char *lookaheads_data, float *scalars_data) {
 		DebugScope dbg("NetInput(n, boards, lookaheads, scalars)", DEFAULT_CONSTRUCTOR_VERBOSITY);
-		auto  u8Options = torch::TensorOptions().dtype(torch::kU8);
-		auto f64Options = torch::TensorOptions().dtype(torch::kF32);
-		boards     = torch::from_blob(    boards_data, {n, CELL_SIZE, BOARD_WIDTH, BOARD_HEIGHT}, [](void *v){},  u8Options);
-		lookaheads = torch::from_blob(lookaheads_data, {n, LOOKAHEAD_SIZE}                      , [](void *v){},  u8Options);
-		scalars    = torch::from_blob(   scalars_data, {n, SCALARS}                             , [](void *v){}, f64Options);
+		boards     = torch::from_blob(    boards_data, {n, CELL_SIZE, BOARD_WIDTH, BOARD_HEIGHT}, [](void *v){}, CPU_BYTE );
+		lookaheads = torch::from_blob(lookaheads_data, {n, LOOKAHEAD_SIZE}                      , [](void *v){}, CPU_BYTE );
+		scalars    = torch::from_blob(   scalars_data, {n, SCALARS}                             , [](void *v){}, CPU_FLOAT);
 	}
 
 	NetInput(int n) {
 		DebugScope dbg("NetInput(n)", DEFAULT_CONSTRUCTOR_VERBOSITY);
-		auto  u8Options = torch::TensorOptions().dtype(torch::kU8);
-		auto f64Options = torch::TensorOptions().dtype(torch::kF32);
-		boards     = torch::empty({n, CELL_SIZE, BOARD_WIDTH, BOARD_HEIGHT},  u8Options);
-		lookaheads = torch::empty({n, LOOKAHEAD_SIZE}                      ,  u8Options);
-		scalars    = torch::empty({n, SCALARS}                             , f64Options);
+		boards     = torch::empty({n, CELL_SIZE, BOARD_WIDTH, BOARD_HEIGHT}, CPU_BYTE );
+		lookaheads = torch::empty({n, LOOKAHEAD_SIZE}                      , CPU_BYTE );
+		scalars    = torch::empty({n, SCALARS}                             , CPU_FLOAT);
 	}
 
 	void to_gpu() {
@@ -197,31 +197,26 @@ struct NetOutput {
 
 	NetOutput(int n, float *priors_data, float *valuation_data, unsigned char *fall_time_data, char *occupied_data, float *virus_kills_data, float *wishlist_data, float *clear_location_data, float *clear_pill_data) {
 		DebugScope dbg("NetOutput(n, ...)", DEFAULT_CONSTRUCTOR_VERBOSITY);
-		auto f64Opts = torch::TensorOptions().dtype(torch::kF32);
-		auto  u8Opts = torch::TensorOptions().dtype(torch::kU8 );
-
-		priors         = torch::from_blob(        priors_data, {n, ROTATIONS, BOARD_WIDTH, BOARD_HEIGHT                   }, [](void *) {}, f64Opts);
-		valuation      = torch::from_blob(     valuation_data, {n                                                         }, [](void *) {}, f64Opts);
-		fall_time      = torch::from_blob(     fall_time_data, {n                                                         }, [](void *) {},  u8Opts);
-		occupied       = torch::from_blob(      occupied_data, {n, BOARD_WIDTH, BOARD_HEIGHT                              }, [](void *) {},  u8Opts);
-		virus_kills    = torch::from_blob(   virus_kills_data, {n, BOARD_WIDTH, BOARD_HEIGHT                              }, [](void *) {}, f64Opts);
-		wishlist       = torch::from_blob(      wishlist_data, {n, ORIENTATIONS, COLORS, COLORS, BOARD_WIDTH, BOARD_HEIGHT}, [](void *) {}, f64Opts);
-		clear_location = torch::from_blob(clear_location_data, {n, BOARD_WIDTH, BOARD_HEIGHT                              }, [](void *) {}, f64Opts);
-		clear_pill     = torch::from_blob(    clear_pill_data, {n, ORIENTATIONS, COLORS, COLORS                           }, [](void *) {}, f64Opts);
+		priors         = torch::from_blob(        priors_data, {n, ROTATIONS, BOARD_WIDTH, BOARD_HEIGHT                   }, [](void *) {}, CPU_FLOAT);
+		valuation      = torch::from_blob(     valuation_data, {n                                                         }, [](void *) {}, CPU_FLOAT);
+		fall_time      = torch::from_blob(     fall_time_data, {n                                                         }, [](void *) {}, CPU_BYTE );
+		occupied       = torch::from_blob(      occupied_data, {n, BOARD_WIDTH, BOARD_HEIGHT                              }, [](void *) {}, CPU_BYTE );
+		virus_kills    = torch::from_blob(   virus_kills_data, {n, BOARD_WIDTH, BOARD_HEIGHT                              }, [](void *) {}, CPU_FLOAT);
+		wishlist       = torch::from_blob(      wishlist_data, {n, ORIENTATIONS, COLORS, COLORS, BOARD_WIDTH, BOARD_HEIGHT}, [](void *) {}, CPU_FLOAT);
+		clear_location = torch::from_blob(clear_location_data, {n, BOARD_WIDTH, BOARD_HEIGHT                              }, [](void *) {}, CPU_FLOAT);
+		clear_pill     = torch::from_blob(    clear_pill_data, {n, ORIENTATIONS, COLORS, COLORS                           }, [](void *) {}, CPU_FLOAT);
 	}
 
 	NetOutput(int n) {
 		DebugScope dbg("NetOutput(n)", DEFAULT_CONSTRUCTOR_VERBOSITY);
-		auto f64Opts = torch::TensorOptions().dtype(torch::kF32);
-		auto  u8Opts = torch::TensorOptions().dtype(torch::kU8 );
-		priors         = torch::empty({n, ROTATIONS, BOARD_WIDTH, BOARD_HEIGHT                   }, f64Opts);
-		valuation      = torch::empty({n                                                         }, f64Opts);
-		fall_time      = torch::empty({n                                                         },  u8Opts);
-		occupied       = torch::empty({n, BOARD_WIDTH, BOARD_HEIGHT                              },  u8Opts);
-		virus_kills    = torch::empty({n, BOARD_WIDTH, BOARD_HEIGHT                              }, f64Opts);
-		wishlist       = torch::empty({n, ORIENTATIONS, COLORS, COLORS, BOARD_WIDTH, BOARD_HEIGHT}, f64Opts);
-		clear_location = torch::empty({n, BOARD_WIDTH, BOARD_HEIGHT                              }, f64Opts);
-		clear_pill     = torch::empty({n, ORIENTATIONS, COLORS, COLORS                           }, f64Opts);
+		priors         = torch::empty({n, ROTATIONS, BOARD_WIDTH, BOARD_HEIGHT                   }, CPU_FLOAT);
+		valuation      = torch::empty({n                                                         }, CPU_FLOAT);
+		fall_time      = torch::empty({n                                                         }, CPU_BYTE );
+		occupied       = torch::empty({n, BOARD_WIDTH, BOARD_HEIGHT                              }, CPU_BYTE );
+		virus_kills    = torch::empty({n, BOARD_WIDTH, BOARD_HEIGHT                              }, CPU_FLOAT);
+		wishlist       = torch::empty({n, ORIENTATIONS, COLORS, COLORS, BOARD_WIDTH, BOARD_HEIGHT}, CPU_FLOAT);
+		clear_location = torch::empty({n, BOARD_WIDTH, BOARD_HEIGHT                              }, CPU_FLOAT);
+		clear_pill     = torch::empty({n, ORIENTATIONS, COLORS, COLORS                           }, CPU_FLOAT);
 	}
 
 	void to_gpu() {
@@ -315,8 +310,7 @@ struct Batch {
 
 	Batch(int n): in(n), out(n) {
 		DebugScope dbg("Batch(n)", DEFAULT_CONSTRUCTOR_VERBOSITY);
-		auto charOptions = torch::TensorOptions().dtype(torch::kU8);
-		reachable = torch::empty({n, ROTATIONS, BOARD_WIDTH, BOARD_HEIGHT}, charOptions);
+		reachable = torch::empty({n, ROTATIONS, BOARD_WIDTH, BOARD_HEIGHT}, CPU_BYTE);
 	}
 
 	Batch(int n,
@@ -327,8 +321,7 @@ struct Batch {
 		: in(n, boards_data, lookaheads_data, scalars_data)
 		, out(n, priors_data, valuation_data, fall_time_data, occupied_data, virus_kills_data, wishlist_data, clear_location_data, clear_pill_data) {
 		DebugScope dbg("Batch(n, ...)", DEFAULT_CONSTRUCTOR_VERBOSITY);
-		auto charOptions = torch::TensorOptions().dtype(torch::kU8);
-		reachable = torch::from_blob(reachable_data, {n, ROTATIONS, BOARD_WIDTH, BOARD_HEIGHT}, [](void *){}, charOptions);
+		reachable = torch::from_blob(reachable_data, {n, ROTATIONS, BOARD_WIDTH, BOARD_HEIGHT}, [](void *){}, CPU_BYTE);
 	}
 
 	void to_gpu() {
@@ -378,7 +371,6 @@ class Conv2dReLUInitImpl : public torch::nn::Module {
 			, conv(torch::nn::Conv2d(torch::nn::Conv2dOptions(iChans, oChans, k).padding(padding).bias(bias)))
 		{
 			DebugScope dbg("Conv2dReLUInitImpl(...)", DEFAULT_CONSTRUCTOR_VERBOSITY);
-			auto opts = torch::TensorOptions().dtype(torch::kFloat64).requires_grad(true);
 			// scaling factor is from Delving Deep into Rectifiers
 			auto scaling = std::sqrt(2 / ((1 + leakage*leakage) * k*k*iChans));
 			torch::autograd::GradMode::set_enabled(false);
@@ -518,8 +510,7 @@ torch::Tensor detailed_loss(Net &net, const Batch &batch) {
 	DebugScope dbg("detailed_loss(net, batch)");
 	const int n = batch.out.priors.size(0);
 	auto net_out = net->forward(batch.in);
-	auto opts = torch::TensorOptions().dtype(torch::kF32).device(torch::kCUDA);
-	auto loss = torch::zeros({OUTPUT_TYPES}, opts);
+	auto loss = torch::zeros({OUTPUT_TYPES}, GPU_FLOAT);
 	int64_t i = 0;
 	// Kullback-Leibler divergence for priors
 	auto scaled_priors = net_out.priors / (batch.reachable*net_out.priors).sum({1,2,3}, true);
@@ -677,7 +668,7 @@ float train_net(Net *net, torch::optim::SGD *optim, Batch *batch, unsigned long 
 	for(int i = 0; i < OUTPUT_TYPES; i++) {
 		loss_mask_array[i] = (loss_mask & (1 << i))?1:0;
 	}
-	auto loss_mask_tensor = torch::from_blob(loss_mask_array, {OUTPUT_TYPES}, [](void *v){}, torch::TensorOptions().dtype(torch::kF32)).to(torch::kCUDA);
+	auto loss_mask_tensor = torch::from_blob(loss_mask_array, {OUTPUT_TYPES}, [](void *v){}, CPU_FLOAT).to(torch::kCUDA);
 	auto loss = (losses * loss_mask_tensor).sum();
 
 	loss.backward();
