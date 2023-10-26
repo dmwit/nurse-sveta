@@ -1060,22 +1060,26 @@ logVisualization log rng sc net dir category historySize = do
 			G.translate 0 hd
 			heatmap01 (hstBoard hst) initialPC . onPositionsC $ \pos p -> if HS.member pos (pOccupied p) then 1 else 0
 
-		logHeatmapGrid (length allPCs) 2 "future placements" $ do
+		logHeatmapGrid (length allPCs) 3 "future placements" $ do
 			let placementHi = max
 			    	(realToFrac . maximum . (0:) . HM.elems $ pPlacementWeight pred)
 			    	(maximum . fmap maximum . fmap (fmap maximum) $ niPlacements netOut)
 			forZipWithM_ [0..] allPCs $ \i pc -> do
 				G.save
 				G.translate (i*wd) 0
+				heatmap0Dyn (hstBoard hst) pc $ onPositionsVec ((HM.! pc) . niPlacements)
+				G.translate 0 hd
 				heatmap0Max placementHi (hstBoard hst) pc $ onPositionsVec ((HM.! pc) . niPlacements)
 				G.translate 0 hd
 				heatmap0Max placementHi (hstBoard hst) pc . onPositionsC $ \pos -> HM.findWithDefault 0 (Pill pc pos) . pPlacementWeight
 				G.restore
 
-		logHeatmapGrid 1 2 "clear locations" $ do
+		logHeatmapGrid 1 3 "clear locations" $ do
 			let clearHi = max
 			    	(realToFrac . maximum . (0:) . M.elems $ pClearLocationWeight pred)
 			    	(maximum . fmap maximum $ niClearLocation netOut)
+			heatmap0Dyn (hstBoard hst) initialPC (onPositionsVec niClearLocation)
+			G.translate 0 hd
 			heatmap0Max clearHi (hstBoard hst) initialPC (onPositionsVec niClearLocation)
 			G.translate 0 hd
 			heatmap0Max clearHi (hstBoard hst) initialPC . onPositionsC $ \pos -> M.findWithDefault 0 pos . pClearLocationWeight
