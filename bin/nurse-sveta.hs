@@ -88,7 +88,7 @@ main = do
 		bur <- newThreadManager "bureaucracy" Green (bureaucracyThreadView loggingProcedure bureaucracyLock)
 		trn <- newThreadManager "training" OS (trainingThreadView loggingProcedure netUpdate)
 		log <- newThreadManager "logging" Green (loggingThreadView loggingProcedure)
-		replicateM_ 50 (tmStartThread gen)
+		replicateM_ 7 (tmStartThread gen)
 		tmStartThread inf
 		tmStartThread bur
 		tmStartThread trn
@@ -168,7 +168,7 @@ onSpeeds f gts = gts { summary = s { speeds = f (speeds s) } } where
 newSearchConfiguration :: SearchConfiguration
 newSearchConfiguration = SearchConfiguration
 	{ c_puct = 1 -- no idea what A0 did here
-	, iterations = 800
+	, iterations = 100
 	, typicalMoves = 40
 	, priorNoise = 0.25
 	}
@@ -923,7 +923,7 @@ trainingThread log netUpdate ref sc = do
 	-- TODO: make these configurable
 	tensorsPerSave = 2000*60*60 -- about once an hour
 	tensorsPerDetailReport = 2000*60*5 -- about every five minutes
-	tensorsPerTrain = 1700 -- can go as high as 3800 without running out of memory, but this has higher throughput; TODO: optimize this choice
+	tensorsPerTrain = 2000 -- TODO: optimize this choice (empirically, maxing out GPU memory is not the fastest choice)
 	tensorsPerTrainI = toInteger tensorsPerTrain
 	tensorsPerTest = 100
 	tensorHistoryTrain = 500000
