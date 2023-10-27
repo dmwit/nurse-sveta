@@ -133,6 +133,13 @@ main = do
 tshow :: Show a => a -> T.Text
 tshow = T.pack . show
 
+commaSeparatedNumber :: (Integral a, Show a) => a -> T.Text
+commaSeparatedNumber = T.pack . flip go "" where
+	go n = case n `quotRem` 1000 of
+		(0, _) -> shows n
+		(q, r) -> go q . (',':) . (pad (show r) ++)
+	pad s = replicate (3-length s) '0' ++ s
+
 -- this generation is in the sense of creation
 data GenerationThreadState = GenerationThreadState
 	{ summary :: SearchSummary
@@ -209,7 +216,7 @@ generationThreadView eval = do
 renderSpeeds :: Grid -> [(T.Text, SearchSpeed)] -> IO ()
 renderSpeeds spd sss = do
 	now <- Time.getCurrentTime
-	let row (nm, ss) = [nm, ": ", tshow (searchIterations ss), " positions/", ms, "s = ", T.justifyRight 5 ' ' . tshow . precision 10 $ rate, " positions/s"] where
+	let row (nm, ss) = [nm, ": ", commaSeparatedNumber (searchIterations ss), " positions/", ms, "s = ", T.justifyRight 5 ' ' . tshow . precision 10 $ rate, " positions/s"] where
 	    	dt = realToFrac . Time.diffUTCTime now . searchStart $ ss :: Double
 	    	ms = T.pack (showFFloat (Just 1) (realToFrac dt) "")
 	    	rate = fromIntegral (searchIterations ss) / dt
@@ -356,7 +363,7 @@ inferenceThreadView eval netUpdate = do
 	where
 	describeNet mn = "currently loaded net: " <> case mn of
 		Nothing -> "hand-crafted"
-		Just (n, _) -> tshow n
+		Just (n, _) -> commaSeparatedNumber n
 
 data InferenceThreadStep
 	= ITSLoadNet (Maybe Integer)
@@ -798,7 +805,7 @@ updateSumView grid ns = do
 		gridUpdateLabelAt grid 2 y percent (numericLabel percent)
 		where
 		y = y_ + 1
-		nt = tshow n
+		nt = commaSeparatedNumber n
 		percent = if totalI == 0
 			then "100%"
 			else tshow (round (100 * fromIntegral n / totalD)) <> "%"
@@ -852,10 +859,10 @@ trainingThreadView log netUpdate = do
 	    	tts <- readTVarIO ref
 	    	tWhenUpdated tLastSaved (ttsLastSaved tts) $ \case
 	    		Nothing -> set svv [#label := "<none yet>"]
-	    		Just ten -> set svv [#label := tshow ten]
+	    		Just ten -> set svv [#label := commaSeparatedNumber ten]
 	    	tWhenUpdated tCurrent (ttsCurrent tts) $ \case
 	    		Nothing -> set ogv [#label := "<still loading/sampling>"]
-	    		Just ten -> set ogv [#label := tshow ten]
+	    		Just ten -> set ogv [#label := commaSeparatedNumber ten]
 	    	tWhenUpdated tLoss (ttsLoss tts) $ \loss -> set lov [#label := T.pack (printf "%7.3f" loss)]
 	    	renderSpeeds spd [("epochs (%)", ttsGenerationHundredths tts), ("examples", ttsTensors tts)]
 
