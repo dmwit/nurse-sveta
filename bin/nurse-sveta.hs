@@ -171,6 +171,7 @@ newSearchConfiguration = SearchConfiguration
 	, iterations = 100
 	, typicalMoves = 40
 	, priorNoise = 0.25
+	, temperature = 0.2
 	}
 
 requestConfiguration :: SearchConfiguration -> GenerationThreadState -> GenerationThreadState
@@ -250,7 +251,7 @@ generationThread eval genRef sc = do
 		searchLoop g config params s0 (gs:history) s threadSpeed gameSpeed moveSpeed t' (iterations config)
 
 	searchLoop g config params s0 history s = innerLoop where
-		innerLoop threadSpeed gameSpeed moveSpeed t 0 = descend params visitCount s t >>= \case
+		innerLoop threadSpeed gameSpeed moveSpeed t 0 = descend g config params s t >>= \case
 			Nothing -> recordGame s0 history >> gameLoop g threadSpeed
 			Just (m, t') -> do
 				-- it's important that we allow game trees to get garbage

@@ -223,6 +223,7 @@ data SearchConfigurationView = SCV
 	, scvIterations :: ConfigurationRequestView Int
 	, scvTypicalMoves :: ConfigurationRequestView Double
 	, scvPriorNoise :: ConfigurationRequestView Double
+	, scvTemperature :: ConfigurationRequestView Double
 	}
 
 newSearchConfigurationView :: SearchConfiguration -> (SearchConfiguration -> IO ()) -> IO SearchConfigurationView
@@ -241,12 +242,14 @@ newSearchConfigurationView sc request = mfix $ \scv -> do
 	crvIterations   <- newConfigurationRequestView (iterations   sc) "iterations per move"           period InputPurposeDigits . validate $ \scReq itReq     -> (itReq >= 0, scReq { iterations = itReq })
 	crvTypicalMoves <- newConfigurationRequestView (typicalMoves sc) "typical number of legal moves" period InputPurposeDigits . validate $ \scReq typReq    -> (typReq > 0, scReq { typicalMoves = typReq })
 	crvPriorNoise   <- newConfigurationRequestView (priorNoise   sc) "noisiness of priors"           period InputPurposeNumber . validate $ \scReq noiseReq  -> (0 <= noiseReq && noiseReq <= 1, scReq { priorNoise = noiseReq })
+	crvTemperature  <- newConfigurationRequestView (temperature  sc) "noisiness of move selection"   period InputPurposeNumber . validate $ \scReq tmpReq    -> (True, scReq { temperature = tmpReq })
 
 	#setMarkup (crvDescription crvC_puct) "c<sub>puct</sub>"
 	crvAttach crvC_puct grid 0
 	crvAttach crvIterations grid 1
 	crvAttach crvTypicalMoves grid 2
 	crvAttach crvPriorNoise grid 3
+	crvAttach crvTemperature grid 4
 
 	pure SCV
 		{ scvTop = grid
@@ -254,6 +257,7 @@ newSearchConfigurationView sc request = mfix $ \scv -> do
 		, scvIterations   = crvIterations
 		, scvTypicalMoves = crvTypicalMoves
 		, scvPriorNoise   = crvPriorNoise
+		, scvTemperature  = crvTemperature
 		}
 
 scvWidget :: SearchConfigurationView -> IO Widget
@@ -265,6 +269,7 @@ scvRequest scv = pure SearchConfiguration
 	<*> crvRequest (scvIterations   scv)
 	<*> crvRequest (scvTypicalMoves scv)
 	<*> crvRequest (scvPriorNoise   scv)
+	<*> crvRequest (scvTemperature  scv)
 
 scvSet :: SearchConfigurationView -> SearchConfiguration -> IO ()
 scvSet scv scCur = do
@@ -272,6 +277,7 @@ scvSet scv scCur = do
 	crvSet (scvIterations   scv) (iterations   scCur)
 	crvSet (scvTypicalMoves scv) (typicalMoves scCur)
 	crvSet (scvPriorNoise   scv) (priorNoise   scCur)
+	crvSet (scvTemperature  scv) (temperature  scCur)
 
 data ConfigurationRequestView a = CRV
 	{ crvDescription :: Label

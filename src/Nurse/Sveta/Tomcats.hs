@@ -31,22 +31,23 @@ import Nurse.Sveta.STM.BatchProcessor
 import System.Random.MWC
 import System.Random.MWC.Distributions
 import System.IO.Unsafe (unsafeInterleaveIO)
-import Tomcats hiding (pucbA0)
+import Tomcats hiding (pucbA0, descend)
 
 import qualified Data.HashMap.Strict as HM
 import qualified Data.Vector as V
+import qualified Tomcats as T
 import qualified Tomcats.AlphaZero as A0
 
 -- TODO:
 -- 	* board/pill generation options like MWC vs LFSR, Algorithm X vs NES' algo,
 -- 	  128 pre-determined pills vs on-the-fly, maybe SNES vs NES distro?
 -- 	* neural net vs. not
--- 	* temperature
 data SearchConfiguration = SearchConfiguration
 	{ c_puct :: Float
 	, iterations :: Int
 	, typicalMoves :: Double
 	, priorNoise :: Double
+	, temperature :: Double -- ^ 0 means always use the highest visitCount, large numbers trend toward the uniform distribution
 	} deriving (Eq, Ord, Read, Show)
 
 -- | The 'MidPath' is ignored for 'Eq', 'Ord', and 'Hashable'.
@@ -133,6 +134,8 @@ instance (a ~ Board, b ~ Bool, c ~ CoarseSpeed) => GameStateSeed (a, b, c) where
 		<*> pure (countViruses b)
 		<*> pure sensitive
 		<*> pure speed
+
+instance GameStateSeed GameState where initialState = pure
 
 initialTree :: GameStateSeed a => DMParameters -> a -> IO (GameState, Tree Statistics Move)
 initialTree params g = do
@@ -310,6 +313,32 @@ dumbEvaluation = \s -> do
 		])
 	-- when horizontal, this has one extra x position. but who cares?
 	where vec = V.replicate 8 (V.replicate 16 1)
+
+-- very similar to A0.descend, except that:
+-- * it pulls the temperature from the SearchConfiguration
+-- * the meaning of the temperature is inverted (lower is more deterministic)
+-- * it works with this module's Statistics rather than A0.Statistics
+-- * it smoothly handles negative temperatures
+-- * argument order is swapped for consistency with other stuff in nurse-sveta.hs
+-- * some extra care is needed when choosing an unexplored move due to the oddities of our preprocessing step
+descend :: GenIO -> SearchConfiguration -> DMParameters -> GameState -> Tree Statistics Move -> IO (Maybe (Move, Tree Statistics Move))
+descend g config params s t = case (temperature config, weights) of
+	(0, _) -> T.descend params visitCount s t
+	(_, []) -> pure Nothing
+	_ -> do
+		i <- categorical (V.fromList weights) g
+		let move = moves !! i
+		play params s move
+		case HM.lookup move (children t) of
+			Just t' -> pure $ Just (move, t')
+			Nothing -> Just . (,) move . snd <$> initialTree params s
+	where
+	tmpExp = recip (temperature config)
+	-- the (1+) bit is to handle negative temperatures smoothly
+	weight stats = realToFrac (1 + visitCount stats) ** tmpExp
+	(moves, weights) = unzip . HM.toList $
+		(weight . statistics <$> children t) `HM.union`
+		(weight <$> unexplored t)
 
 -- Just like A0.Statistics, except that it uses Float instead of Double.
 data Statistics = Statistics
