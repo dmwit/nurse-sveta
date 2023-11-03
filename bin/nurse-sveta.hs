@@ -266,6 +266,13 @@ generationThread eval genRef sc = do
 				moveLoop g config params threadSpeed gameSpeed s0 (gs:history) s t'
 
 		innerLoop threadSpeed gameSpeed moveSpeed t n = do
+			-- Sometimes we'll produce trees that have visit counts lower than
+			-- the number of iterations we've done. See the comment inside
+			-- dmExpand for more on why.
+			--
+			-- This whole setup is very messy. At some point we should really
+			-- revisit the mcts design from the ground up and try to make
+			-- something a bit cleaner.
 			t' <- mcts params s t
 			let topMoves = sortOn (negate . snd)
 			    	[ (p, visitCount (statistics child))

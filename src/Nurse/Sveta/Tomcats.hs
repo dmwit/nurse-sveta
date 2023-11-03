@@ -204,6 +204,13 @@ dmExpand = \gen gs -> dmFinished gs >>= \case
 	False -> do
 		perm <- uniformPermutation n gen
 		let mk i [l, r] = (RNG l r, Statistics 0 (1/fromIntegral n + fromIntegral (perm V.! i - halfn) * 1e-8) 0)
+		-- The neural net takes the lookahead pill as part of its input. Since
+		-- we haven't decided on that yet, we can't actually report back its
+		-- evaluation of the current state here. So we report zero visits and
+		-- zero value, and fix this up in the preprocessor once we actually
+		-- choose a next pill. Often we will descend into the same part of the
+		-- tree in the next iteration or two, and fix it up fairly promptly --
+		-- though that's not guaranteed!
 		pure (mempty, HM.fromList (zipWith mk [0..] (replicateM 2 colors)))
 	True -> evaluateFinalState gs <&> \score -> (singleVisitStats score, HM.empty)
 	where
