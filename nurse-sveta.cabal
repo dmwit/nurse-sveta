@@ -85,6 +85,7 @@ library
                         , gi-cairo-connector ^>=0.1
                         , gi-glib ^>=2.0
                         , hashable ^>=1.4
+                        , haskell-gi-base ^>=0.26
                         , mtl ^>=2.2
                         , primitive >=0.7 && <0.10
                         , stm ^>=2.5.1

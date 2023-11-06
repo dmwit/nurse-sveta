@@ -30,6 +30,11 @@ module Nurse.Sveta.Widget (
 	StatusCheck(..), scIO_,
 	Affinity(..),
 
+	-- * General configuration request machinery
+	ConfigurationRequestView(..),
+	newConfigurationRequestView,
+	crvRequest, crvSet, crvUpdateStatus, crvGridAttributes, crvAttach,
+
 	-- * Noticing when things change
 	Stable,
 	newStable,
@@ -48,6 +53,7 @@ import Control.Monad.Fix
 import Control.Monad.IO.Class
 import Data.Foldable
 import Data.Functor
+import Data.GI.Base.Attributes
 import Data.HashMap.Strict (HashMap)
 import Data.Int
 import Data.IORef
@@ -228,7 +234,7 @@ data SearchConfigurationView = SCV
 
 newSearchConfigurationView :: SearchConfiguration -> (SearchConfiguration -> IO ()) -> IO SearchConfigurationView
 newSearchConfigurationView sc request = mfix $ \scv -> do
-	grid <- new Grid [#columnSpacing := 7, #rowSpacing := 3]
+	grid <- new Grid crvGridAttributes
 	cache <- newIORef (sc, sc)
 
 	let period = "next game"
@@ -342,6 +348,9 @@ crvUpdateStatus :: (Eq a, Show a) => ConfigurationRequestView a -> IO ()
 crvUpdateStatus crv = do
 	(req, cur) <- readIORef (crvCache crv)
 	set (crvRequestStatus crv) [#label := tshow cur <> if req == cur then mempty else " (will change to " <> tshow req <> crvPeriod crv]
+
+crvGridAttributes :: [AttrOp Grid AttrConstruct]
+crvGridAttributes = [#columnSpacing := 7, #rowSpacing := 3]
 
 crvAttach :: ConfigurationRequestView a -> Grid -> Int32 -> IO ()
 crvAttach crv grid i = do

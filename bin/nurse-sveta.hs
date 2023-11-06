@@ -818,14 +818,58 @@ updateSumView grid ns = do
 			then "100%"
 			else tshow (round (100 * fromIntegral n / totalD)) <> "%"
 
+data TrainingConfiguration = TrainingConfiguration
+	{ tcDutyCycle :: Double
+	} deriving (Eq, Ord, Read, Show)
+
+newTrainingConfiguration :: TrainingConfiguration
+newTrainingConfiguration = TrainingConfiguration
+	{ tcDutyCycle = 0.03
+	}
+
+tcOnDutyCycle :: (Double -> Double) -> TrainingConfiguration -> TrainingConfiguration
+tcOnDutyCycle f tc = tc { tcDutyCycle = f (tcDutyCycle tc) }
+
 data TrainingThreadState = TrainingThreadState
 	{ ttsLastSaved :: Stable (Maybe Integer)
 	, ttsCurrent :: Stable (Maybe Integer)
 	, ttsGenerationHundredths :: SearchSpeed
 	, ttsTensors :: SearchSpeed
 	, ttsLoss :: Stable Float
+	, ttsRequestedConfiguration :: TrainingConfiguration
+	, ttsCurrentConfiguration :: Stable TrainingConfiguration
 	} deriving (Eq, Ord, Read, Show)
 
+ttsRequest :: TVar TrainingThreadState -> (TrainingConfiguration -> a -> Maybe TrainingConfiguration) -> a -> IO Bool
+ttsRequest ref f a = atomically $ do
+	tts <- readTVar ref
+	case f (ttsRequestedConfiguration tts) a of
+		Nothing -> pure False
+		Just tc -> True <$ writeTVar ref tts { ttsRequestedConfiguration = tc }
+
+ttsAccept :: TrainingThreadState -> TrainingThreadState
+ttsAccept tts = tts { ttsCurrentConfiguration = sTrySet (ttsRequestedConfiguration tts) (ttsCurrentConfiguration tts) }
+
+-- ╭╴top╶───────────╮
+-- │╭╴ogb╶─────────╮│
+-- ││╭╴ogd╶╮╭╴ogv╶╮││
+-- ││╰─────╯╰─────╯││
+-- │╰──────────────╯│
+-- │╭╴svb╶─────────╮│
+-- ││╭╴svd╶╮╭╴svv╶╮││
+-- ││╰─────╯╰─────╯││
+-- │╰──────────────╯│
+-- │╭╴lob╶─────────╮│
+-- ││╭╴lod╶╮╭╴lov╶╮││
+-- ││╰─────╯╰─────╯││
+-- │╰──────────────╯│
+-- │╭╴spd╶╮         │
+-- │╰─────╯         │
+-- │╭╴cfg╶──╮       │
+-- ││╭╴dut╶╮│       │
+-- ││╰─────╯│       │
+-- │╰───────╯       │
+-- ╰────────────────╯
 trainingThreadView :: Procedure LogMessage () -> TVar (Maybe Integer) -> IO ThreadView
 trainingThreadView log netUpdate = do
 	top <- new Box [#orientation := OrientationVertical]
@@ -839,6 +883,22 @@ trainingThreadView log netUpdate = do
 	lod <- descriptionLabel "loss: "
 	lov <- numericLabel "Infinity"
 	spd <- new Grid []
+	cfg <- new Grid crvGridAttributes
+
+	ssGen0 <- newSearchSpeed
+	ssTen0 <- newSearchSpeed
+	ref <- newTVarIO TrainingThreadState
+		{ ttsLastSaved = newStable Nothing
+		, ttsCurrent = newStable Nothing
+		, ttsGenerationHundredths = ssGen0
+		, ttsTensors = ssTen0
+		, ttsLoss = newStable (1/0)
+		, ttsRequestedConfiguration = newTrainingConfiguration
+		, ttsCurrentConfiguration = newStable newTrainingConfiguration
+		}
+
+	let newCfg field nm purpose set = newConfigurationRequestView (field newTrainingConfiguration) nm "next epoch" purpose (ttsRequest ref set)
+	dut <- newCfg tcDutyCycle "duty cycle" InputPurposeNumber $ \tc dutyCycle -> 0 <= dutyCycle && dutyCycle <= 1 ? tc { tcDutyCycle = dutyCycle }
 
 	#append top ogb
 	#append ogb ogd
@@ -850,19 +910,13 @@ trainingThreadView log netUpdate = do
 	#append lob lod
 	#append lob lov
 	#append top spd
+	#append top cfg
+	crvAttach dut cfg 0
 
-	ssGen0 <- newSearchSpeed
-	ssTen0 <- newSearchSpeed
-	ref <- newTVarIO TrainingThreadState
-		{ ttsLastSaved = newStable Nothing
-		, ttsCurrent = newStable Nothing
-		, ttsGenerationHundredths = ssGen0
-		, ttsTensors = ssTen0
-		, ttsLoss = newStable (1/0)
-		}
 	tLastSaved <- newTracker
 	tCurrent <- newTracker
 	tLoss <- newTracker
+	tCfg <- newTracker
 	let refresh = do
 	    	tts <- readTVarIO ref
 	    	tWhenUpdated tLastSaved (ttsLastSaved tts) $ \case
@@ -872,6 +926,8 @@ trainingThreadView log netUpdate = do
 	    		Nothing -> set ogv [#label := "<still loading/sampling>"]
 	    		Just ten -> set ogv [#label := commaSeparatedNumber ten]
 	    	tWhenUpdated tLoss (ttsLoss tts) $ \loss -> set lov [#label := T.pack (printf "%7.3f" loss)]
+	    	tWhenUpdated tCfg (ttsCurrentConfiguration tts) $ \cfg -> do
+	    		crvSet dut (tcDutyCycle cfg)
 	    	renderSpeeds spd [("epochs (%)", ttsGenerationHundredths tts), ("examples", ttsTensors tts)]
 
 	tvNew top refresh (trainingThread log netUpdate ref)
@@ -887,6 +943,9 @@ trainingThread log netUpdate ref sc = do
 	rng <- createSystemRandom
 	dir <- nsDataDir
 	let loop ten = do
+	    	cfg <- atomically . stateTVar ref $ \tts -> (ttsRequestedConfiguration tts, ttsAccept tts)
+	    	before <- Time.getCurrentTime
+
 	    	-- this capitalization is inconsistent with the other metrics we
 	    	-- report, but consistent with the other metrics shown in the
 	    	-- System panel
@@ -896,6 +955,7 @@ trainingThread log netUpdate ref sc = do
 	    	-- TODO: make loss mask configurable
 	    	loss <- netTrain net sgd batch fullLossMask
 	    	schedule log (Metric "loss/train/sum" loss)
+	    	after <- Time.getCurrentTime
 	    	when (ten `mod` tensorsPerDetailReport < tensorsPerTrainI) $ do
 	    		testBatch <- loadBatch rng sc dir "test" tensorHistoryTest tensorsPerTest
 	    		trainComponents <- netDetailedLoss net batch
@@ -916,8 +976,28 @@ trainingThread log netUpdate ref sc = do
 	    		, ttsCurrent = sSet (Just ten') (ttsCurrent tts)
 	    		, ttsLoss = sSet loss (ttsLoss tts)
 	    		}
-	    	scIO sc (saveWeights ten')
-	    	loop ten'
+
+	    	-- set up a timeout to pause (for the duty cycle)
+	    	timeoutRef <- newTVarIO False
+	    	timeoutID <- forkIO $ case tcDutyCycle cfg of
+	    		0 -> pure ()
+	    		d -> let t = realToFrac (Time.diffUTCTime after before) in do
+	    			threadDelay (round (1000000*t*(1-d)/d)) 
+	    			atomically (writeTVar timeoutRef True)
+
+	    	-- die if it's been requested; otherwise wait until the end of the
+	    	-- duty cycle or a new duty cycle has been requested, whichever
+	    	-- comes first
+	    	join . atomically . asum $ tail [undefined
+	    		, scIO sc (saveWeights ten') <$ scSTM sc
+	    		, do
+	    		  	True <- readTVar timeoutRef
+	    		  	pure (loop ten')
+	    		, do
+	    		  	tts <- readTVar ref
+	    		  	when (tcDutyCycle (ttsRequestedConfiguration tts) == tcDutyCycle cfg) retry
+	    		  	pure (loop ten')
+	    		]
 
 	    saveWeights ten = do
 	    		path <- prepareFile dir Weights (show ten <.> "nsn")
