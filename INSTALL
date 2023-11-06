@@ -1,4 +1,5 @@
 dnf install ghc-prof {gtk4,gobject-introspection,atk}-devel
+double-check that you got ghc-9.2.6 from that (later versions not (yet) supported)
 pip install wandb
 grab libtorch 2.1.0 from pytorch.org and unzip to a place you like
 CPATH=.../libtorch/include/torch/csrc/api/include:.../libtorch/include:"$CPATH"
