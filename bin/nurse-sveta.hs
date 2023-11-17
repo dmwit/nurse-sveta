@@ -88,7 +88,7 @@ main = do
 		bur <- newThreadManager "bureaucracy" Green (bureaucracyThreadView loggingProcedure bureaucracyLock)
 		trn <- newThreadManager "training" OS (trainingThreadView loggingProcedure netUpdate)
 		log <- newThreadManager "logging" Green (loggingThreadView loggingProcedure)
-		replicateM_ 7 (tmStartThread gen)
+		replicateM_ 15 (tmStartThread gen)
 		tmStartThread inf
 		tmStartThread bur
 		tmStartThread trn
@@ -168,9 +168,9 @@ onSpeeds f gts = gts { summary = s { speeds = f (speeds s) } } where
 newSearchConfiguration :: SearchConfiguration
 newSearchConfiguration = SearchConfiguration
 	{ c_puct = 1 -- no idea what A0 did here
-	, iterations = 100
+	, iterations = 1600
 	, typicalMoves = 40
-	, priorNoise = 0.25
+	, priorNoise = 1
 	, temperature = 0.2
 	}
 
