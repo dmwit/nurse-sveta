@@ -820,15 +820,28 @@ updateSumView grid ns = do
 
 data TrainingConfiguration = TrainingConfiguration
 	{ tcDutyCycle :: Double
+	, tcHoursPerSave :: Double
+	, tcHoursPerDetailReport :: Double
+	, tcHoursPerVisualization :: Double
+	, tcBatchSizeTrain :: Int
+	, tcBatchSizeTest :: Int
+	, tcHistoryTrain :: Integer
+	, tcHistoryTest :: Integer
+	, tcHistoryVisualization :: Integer
 	} deriving (Eq, Ord, Read, Show)
 
 newTrainingConfiguration :: TrainingConfiguration
 newTrainingConfiguration = TrainingConfiguration
-	{ tcDutyCycle = 0.03
+	{ tcDutyCycle = 0.01
+	, tcHoursPerSave = 1
+	, tcHoursPerDetailReport = 0.1
+	, tcHoursPerVisualization = 24
+	, tcBatchSizeTrain = 2000 -- TODO: optimize this choice (empirically, maxing out GPU memory is not the fastest choice)
+	, tcBatchSizeTest = 100
+	, tcHistoryTrain = 500000
+	, tcHistoryTest = 50000
+	, tcHistoryVisualization = 1000
 	}
-
-tcOnDutyCycle :: (Double -> Double) -> TrainingConfiguration -> TrainingConfiguration
-tcOnDutyCycle f tc = tc { tcDutyCycle = f (tcDutyCycle tc) }
 
 data TrainingThreadState = TrainingThreadState
 	{ ttsLastSaved :: Stable (Maybe Integer)
@@ -868,6 +881,22 @@ ttsAccept tts = tts { ttsCurrentConfiguration = sTrySet (ttsRequestedConfigurati
 -- │╭╴cfg╶──╮       │
 -- ││╭╴dut╶╮│       │
 -- ││╰─────╯│       │
+-- ││╭╴hps╶╮│       │
+-- ││╰─────╯│       │
+-- ││╭╴hpd╶╮│       │
+-- ││╰─────╯│       │
+-- ││╭╴hpv╶╮│       │
+-- ││╰─────╯│       │
+-- ││╭╴bsr╶╮│       │
+-- ││╰─────╯│       │
+-- ││╭╴bse╶╮│       │
+-- ││╰─────╯│       │
+-- ││╭╴thr╶╮│       │
+-- ││╰─────╯│       │
+-- ││╭╴the╶╮│       │
+-- ││╰─────╯│       │
+-- ││╭╴thv╶╮│       │
+-- ││╰─────╯│       │
 -- │╰───────╯       │
 -- ╰────────────────╯
 trainingThreadView :: Procedure LogMessage () -> TVar (Maybe Integer) -> IO ThreadView
@@ -897,8 +926,19 @@ trainingThreadView log netUpdate = do
 		, ttsCurrentConfiguration = newStable newTrainingConfiguration
 		}
 
-	let newCfg field nm purpose set = newConfigurationRequestView (field newTrainingConfiguration) nm "next epoch" purpose (ttsRequest ref set)
+	let newCfg :: (Eq a, Read a, Show a) => (TrainingConfiguration -> a) -> T.Text -> InputPurpose -> (TrainingConfiguration -> a -> Maybe TrainingConfiguration) -> IO (ConfigurationRequestView a)
+	    newPosCfg :: (Ord a, Num a, Read a, Show a) => (TrainingConfiguration -> a) -> T.Text -> (TrainingConfiguration -> a -> TrainingConfiguration) -> IO (ConfigurationRequestView a)
+	    newCfg field nm purpose set = newConfigurationRequestView (field newTrainingConfiguration) nm "next epoch" purpose (ttsRequest ref set)
+	    newPosCfg field nm set = newCfg field nm InputPurposeDigits $ \tc n -> n > 0 ? set tc n
 	dut <- newCfg tcDutyCycle "duty cycle" InputPurposeNumber $ \tc dutyCycle -> 0 <= dutyCycle && dutyCycle <= 1 ? tc { tcDutyCycle = dutyCycle }
+	hps <- newPosCfg tcHoursPerSave          "hours per save"            $ \tc n -> tc { tcHoursPerSave          = n }
+	hpd <- newPosCfg tcHoursPerDetailReport  "hours per detailed report" $ \tc n -> tc { tcHoursPerDetailReport  = n }
+	hpv <- newPosCfg tcHoursPerVisualization "hours per visualization"   $ \tc n -> tc { tcHoursPerVisualization = n }
+	bsr <- newPosCfg tcBatchSizeTrain        "training batch size"       $ \tc n -> tc { tcBatchSizeTrain        = n }
+	bse <- newPosCfg tcBatchSizeTest         "test batch size"           $ \tc n -> tc { tcBatchSizeTest         = n }
+	thr <- newPosCfg tcHistoryTrain          "training history"          $ \tc n -> tc { tcHistoryTrain          = n }
+	the <- newPosCfg tcHistoryTest           "test history"              $ \tc n -> tc { tcHistoryTest           = n }
+	thv <- newPosCfg tcHistoryVisualization  "visualization history"     $ \tc n -> tc { tcHistoryVisualization  = n }
 
 	#append top ogb
 	#append ogb ogd
@@ -912,6 +952,14 @@ trainingThreadView log netUpdate = do
 	#append top spd
 	#append top cfg
 	crvAttach dut cfg 0
+	crvAttach hps cfg 1
+	crvAttach hpd cfg 2
+	crvAttach hpv cfg 3
+	crvAttach bsr cfg 4
+	crvAttach bse cfg 5
+	crvAttach thr cfg 6
+	crvAttach the cfg 7
+	crvAttach thv cfg 8
 
 	tLastSaved <- newTracker
 	tCurrent <- newTracker
@@ -927,7 +975,15 @@ trainingThreadView log netUpdate = do
 	    		Just ten -> set ogv [#label := commaSeparatedNumber ten]
 	    	tWhenUpdated tLoss (ttsLoss tts) $ \loss -> set lov [#label := T.pack (printf "%7.3f" loss)]
 	    	tWhenUpdated tCfg (ttsCurrentConfiguration tts) $ \cfg -> do
-	    		crvSet dut (tcDutyCycle cfg)
+	    		crvSet dut (tcDutyCycle             cfg)
+	    		crvSet hps (tcHoursPerSave          cfg)
+	    		crvSet hpd (tcHoursPerDetailReport  cfg)
+	    		crvSet hpv (tcHoursPerVisualization cfg)
+	    		crvSet bsr (tcBatchSizeTrain        cfg)
+	    		crvSet bse (tcBatchSizeTest         cfg)
+	    		crvSet thr (tcHistoryTrain          cfg)
+	    		crvSet the (tcHistoryTest           cfg)
+	    		crvSet thv (tcHistoryVisualization  cfg)
 	    	renderSpeeds spd [("epochs (%)", ttsGenerationHundredths tts), ("examples", ttsTensors tts)]
 
 	tvNew top refresh (trainingThread log netUpdate ref)
@@ -942,22 +998,29 @@ trainingThread log netUpdate ref sc = do
 	atomically . modifyTVar ref $ \tts -> tts { ttsCurrent = sSet (Just ten0) (ttsCurrent tts) }
 	rng <- createSystemRandom
 	dir <- nsDataDir
+
+	threadStart <- Time.getCurrentTime
+	saveT <- newIORef threadStart
+	detailT <- newIORef threadStart
+	visualizationT <- newIORef threadStart
+
 	let loop ten = do
 	    	cfg <- atomically . stateTVar ref $ \tts -> (ttsRequestedConfiguration tts, ttsAccept tts)
-	    	before <- Time.getCurrentTime
 
 	    	-- this capitalization is inconsistent with the other metrics we
 	    	-- report, but consistent with the other metrics shown in the
 	    	-- System panel
 	    	schedule log (Metric "System/Backprop Tensor Count" (fromInteger ten))
-	    	when (ten `mod` tensorsPerSave < tensorsPerTrainI) (saveWeights ten)
-	    	batch <- loadBatch rng sc dir "train" tensorHistoryTrain tensorsPerTrain
+	    	every (tcHoursPerSave cfg) saveT (saveWeights ten)
+	    	batch <- loadBatch rng sc dir "train" (tcHistoryTrain cfg) (tcBatchSizeTrain cfg)
+	    	before <- Time.getCurrentTime
 	    	-- TODO: make loss mask configurable
 	    	loss <- netTrain net sgd batch fullLossMask
-	    	schedule log (Metric "loss/train/sum" loss)
 	    	after <- Time.getCurrentTime
-	    	when (ten `mod` tensorsPerDetailReport < tensorsPerTrainI) $ do
-	    		testBatch <- loadBatch rng sc dir "test" tensorHistoryTest tensorsPerTest
+	    	schedule log (Metric "loss/train/sum" loss)
+
+	    	every (tcHoursPerDetailReport cfg) detailT $ do
+	    		testBatch <- loadBatch rng sc dir "test" (tcHistoryTest cfg) (tcBatchSizeTest cfg)
 	    		trainComponents <- netDetailedLoss net batch
 	    		testComponents <- netDetailedLoss net testBatch
 	    		schedule log $ Metric "loss/test/sum" (sum . map snd $ testComponents)
@@ -966,13 +1029,14 @@ trainingThread log netUpdate ref sc = do
 	    			| (category, components) <- [("train", trainComponents), ("test", testComponents)]
 	    			, (ty, loss) <- components
 	    			]
-	    	when (ten `mod` tensorsPerVisualization < tensorsPerTrainI) $ do
-	    		logVisualization log rng sc net dir "train" visualizationHistoryTrain
-	    		logVisualization log rng sc net dir "test" visualizationHistoryTrain
-	    	let ten' = ten+tensorsPerTrainI
+	    	every (tcHoursPerVisualization cfg) visualizationT $ do
+	    		logVisualization log rng sc net dir "train" (tcHistoryVisualization cfg)
+	    		logVisualization log rng sc net dir "test" (tcHistoryVisualization cfg)
+
+	    	let ten' = ten+toInteger (tcBatchSizeTrain cfg)
 	    	atomically . modifyTVar ref $ \tts -> tts
 	    		{ ttsGenerationHundredths = ssIncBy (ttsGenerationHundredths tts) 100
-	    		, ttsTensors = ssIncBy (ttsTensors tts) tensorsPerTrain
+	    		, ttsTensors = ssIncBy (ttsTensors tts) (tcBatchSizeTrain cfg)
 	    		, ttsCurrent = sSet (Just ten') (ttsCurrent tts)
 	    		, ttsLoss = sSet loss (ttsLoss tts)
 	    		}
@@ -1008,16 +1072,12 @@ trainingThread log netUpdate ref sc = do
 
 	loop ten0
 	where
-	-- TODO: make these configurable
-	tensorsPerSave = 2000*60*60 -- about once an hour
-	tensorsPerDetailReport = 2000*60*5 -- about every five minutes
-	tensorsPerTrain = 2000 -- TODO: optimize this choice (empirically, maxing out GPU memory is not the fastest choice)
-	tensorsPerTrainI = toInteger tensorsPerTrain
-	tensorsPerTest = 100
-	tensorHistoryTrain = 500000
-	tensorHistoryTest = 5000
-	visualizationHistoryTrain = 1000
-	tensorsPerVisualization = 2000*60*60*24 -- about once a day
+	every hours tref act = do
+		prev <- readIORef tref
+		now <- Time.getCurrentTime
+		when (Time.diffUTCTime now prev > realToFrac (60*60*hours)) $ do
+			act
+			writeIORef tref now
 
 trainingThreadLoadLatestNet :: IO (Integer, Net, Optimizer)
 trainingThreadLoadLatestNet = do
