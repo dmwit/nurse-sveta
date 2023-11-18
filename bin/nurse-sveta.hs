@@ -466,6 +466,12 @@ lmSum lm lm' = LevelMetric
 	, lmSource = "<all>"
 	}
 
+lmNeither :: LevelMetric -> LevelMetric -> LevelMetric
+lmNeither _lm _lm' = LevelMetric
+	{ lmMetric = -1
+	, lmSource = "<none>"
+	}
+
 lmFloat :: LevelMetric -> Float
 lmFloat = fromIntegral . lmMetric
 
@@ -473,35 +479,41 @@ data CategoryMetrics = CategoryMetrics
 	{ cmVirusesKilled :: IntMap LevelMetric
 	, cmFramesToWin   :: IntMap LevelMetric
 	, cmFramesToLoss  :: IntMap LevelMetric
+	, cmFrames        :: IntMap LevelMetric
 	} deriving (Eq, Ord, Read, Show)
 
 vkFieldName, ftwFieldName, ftlFieldName :: Key
 vkFieldName = "viruses killed"
 ftwFieldName = "frames to win"
 ftlFieldName = "frames to loss"
+frFieldName = "frames"
 
 instance ToJSON CategoryMetrics where
 	toJSON cm = object $ tail [undefined
 		,  vkFieldName .= cmVirusesKilled cm
 		, ftwFieldName .= cmFramesToWin cm
 		, ftlFieldName .= cmFramesToLoss cm
+		,  frFieldName .= cmFrames cm
 		]
 	toEncoding cm = pairs $ mempty
 		<>  vkFieldName .= cmVirusesKilled cm
 		<> ftwFieldName .= cmFramesToWin cm
 		<> ftlFieldName .= cmFramesToLoss cm
+		<>  frFieldName .= cmFrames cm
 
 instance FromJSON CategoryMetrics where
 	parseJSON = withObject "CategoryMetrics" $ \v -> pure CategoryMetrics
 		<*> v .:  vkFieldName
 		<*> v .: ftwFieldName
 		<*> v .: ftlFieldName
+		<*> v .:  frFieldName
 
 newCategoryMetrics :: CategoryMetrics
 newCategoryMetrics = CategoryMetrics
 	{ cmVirusesKilled = mempty
 	, cmFramesToWin   = mempty
 	, cmFramesToLoss  = mempty
+	, cmFrames        = mempty
 	}
 
 -- invariant: corresponding fields in cmBest and cmLatest have the same keys
@@ -542,14 +554,15 @@ newCategoryMetadata = CategoryMetadata
 
 cmInsert :: FilePath -> Int -> Int -> Int -> CategoryMetadata -> CategoryMetadata
 cmInsert fp startingViruses virusesKilled frames CategoryMetadata { cmBest = b, cmLatest = r, cmCumulative = c } = CategoryMetadata
-	{ cmBest       = mkMetrics lmMost lmFewest lmMost b
-	, cmLatest     = mkMetrics const  const    const  r
-	, cmCumulative = mkMetrics lmSum  lmSum    lmSum  c
+	{ cmBest       = mkMetrics lmMost lmFewest lmMost lmNeither b
+	, cmLatest     = mkMetrics const  const    const  const     r
+	, cmCumulative = mkMetrics lmSum  lmSum    lmSum  lmSum     c
 	} where
-	mkMetrics vk fw fl cm = CategoryMetrics
+	mkMetrics vk fw fl fr cm = CategoryMetrics
 		{ cmVirusesKilled = iw vk True   virusesKilled cmVirusesKilled cm
 		, cmFramesToWin   = iw fw isWin  frames        cmFramesToWin   cm
 		, cmFramesToLoss  = iw fl isLoss frames        cmFramesToLoss  cm
+		, cmFrames        = iw fr True   frames        cmFrames        cm
 		}
 	isWin = startingViruses == virusesKilled
 	isLoss = not isWin
@@ -668,7 +681,8 @@ gameFileToTensorFiles log status dir fp = recallGame dir fp >>= \case
 	GDSuccess history -> do
 		bts <- sPayload <$> readTVarIO status
 		categoryT <- vsSample (btsCurrentSplit bts)
-		let category = dirEncode (T.unpack categoryT)
+		let categoryS = T.unpack categoryT
+		    category = dirEncode categoryS
 		    bgs = btsLatestGlobal bts
 		firstTensor <- asum [empty
 			, maybe empty pure $ HM.lookup categoryT (bgsNextTensor bgs)
@@ -699,9 +713,9 @@ gameFileToTensorFiles log status dir fp = recallGame dir fp >>= \case
 		    logAggregations = zip ["best", "latest" :: String]
 		                          [cmBest, cmLatest]
 		    logAccumulations = zip3 ["viruses", "frames", "days" :: String]
-		                            [cmVirusesKilled . cmCumulative, bothKindsOfFrames, bothKindsOfFrames]
+		                            [cmVirusesKilled, cmFrames, cmFrames]
 		                            [1, 1, 60.0988*60*60*24]
-		    bothKindsOfFrames cm = IM.unionWith lmSum (cmFramesToWin (cmCumulative cm)) (cmFramesToLoss (cmCumulative cm))
+		    fps = 60.0988
 
 		traverse_ (schedule log)
 			[ Metric (printf "%s/%s/%02d" k a (stsVirusesOriginal sts)) (lmFloat lm)
@@ -721,7 +735,15 @@ gameFileToTensorFiles log status dir fp = recallGame dir fp >>= \case
 		traverse_ (schedule log)
 			[ Metric (printf "cumulative/%s" k) (lmFloat lm / denominator)
 			| (k, f, denominator) <- logAccumulations
-			, let lm = foldr (lmSum . foldr1 lmSum . f) (LevelMetric 0 "") (bgsMetadata (btsLatestGlobal bts))
+			, let lm = foldr (lmSum . foldr1 lmSum . f . cmCumulative) (LevelMetric 0 "") (bgsMetadata (btsLatestGlobal bts))
+			]
+		traverse_ (schedule log)
+			[ Metric ("clear rate/" ++ k) (fromIntegral f / (fps * fromIntegral v))
+			| (k, f, v) <- zip3
+				[printf "%02d" (stsVirusesOriginal sts), "avg/" ++ categoryS]
+				[stsFrames        sts, sum (lmMetric <$> cmFrames        (cmLatest meta))]
+				[stsVirusesKilled sts, sum (lmMetric <$> cmVirusesKilled (cmLatest meta))]
+			, v /= 0
 			]
 
 		btsUpdate status $ \bts -> bts
