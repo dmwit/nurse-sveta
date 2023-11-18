@@ -43,7 +43,7 @@ module Nurse.Sveta.Widget (
 	sOnSubterm,
 
 	Tracker,
-	newTracker, tWhenUpdated,
+	newTracker, tWhenUpdated, tWhenUpdated_,
 	) where
 
 import Control.Concurrent
@@ -671,6 +671,9 @@ tWhenUpdated t s f = do
 		writeIORef (generationCacheRef t) newGen
 	where
 	newGen = generation s
+
+tWhenUpdated_ :: Tracker -> Stable a -> IO b -> IO ()
+tWhenUpdated_ t s = tWhenUpdated t s . const
 
 tshow :: Show a => a -> T.Text
 tshow = T.pack . show

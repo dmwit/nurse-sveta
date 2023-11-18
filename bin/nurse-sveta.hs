@@ -819,7 +819,7 @@ updateSumView grid ns = do
 			else tshow (round (100 * fromIntegral n / totalD)) <> "%"
 
 data TrainingConfiguration = TrainingConfiguration
-	{ tcDutyCycle :: Double
+	{ tcDutyCycle :: Stable Double
 	, tcHoursPerSave :: Double
 	, tcHoursPerDetailReport :: Double
 	, tcHoursPerVisualization :: Double
@@ -832,7 +832,7 @@ data TrainingConfiguration = TrainingConfiguration
 
 newTrainingConfiguration :: TrainingConfiguration
 newTrainingConfiguration = TrainingConfiguration
-	{ tcDutyCycle = 0.01
+	{ tcDutyCycle = newStable 0.01
 	, tcHoursPerSave = 1
 	, tcHoursPerDetailReport = 0.1
 	, tcHoursPerVisualization = 24
@@ -848,6 +848,7 @@ data TrainingThreadState = TrainingThreadState
 	, ttsCurrent :: Stable (Maybe Integer)
 	, ttsGenerationHundredths :: SearchSpeed
 	, ttsTensors :: SearchSpeed
+	, ttsDutyCycle :: SearchSpeed
 	, ttsLoss :: Stable Float
 	, ttsRequestedConfiguration :: TrainingConfiguration
 	, ttsCurrentConfiguration :: Stable TrainingConfiguration
@@ -916,11 +917,13 @@ trainingThreadView log netUpdate = do
 
 	ssGen0 <- newSearchSpeed
 	ssTen0 <- newSearchSpeed
+	ssDut0 <- newSearchSpeed
 	ref <- newTVarIO TrainingThreadState
 		{ ttsLastSaved = newStable Nothing
 		, ttsCurrent = newStable Nothing
 		, ttsGenerationHundredths = ssGen0
 		, ttsTensors = ssTen0
+		, ttsDutyCycle = ssDut0
 		, ttsLoss = newStable (1/0)
 		, ttsRequestedConfiguration = newTrainingConfiguration
 		, ttsCurrentConfiguration = newStable newTrainingConfiguration
@@ -930,7 +933,7 @@ trainingThreadView log netUpdate = do
 	    newPosCfg :: (Ord a, Num a, Read a, Show a) => (TrainingConfiguration -> a) -> T.Text -> (TrainingConfiguration -> a -> TrainingConfiguration) -> IO (ConfigurationRequestView a)
 	    newCfg field nm purpose set = newConfigurationRequestView (field newTrainingConfiguration) nm "next epoch" purpose (ttsRequest ref set)
 	    newPosCfg field nm set = newCfg field nm InputPurposeDigits $ \tc n -> n > 0 ? set tc n
-	dut <- newCfg tcDutyCycle "duty cycle" InputPurposeNumber $ \tc dutyCycle -> 0 <= dutyCycle && dutyCycle <= 1 ? tc { tcDutyCycle = dutyCycle }
+	dut <- newCfg (sPayload . tcDutyCycle) "duty cycle" InputPurposeNumber $ \tc dutyCycle -> 0 <= dutyCycle && dutyCycle <= 1 ? tc { tcDutyCycle = sTrySet dutyCycle (tcDutyCycle tc) }
 	hps <- newPosCfg tcHoursPerSave          "hours per save"            $ \tc n -> tc { tcHoursPerSave          = n }
 	hpd <- newPosCfg tcHoursPerDetailReport  "hours per detailed report" $ \tc n -> tc { tcHoursPerDetailReport  = n }
 	hpv <- newPosCfg tcHoursPerVisualization "hours per visualization"   $ \tc n -> tc { tcHoursPerVisualization = n }
@@ -974,8 +977,9 @@ trainingThreadView log netUpdate = do
 	    		Nothing -> set ogv [#label := "<still loading/sampling>"]
 	    		Just ten -> set ogv [#label := commaSeparatedNumber ten]
 	    	tWhenUpdated tLoss (ttsLoss tts) $ \loss -> set lov [#label := T.pack (printf "%7.3f" loss)]
+	    	let dc = sPayload . tcDutyCycle . sPayload . ttsCurrentConfiguration $ tts
 	    	tWhenUpdated tCfg (ttsCurrentConfiguration tts) $ \cfg -> do
-	    		crvSet dut (tcDutyCycle             cfg)
+	    		crvSet dut dc
 	    		crvSet hps (tcHoursPerSave          cfg)
 	    		crvSet hpd (tcHoursPerDetailReport  cfg)
 	    		crvSet hpv (tcHoursPerVisualization cfg)
@@ -984,7 +988,7 @@ trainingThreadView log netUpdate = do
 	    		crvSet thr (tcHistoryTrain          cfg)
 	    		crvSet the (tcHistoryTest           cfg)
 	    		crvSet thv (tcHistoryVisualization  cfg)
-	    	renderSpeeds spd [("epochs (%)", ttsGenerationHundredths tts), ("examples", ttsTensors tts)]
+	    	renderSpeeds spd [("epochs (%)", ttsGenerationHundredths tts), ("thread", ttsTensors tts), ("at " <> tshow dc, ttsDutyCycle tts)]
 
 	tvNew top refresh (trainingThread log netUpdate ref)
 
@@ -1003,9 +1007,13 @@ trainingThread log netUpdate ref sc = do
 	saveT <- newIORef threadStart
 	detailT <- newIORef threadStart
 	visualizationT <- newIORef threadStart
+	tDutyCycle <- newTracker
 
 	let loop ten = do
 	    	cfg <- atomically . stateTVar ref $ \tts -> (ttsRequestedConfiguration tts, ttsAccept tts)
+	    	tWhenUpdated_ tDutyCycle (tcDutyCycle cfg) $ do
+	    		ss <- newSearchSpeed
+	    		atomically . modifyTVar ref $ \tts -> tts { ttsDutyCycle = ss }
 
 	    	-- this capitalization is inconsistent with the other metrics we
 	    	-- report, but consistent with the other metrics shown in the
@@ -1037,13 +1045,14 @@ trainingThread log netUpdate ref sc = do
 	    	atomically . modifyTVar ref $ \tts -> tts
 	    		{ ttsGenerationHundredths = ssIncBy (ttsGenerationHundredths tts) 100
 	    		, ttsTensors = ssIncBy (ttsTensors tts) (tcBatchSizeTrain cfg)
+	    		, ttsDutyCycle = ssIncBy (ttsDutyCycle tts) (tcBatchSizeTrain cfg)
 	    		, ttsCurrent = sSet (Just ten') (ttsCurrent tts)
 	    		, ttsLoss = sSet loss (ttsLoss tts)
 	    		}
 
 	    	-- set up a timeout to pause (for the duty cycle)
 	    	timeoutRef <- newTVarIO False
-	    	timeoutID <- forkIO $ case tcDutyCycle cfg of
+	    	timeoutID <- forkIO $ case sPayload (tcDutyCycle cfg) of
 	    		0 -> pure ()
 	    		d -> let t = realToFrac (Time.diffUTCTime after before) in do
 	    			threadDelay (round (1000000*t*(1-d)/d)) 
