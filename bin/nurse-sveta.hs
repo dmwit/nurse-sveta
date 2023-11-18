@@ -466,8 +466,8 @@ lmSum lm lm' = LevelMetric
 	, lmSource = "<all>"
 	}
 
-lmDouble :: LevelMetric -> Float
-lmDouble = fromIntegral . lmMetric
+lmFloat :: LevelMetric -> Float
+lmFloat = fromIntegral . lmMetric
 
 data CategoryMetrics = CategoryMetrics
 	{ cmVirusesKilled :: IntMap LevelMetric
@@ -504,7 +504,7 @@ newCategoryMetrics = CategoryMetrics
 	, cmFramesToLoss  = mempty
 	}
 
--- invariant: corresponding fields in cmSuperlative and cmLatest have the same keys
+-- invariant: corresponding fields in cmBest and cmLatest have the same keys
 data CategoryMetadata = CategoryMetadata
 	{ cmBest :: CategoryMetrics
 	, cmLatest :: CategoryMetrics
@@ -704,14 +704,14 @@ gameFileToTensorFiles log status dir fp = recallGame dir fp >>= \case
 		    bothKindsOfFrames cm = IM.unionWith lmSum (cmFramesToWin (cmCumulative cm)) (cmFramesToLoss (cmCumulative cm))
 
 		traverse_ (schedule log)
-			[ Metric (printf "%s/%s/%02d" k a (stsVirusesOriginal sts)) (lmDouble lm)
+			[ Metric (printf "%s/%s/%02d" k a (stsVirusesOriginal sts)) (lmFloat lm)
 			| categoryT == "train"
 			, (k, fk) <- logKinds
 			, (a, fa) <- logAggregations
 			, Just lm <- [IM.lookup (stsVirusesOriginal sts) (fk (fa meta))]
 			]
 		traverse_ (schedule log)
-			[ Metric (printf "%s/%s/sum" k a) (sum (lmDouble <$> im))
+			[ Metric (printf "%s/%s/sum" k a) (sum (lmFloat <$> im))
 			| categoryT == "train"
 			, (k, fk) <- logKinds
 			, (a, fa) <- logAggregations
@@ -719,7 +719,7 @@ gameFileToTensorFiles log status dir fp = recallGame dir fp >>= \case
 			, IM.keys im == [4,8..84]
 			]
 		traverse_ (schedule log)
-			[ Metric (printf "cumulative/%s" k) (lmDouble lm / denominator)
+			[ Metric (printf "cumulative/%s" k) (lmFloat lm / denominator)
 			| (k, f, denominator) <- logAccumulations
 			, let lm = foldr (lmSum . foldr1 lmSum . f) (LevelMetric 0 "") (bgsMetadata (btsLatestGlobal bts))
 			]
