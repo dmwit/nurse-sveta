@@ -30,7 +30,7 @@ const torch::TensorOptions CPU_FLOAT = torch::TensorOptions().dtype(torch::kF32)
 const torch::TensorOptions GPU_FLOAT = CPU_FLOAT.device(torch::kCUDA);
 
 // TODO: A0 started its LR off at 0.2 (!)
-const float INITIAL_LEARNING_RATE = 1e-4;
+const float INITIAL_LEARNING_RATE = 3e-5;
 const float EPSILON = 1e-7;
 
 struct TensorSketch {
