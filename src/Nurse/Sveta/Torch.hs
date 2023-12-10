@@ -40,6 +40,7 @@ import qualified Data.HashSet as HS
 import qualified Data.IntMap.Strict as IM
 import qualified Data.Map.Strict as M
 import qualified Data.Vector as V
+import qualified Data.Vector.Unboxed as VU
 import qualified Data.Vector.Unboxed.Mutable as MV
 
 -- I played with marking these as unsafe. It really hurt performance a lot,
@@ -144,14 +145,14 @@ instance OneHot PillContent where
 		(n', r) = n `quotRem` indexCount @Color
 		(o , l) = n' `quotRem` indexCount @Color
 
-renderLookahead :: Ptr CChar -> GameState -> IO ()
-renderLookahead lookahead gs = do
-	(l, r) <- readIORef (lookbehind gs)
+renderLookahead :: Ptr CChar -> (Color, Color) -> IO ()
+renderLookahead lookahead (l, r) = do
 	pokeElemOff lookahead (toIndex l                    ) 1
 	pokeElemOff lookahead (toIndex r + indexCount @Color) 1
 
-renderBoard :: Ptr CChar -> IOBoard -> IO ()
-renderBoard board b = do
+-- TODO: do we really want to duplicate this code? perhaps we should just mfreeze >=> renderBoard
+renderIOBoard :: Ptr CChar -> IOBoard -> IO ()
+renderIOBoard board b = do
 	unless (mwidth b == boardWidth && mheight b == boardHeight) . fail $
 		"expected all boards to have size " ++ show boardWidth ++ "x" ++ show boardHeight ++ ", but saw a board with size " ++ show (mwidth b) ++ "x" ++ show (mheight b)
 	-- IOBoard stores cells in a 1D array with the y coordinate varying
@@ -162,6 +163,20 @@ renderBoard board b = do
 		Occupied c s -> do
 			pokeElemOff board (shiftL (                    toIndex c) logCellCount + j) 1
 			pokeElemOff board (shiftL (indexCount @Color + toIndex s) logCellCount + j) 1
+
+renderBoard :: Ptr CChar -> Board -> IO ()
+renderBoard board b = do
+	unless (width b == boardWidth && height b == boardHeight) . fail $
+		"expected all boards to have size " ++ show boardWidth ++ "x" ++ show boardHeight ++ ", but saw a board with size " ++ show (width b) ++ "x" ++ show (height b)
+	for_ [0..boardWidth-1] $ \x ->
+		for_ [0..boardHeight-1] $ \y ->
+			let pos = Position x y
+			    i = iPos pos
+			in case unsafeGet b pos of
+			Empty -> pure ()
+			Occupied c s -> do
+				pokeElemOff board (shiftL (                    toIndex c) logCellCount + i) 1
+				pokeElemOff board (shiftL (indexCount @Color + toIndex s) logCellCount + i) 1
 
 renderScalars :: Ptr CFloat -> GameState -> IO [Float]
 renderScalars scalars gs = do
@@ -177,8 +192,8 @@ render igs = do
 	lookaheads <- mallocZeroArray (n * lookaheadSize)
 	scalars <- mallocArray (n * numScalars)
 	for_ igs $ \(i, gs) -> do
-		renderBoard     (plusArray boards     (i*    boardSize)) (board gs)
-		renderLookahead (plusArray lookaheads (i*lookaheadSize)) gs
+		renderIOBoard   (plusArray boards     (i*    boardSize)) (board gs)
+		renderLookahead (plusArray lookaheads (i*lookaheadSize)) =<< readIORef (lookbehind gs)
 		renderScalars   (plusArray scalars    (i*   numScalars)) gs
 	pure (boards, lookaheads, scalars)
 	where
@@ -418,17 +433,62 @@ data SaveTensorsSummary = SaveTensorsSummary
 	, stsFrames :: Int
 	} deriving (Eq, Ord, Read, Show)
 
+-- constructor names are CP + cycle notation
+data ColorPermutation = CP | CPBR | CPBY | CPRY | CPBRY | CPBYR
+	deriving (Bounded, Enum, Eq, Ord, Read, Show)
+
+class Permutable a where permuteColors :: ColorPermutation -> a -> a
+
+instance Permutable Color where
+	permuteColors = \case
+		CP -> id
+		CPBR  -> \case Blue -> Red   ; Red -> Blue  ; Yellow -> Yellow
+		CPBY  -> \case Blue -> Yellow; Red -> Red   ; Yellow -> Blue
+		CPRY  -> \case Blue -> Blue  ; Red -> Yellow; Yellow -> Red
+		CPBRY -> \case Blue -> Red   ; Red -> Yellow; Yellow -> Blue
+		CPBYR -> \case Blue -> Yellow; Red -> Blue  ; Yellow -> Red
+
+instance Permutable PillContent where
+	permuteColors cp pc = pc
+		{ bottomLeftColor = permuteColors cp (bottomLeftColor pc)
+		,      otherColor = permuteColors cp (     otherColor pc)
+		}
+
+instance Permutable Cell where
+	permuteColors cp = \case
+		Empty -> Empty
+		Occupied c s -> Occupied (permuteColors cp c) s
+
+instance Permutable Pill where
+	permuteColors cp pill = pill { content = permuteColors cp (content pill) }
+
+instance Permutable Board where
+	permuteColors cp b = b { cells = V.map (VU.map (permuteColors cp)) (cells b) }
+
+instance (Permutable a, Permutable b) => Permutable (a, b) where
+	permuteColors cp (a, b) = (permuteColors cp a, permuteColors cp b)
+
+instance Permutable Prediction where
+	permuteColors cp pred = pred
+		{ pPlacementWeight = HM.mapKeys (permuteColors cp) (pPlacementWeight pred)
+		, pClearPillWeight = HM.mapKeys (permuteColors cp) (pClearPillWeight pred)
+		}
+
 -- TODO: could consider varying the cost model, gravity speed, NES vs SNES pill
 -- distribution, NES vs SNES (vs other?) pathfinding, and then passing info on
 -- which choice was made into the net
 
 -- | Arguments: directory to save tensors in; directory to save JSON files in;
--- an index; and the game record. Tensors will be saved in files named
--- @<i>.nst@, @<i+1>.nst@, etc., up to @<i+di-1>.nst@, with @i@ being the
--- second argument and @di@ being the return value. (@nst@ is for [N]urse
--- [S]veta [t]ensor.) JSON will be saved similarly, but with extension @.json@.
-saveTensors :: FilePath -> FilePath -> Integer -> ((Board, Bool, CoarseSpeed), [GameStep]) -> IO SaveTensorsSummary
-saveTensors tdir jsdir i0 (b0, steps) = do
+-- an index; color permutations to use; and the game record. Tensors will be
+-- saved in files named @<i>.nst@, @<i+1>.nst@, etc., up to @<i+di-1>.nst@,
+-- with @i@ being the second argument and @di@ being the return value. (@nst@
+-- is for [N]urse [S]veta [t]ensor.) JSON will be saved similarly, but with
+-- extension @.json@. Typical values for the color permutation list are @[CP]@
+-- (i.e. only record the exact game given) or @[minBound..maxBound]@ (i.e.
+-- record each game position multiple times, once for each way the colors can
+-- be swapped out for each other).
+saveTensors :: FilePath -> FilePath -> Integer -> [ColorPermutation] -> ((Board, Bool, CoarseSpeed), [GameStep]) -> IO SaveTensorsSummary
+saveTensors tdir jsdir i0 cps_ (b0, steps) = do
 	currentState <- initialState b0
 	-- summarize mutates its argument, so make a fresh clone to pass to it
 	preview <- initialState b0 >>= \gs -> summarize gs (gsMove <$> steps)
@@ -454,16 +514,26 @@ saveTensors tdir jsdir i0 (b0, steps) = do
 	    		[0..3]
 	    		(iterate (`rotateContent` Clockwise) (PillContent startingOrientation l r))
 	    	Placement bm pill -> do
-	    		pred <- prediction preview <$> readIORef (pillsUsed currentState)
-
+	    		-- first the bits that are the same for all color permutations
+	    		zeroArray cellCount occupied
+	    		zeroArray cellCount virusKills
+	    		zeroArray cellCount clearLocation
 	    		zeroArray numPriors reachable
-	    		zeroArray numPriors priors -- probably not needed, but defensive programming
+	    		-- zeroing the priors is probably not needed, since we store a
+	    		-- reachable-mask that tells us how to ignore uninitialized
+	    		-- values, but let's just do a bit of defensive programming
+	    		zeroArray numPriors priors
+
+	    		pred <- prediction preview <$> readIORef (pillsUsed currentState)
 	    		hsScalars <- renderScalars scalars currentState
-	    		-- TODO: why is the root's visit count always one bigger than the sum of the children's visit counts?
-	    		-- for double pills, we put half the probability mass in each of the two rotations that give the same result
+	    		unpermutedBoard <- mfreeze (board currentState)
+	    		unpermutedLookbehind <- readIORef (lookbehind currentState)
 	    		let scaling = fromIntegral (length rots) / (max 1 (fromIntegral (sum (length <$> rots)) * visitCount (gsRoot gs)))
 	    		    hsScaling = recip . max 1 . visitCount $ gsRoot gs
-	    		    hsPriors = HM.fromList [(pill, hsScaling * visitCount stats) | (Placement _ pill, stats) <- HM.toList (gsChildren gs)]
+
+	    		for_ (pOccupied pred) $ \pos -> pokeElemOff occupied (iPos pos) 1
+	    		flip  M.traverseWithKey (pVirusKillWeight     pred) $ pokeElemOff virusKills    . iPos
+	    		flip  M.traverseWithKey (pClearLocationWeight pred) $ pokeElemOff clearLocation . iPos
 	    		flip HM.traverseWithKey (gsChildren gs) $ \move stats -> case move of
 	    			RNG{} -> hPutStrLn stderr "WARNING: ignoring RNG move that is a sibling of a Placement move"
 	    			Placement bm' pill' -> for_ (HM.findWithDefault [] (content pill') rots) $ \iRot -> do
@@ -472,34 +542,37 @@ saveTensors tdir jsdir i0 (b0, steps) = do
 	    				-- TODO: temperature, maybe? (don't forget to fix scaling appropriately)
 	    				pokeElemOff priors    j (realToFrac (scaling * visitCount stats))
 
-	    		zeroArray cellCount occupied
-	    		zeroArray cellCount virusKills
-	    		zeroArray (shiftL (indexCount @PillContent) logCellCount) wishlist
-	    		zeroArray cellCount clearLocation
-	    		zeroArray (indexCount @PillContent) clearPill
-	    		for_ (pOccupied pred) $ \pos -> pokeElemOff occupied (iPos pos) 1
-	    		flip  M.traverseWithKey (pVirusKillWeight     pred) $ pokeElemOff virusKills . iPos
-	    		flip HM.traverseWithKey (pPlacementWeight     pred) $ \pill -> pokeElemOff wishlist (shiftL (toIndex (content pill)) logCellCount + iPos (bottomLeftPosition pill))
-	    		flip  M.traverseWithKey (pClearLocationWeight pred) $ pokeElemOff clearLocation . iPos
-	    		flip HM.traverseWithKey (pClearPillWeight     pred) $ pokeElemOff clearPill . toIndex
+	    		-- now the bits that change for each permutation
+	    		for_ cps $ \(di, cp) -> do
+	    			zeroArray (shiftL (indexCount @PillContent) logCellCount) wishlist
+	    			zeroArray (indexCount @PillContent) clearPill
+	    			zeroArray boardSize cells
+	    			zeroArray lookaheadSize lookahead
 
-	    		zeroArray boardSize cells
-	    		zeroArray lookaheadSize lookahead
-	    		renderBoard cells (board currentState)
-	    		renderLookahead lookahead currentState
+	    			-- TODO: why is the root's visit count always one bigger than the sum of the children's visit counts?
+	    			-- for double pills, we put half the probability mass in each of the two rotations that give the same result
+	    			let permutedPriors = HM.fromList [(permuteColors cp pill, hsScaling * visitCount stats) | (Placement _ pill, stats) <- HM.toList (gsChildren gs)]
+	    			    permutedBoard = permuteColors cp unpermutedBoard
+	    			    permutedLookbehind = permuteColors cp unpermutedLookbehind
+	    			    permutedPred = permuteColors cp pred
+	    			    hst = HSTensor
+	    			    	{ hstBoard = permutedBoard
+	    			    	, hstPrediction = permutedPred
+	    			    	, hstScalars = hsScalars
+	    			    	, hstLookahead = permutedLookbehind
+	    			    	, hstPriors = permutedPriors
+	    			    	, hstValuation = pFinalValuation preview
+	    			    	}
 
-	    		hst <- pure HSTensor
-	    			<*> mfreeze (board currentState)
-	    			<*> pure pred
-	    			<*> pure hsScalars
-	    			<*> readIORef (lookbehind currentState)
-	    			<*> pure hsPriors
-	    			<*> pure (pFinalValuation preview)
+	    			flip HM.traverseWithKey (pPlacementWeight permutedPred) $ \pill -> pokeElemOff wishlist (shiftL (toIndex (content pill)) logCellCount + iPos (bottomLeftPosition pill))
+	    			flip HM.traverseWithKey (pClearPillWeight permutedPred) $ pokeElemOff clearPill . toIndex
+	    			renderBoard cells permutedBoard
+	    			renderLookahead lookahead permutedLookbehind
 
-	    		encodeFile (jsdir </> show i <.> "json") hst
-	    		withCString (tdir </> show i <.> "nst") $ \path ->
-	    			cxx_save_example path reachable priors valuation (pFallWeight pred) occupied virusKills wishlist clearLocation clearPill cells lookahead scalars
-	    		go (i+1) rots
+	    			encodeFile (jsdir </> show (i+di) <.> "json") hst
+	    			withCString (tdir </> show (i+di) <.> "nst") $ \path ->
+	    				cxx_save_example path reachable priors valuation (pFallWeight permutedPred) occupied virusKills wishlist clearLocation clearPill cells lookahead scalars
+	    		go (i+diMax) rots
 	    	where go i' rots' = dmPlay currentState (gsMove gs) >> loop i' rots' gss
 
 	di <- loop i0 HM.empty steps
@@ -521,6 +594,9 @@ saveTensors tdir jsdir i0 (b0, steps) = do
 		, stsVirusesKilled = M.size (pVirusKills preview)
 		, stsFrames = pTotalFrames preview
 		}
+	where
+	cps = zip [0 :: Integer ..] cps_
+	diMax = toInteger (length cps)
 
 -- could imagine a OneHot instance for Position instead of this, but given the
 -- dependence on board size it seems weird and maybe even unwise

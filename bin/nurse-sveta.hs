@@ -697,7 +697,7 @@ gameFileToTensorFiles log status dir fp = recallGame dir fp >>= \case
 
 		tpath <- prepareFile dir (Tensors category) ""
 		jspath <- prepareFile dir (Positions category) ""
-		sts <- saveTensors tpath jspath firstTensor history
+		sts <- saveTensors tpath jspath firstTensor [minBound..maxBound] history
 		let meta = cmInsert fp (stsVirusesOriginal sts) (stsVirusesKilled sts) (stsFrames sts) meta_
 
 		relocate dir fp GamesPending (GamesProcessed category)
