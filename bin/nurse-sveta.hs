@@ -1021,7 +1021,6 @@ trainingThreadView log netUpdate = do
 trainingThread :: Procedure LogMessage () -> TVar (Maybe Integer) -> TVar TrainingThreadState -> StatusCheck -> IO ()
 trainingThread log netUpdate ref sc = do
 	(ten0, net, sgd) <- trainingThreadLoadLatestNet
-	atomically . modifyTVar ref $ \tts -> tts { ttsCurrent = sSet (Just ten0) (ttsCurrent tts) }
 	rng <- createSystemRandom
 	dir <- nsDataDir
 
@@ -1101,6 +1100,9 @@ trainingThread log netUpdate ref sc = do
 	    		atomically . writeTVar netUpdate $ Just ten
 	    		atomically . modifyTVar ref $ \tts -> tts { ttsLastSaved = sSet (Just ten) (ttsLastSaved tts) }
 
+	-- make sure the weights are on disk for other threads to load
+	when (ten0 == 0) (saveWeights ten0)
+	atomically . modifyTVar ref $ \tts -> tts { ttsCurrent = sSet (Just ten0) (ttsCurrent tts) }
 	loop ten0
 	where
 	every hours tref act = do
