@@ -714,7 +714,7 @@ gameFileToTensorFiles log status dir fp = recallGame dir fp >>= \case
 		                          [cmBest, cmLatest]
 		    logAccumulations = zip3 ["viruses", "frames", "days" :: String]
 		                            [cmVirusesKilled, cmFrames, cmFrames]
-		                            [1, 1, 60.0988*60*60*24]
+		                            [1, 1, fps*60*60*24]
 		    fps = 60.0988
 
 		traverse_ (schedule log)
