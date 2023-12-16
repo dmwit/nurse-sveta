@@ -30,7 +30,7 @@ const torch::TensorOptions CPU_FLOAT = torch::TensorOptions().dtype(torch::kF32)
 const torch::TensorOptions GPU_FLOAT = CPU_FLOAT.device(torch::kCUDA);
 
 // TODO: A0 started its LR off at 0.2 (!)
-const float INITIAL_LEARNING_RATE = 3e-5;
+const float INITIAL_LEARNING_RATE = 1e-3;
 const float EPSILON = 1e-7;
 
 struct TensorSketch {
@@ -506,11 +506,12 @@ NetOutput NetImpl::forward(const NetInput &in) {
 	return out;
 }
 
-torch::Tensor detailed_loss(Net &net, const Batch &batch) {
-	DebugScope dbg("detailed_loss(net, batch)");
+torch::Tensor detailed_loss(Net &net, const Batch &batch, float *loss_scaling_array) {
+	DebugScope dbg("detailed_loss(net, batch, loss_scaling)");
 	const int n = batch.out.priors.size(0);
 	auto net_out = net->forward(batch.in);
 	auto loss = torch::zeros({OUTPUT_TYPES}, GPU_FLOAT);
+	auto loss_scaling_tensor = torch::from_blob(loss_scaling_array, {OUTPUT_TYPES}, [](void *v){}, CPU_FLOAT).to(torch::kCUDA);
 	int64_t i = 0;
 	// Kullback-Leibler divergence for priors
 	auto scaled_priors = net_out.priors / (batch.reachable*net_out.priors).sum({1,2,3}, true);
@@ -532,6 +533,7 @@ torch::Tensor detailed_loss(Net &net, const Batch &batch) {
 	loss.index_put_({i++}, (batch.out.clear_pill     - net_out.clear_pill    ).square().sum());
 	if(i != OUTPUT_TYPES) throw 0;
 	loss /= n;
+	loss *= loss_scaling_tensor;
 	return loss;
 }
 
@@ -558,9 +560,9 @@ extern "C" {
 	Batch *load_batch(char **path, int n);
 	int batch_size(Batch *batch);
 	void discard_batch(Batch *batch);
-	float train_net(Net *net, torch::optim::SGD *optim, Batch *batch, unsigned long loss_mask);
+	float train_net(Net *net, torch::optim::SGD *optim, Batch *batch, float *loss_scaling);
 	void introspect_net(Net *net, Batch *batch, float *priors, float *valuation, float *fall_time, float *occupied, float *virus_kills, float *wishlist, float *clear_location, float *clear_pill);
-	void detailed_loss(Net *net, float *out, Batch *batch);
+	void detailed_loss(Net *net, float *out, Batch *batch, float *loss_scaling);
 	torch::optim::SGD *connect_optimizer(Net *net);
 	void discard_optimizer(torch::optim::SGD *optim);
 }
@@ -659,18 +661,10 @@ void discard_batch(Batch *batch) {
 	delete batch;
 }
 
-float train_net(Net *net, torch::optim::SGD *optim, Batch *batch, unsigned long loss_mask) {
+float train_net(Net *net, torch::optim::SGD *optim, Batch *batch, float *loss_scaling) {
 	DebugScope dbg("train_net");
 	optim->zero_grad();
-	auto losses = detailed_loss(*net, *batch);
-
-	float loss_mask_array[OUTPUT_TYPES];
-	for(int i = 0; i < OUTPUT_TYPES; i++) {
-		loss_mask_array[i] = (loss_mask & (1 << i))?1:0;
-	}
-	auto loss_mask_tensor = torch::from_blob(loss_mask_array, {OUTPUT_TYPES}, [](void *v){}, CPU_FLOAT).to(torch::kCUDA);
-	auto loss = (losses * loss_mask_tensor).sum();
-
+	auto loss = detailed_loss(*net, *batch, loss_scaling).sum();
 	loss.backward();
 	optim->step();
 	return loss.item<float>();
@@ -696,12 +690,12 @@ void introspect_net(Net *net, Batch *batch, float *priors, float *valuation, flo
 	(**net).train(was_training);
 }
 
-void detailed_loss(Net *net, float *out, Batch *batch) {
-	DebugScope dbg("detailed_loss(net, out, batch)");
+void detailed_loss(Net *net, float *out, Batch *batch, float *loss_scaling) {
+	DebugScope dbg("detailed_loss(net, out, batch, loss_scaling)");
 	torch::NoGradGuard g;
 	bool was_training = (**net).is_training();
 	(**net).train(false); // don't want to accidentally teach our BatchNorm layers about our test vectors...
-	tensorcpy(out, detailed_loss(*net, *batch));
+	tensorcpy(out, detailed_loss(*net, *batch, loss_scaling));
 	(**net).train(was_training);
 }
 

@@ -4,7 +4,7 @@ module Nurse.Sveta.Torch (
 	Net, netSample, netEvaluation, netTrain, netDetailedLoss, netIntrospect,
 	netSave, netLoadForInference, netLoadForTraining,
 	HSTensor(..), Prediction(..), NetIntrospection(..),
-	LossType(..), describeLossType, LossMask, lossMask, fullLossMask,
+	LossType(..), describeLossType,
 	Optimizer, newOptimizer,
 	Batch, batchLoad,
 	GameStep(..), SaveTensorsSummary(..), saveTensors,
@@ -22,6 +22,7 @@ import Data.IntMap.Strict (IntMap)
 import Data.IORef
 import Data.Map.Strict (Map)
 import Data.Traversable
+import Data.Universe
 import Data.Vector (Vector)
 import Dr.Mario.Model
 import Dr.Mario.Model.Internal
@@ -53,8 +54,8 @@ foreign import ccall "save_example" cxx_save_example :: CString -> Ptr CChar -> 
 foreign import ccall "load_batch" cxx_load_batch :: Ptr CString -> CInt -> IO (Ptr Batch)
 foreign import ccall "batch_size" cxx_batch_size :: Ptr Batch -> IO CInt
 foreign import ccall "&discard_batch" cxx_discard_batch :: FunPtr (Ptr Batch -> IO ())
-foreign import ccall "train_net" cxx_train_net :: Ptr Net -> Ptr Optimizer -> Ptr Batch -> CULong -> IO CFloat
-foreign import ccall "detailed_loss" cxx_detailed_loss :: Ptr Net -> Ptr CFloat -> Ptr Batch -> IO ()
+foreign import ccall "train_net" cxx_train_net :: Ptr Net -> Ptr Optimizer -> Ptr Batch -> Ptr CFloat -> IO CFloat
+foreign import ccall "detailed_loss" cxx_detailed_loss :: Ptr Net -> Ptr CFloat -> Ptr Batch -> Ptr CFloat -> IO ()
 foreign import ccall "save_net" cxx_save_net :: Ptr Net -> Ptr Optimizer -> CString -> IO ()
 foreign import ccall "load_net" cxx_load_net :: CString -> Ptr (Ptr Net) -> Ptr (Ptr Optimizer) -> IO ()
 foreign import ccall "connect_optimizer" cxx_connect_optimizer :: Ptr Net -> IO (Ptr Optimizer)
@@ -100,11 +101,12 @@ netLoadForTraining path = withUnwrapped (WCS path) $ \cpath -> do
 	cxx_load_net cpath netPtr optimPtr
 	liftM2 (,) (peek netPtr >>= mkNet) (peek optimPtr >>= mkOptimizer)
 
-netDetailedLoss :: Net -> Batch -> IO [(LossType, Float)]
-netDetailedLoss net_ batch_ = withUnwrapped (net_, batch_) $ \(net, batch) ->
-	allocaArray lossTypes $ \out -> do
-		cxx_detailed_loss net out batch
-		zipWith (\ty w -> (ty, realToFrac w)) [minBound..] <$> peekArray lossTypes out
+netDetailedLoss :: Net -> Batch -> (LossType -> Float) -> IO [(LossType, Float)]
+netDetailedLoss net_ batch_ scaling_ = withUnwrapped (net_, batch_) $ \(net, batch) ->
+	allocaArray lossTypes $ \out ->
+		withLossScaling scaling_ $ \scaling -> do
+			cxx_detailed_loss net out batch scaling
+			zipWith (\ty w -> (ty, realToFrac w)) [minBound..] <$> peekArray lossTypes out
 
 class OneHot a where
 	indexCount :: Int
@@ -613,6 +615,8 @@ iPos :: Position -> Int
 iPos pos = shiftL (x pos) logBoardHeight + y pos
 
 data LossType = LossPriors | LossValuation | LossFallTime | LossOccupied | LossVirusKills | LossWishlist | LossClearLocation | LossClearPill deriving (Bounded, Enum, Eq, Ord, Read, Show)
+instance Universe LossType
+instance Finite LossType
 
 describeLossType :: LossType -> String
 describeLossType = \case
@@ -625,22 +629,13 @@ describeLossType = \case
 	LossClearLocation -> "clear locations"
 	LossClearPill -> "clearing pill"
 
-newtype LossMask = LossMask CULong deriving (Eq, Ord, Read, Show)
-instance Semigroup LossMask where LossMask m <> LossMask m' = LossMask (m .|. m')
-instance Monoid LossMask where mempty = LossMask 0
-instance CWrapper LossMask where
-	type Unwrapped LossMask = CULong
-	withUnwrapped (LossMask m) f = f m
+withLossScaling :: (LossType -> Float) -> (Ptr CFloat -> IO a) -> IO a
+withLossScaling scaling = Foreign.withArray [realToFrac (scaling ty) :: CFloat | ty <- [minBound..]]
 
-lossMask :: LossType -> LossMask
-lossMask = LossMask . bit . fromEnum
-
-fullLossMask :: LossMask
-fullLossMask = foldMap' lossMask [minBound..]
-
-netTrain :: Net -> Optimizer -> Batch -> LossMask -> IO Float
-netTrain net_ optim_ batch_ mask_ = withUnwrapped (net_, (batch_, (optim_, mask_))) $ \(net, (batch, (optim, mask))) ->
-	realToFrac <$> cxx_train_net net optim batch mask
+netTrain :: Net -> Optimizer -> Batch -> (LossType -> Float) -> IO Float
+netTrain net_ optim_ batch_ scaling_ = withUnwrapped (net_, (batch_, optim_)) $ \(net, (batch, optim)) ->
+	withLossScaling scaling_ $ \scaling ->
+		realToFrac <$> cxx_train_net net optim batch scaling
 
 boardWidth, boardHeight, cellCount, boardSize, lookaheadSize, rotations, numPriors, numScalars, lossTypes :: Int
 logBoardWidth, logBoardHeight, logCellCount, logRotations, logNumPriors :: Int

@@ -27,6 +27,7 @@ common shared
                         , mwc-random ^>=0.15
                         , text ^>=2.1
                         , unordered-containers ^>=0.2
+                        , universe ^>=1.2
                         , vector ^>=0.13
     default-language:   Haskell2010
     default-extensions:   BlockArguments

@@ -19,6 +19,8 @@ import Data.Maybe
 import Data.Monoid
 import Data.Time (UTCTime)
 import Data.Traversable
+import Data.Universe
+import Data.Universe.Instances.Reverse
 import Dr.Mario.Model
 import GI.Gtk as G
 import Numeric
@@ -850,6 +852,7 @@ data TrainingConfiguration = TrainingConfiguration
 	, tcHistoryTrain :: Integer
 	, tcHistoryTest :: Integer
 	, tcHistoryVisualization :: Integer
+	, tcLossScaling :: LossType -> Float
 	} deriving (Eq, Ord, Read, Show)
 
 newTrainingConfiguration :: TrainingConfiguration
@@ -863,6 +866,18 @@ newTrainingConfiguration = TrainingConfiguration
 	, tcHistoryTrain = 500000
 	, tcHistoryTest = 50000
 	, tcHistoryVisualization = 1000
+	-- these are set to normalize the priors and valuation to about 1, and the
+	-- rest to about 0.5, based on the final test loss from a long training run
+	-- TODO: make this configurable
+	, tcLossScaling = \case
+		LossPriors -> 1
+		LossValuation -> 4
+		LossFallTime -> 2/3
+		LossOccupied -> 1/35
+		LossVirusKills -> 3/2
+		LossWishlist -> 1/9
+		LossClearLocation -> 1/4
+		LossClearPill -> 5/4
 	}
 
 data TrainingThreadState = TrainingThreadState
@@ -1043,15 +1058,14 @@ trainingThread log netUpdate ref sc = do
 	    	every (tcHoursPerSave cfg) saveT (saveWeights ten)
 	    	batch <- loadBatch rng sc dir "train" (tcHistoryTrain cfg) (tcBatchSizeTrain cfg)
 	    	before <- Time.getCurrentTime
-	    	-- TODO: make loss mask configurable
-	    	loss <- netTrain net sgd batch fullLossMask
+	    	loss <- netTrain net sgd batch (tcLossScaling cfg)
 	    	after <- Time.getCurrentTime
 	    	schedule log (Metric "loss/train/sum" loss)
 
 	    	every (tcHoursPerDetailReport cfg) detailT $ do
 	    		testBatch <- loadBatch rng sc dir "test" (tcHistoryTest cfg) (tcBatchSizeTest cfg)
-	    		trainComponents <- netDetailedLoss net batch
-	    		testComponents <- netDetailedLoss net testBatch
+	    		trainComponents <- netDetailedLoss net batch (tcLossScaling cfg)
+	    		testComponents <- netDetailedLoss net testBatch (tcLossScaling cfg)
 	    		schedule log $ Metric "loss/test/sum" (sum . map snd $ testComponents)
 	    		traverse_ (schedule log)
 	    			[ Metric ("loss/" <> category <> "/" <> describeLossType ty) loss
