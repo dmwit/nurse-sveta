@@ -953,7 +953,7 @@ trainingThreadView log netUpdate = do
 
 	let newCfg :: (Eq a, Read a, Show a) => (TrainingConfiguration -> a) -> T.Text -> InputPurpose -> (TrainingConfiguration -> a -> Maybe TrainingConfiguration) -> IO (ConfigurationRequestView a)
 	    newPosCfg :: (Ord a, Num a, Read a, Show a) => (TrainingConfiguration -> a) -> T.Text -> (TrainingConfiguration -> a -> TrainingConfiguration) -> IO (ConfigurationRequestView a)
-	    newCfg field nm purpose set = newConfigurationRequestView (field newTrainingConfiguration) nm "next epoch" purpose (ttsRequest ref set)
+	    newCfg field nm purpose set = newConfigurationRequestView (field newTrainingConfiguration) nm "next batch" purpose (ttsRequest ref set)
 	    newPosCfg field nm set = newCfg field nm InputPurposeDigits $ \tc n -> n > 0 ? set tc n
 	dut <- newCfg (sPayload . tcDutyCycle) "duty cycle" InputPurposeNumber $ \tc dutyCycle -> 0 <= dutyCycle && dutyCycle <= 1 ? tc { tcDutyCycle = sTrySet dutyCycle (tcDutyCycle tc) }
 	hps <- newPosCfg tcHoursPerSave          "hours per save"            $ \tc n -> tc { tcHoursPerSave          = n }
@@ -1010,7 +1010,7 @@ trainingThreadView log netUpdate = do
 	    		crvSet thr (tcHistoryTrain          cfg)
 	    		crvSet the (tcHistoryTest           cfg)
 	    		crvSet thv (tcHistoryVisualization  cfg)
-	    	renderSpeeds spd [("epochs (%)", ttsGenerationHundredths tts), ("thread", ttsTensors tts), ("at " <> tshow dc, ttsDutyCycle tts)]
+	    	renderSpeeds spd [("batches (%)", ttsGenerationHundredths tts), ("thread", ttsTensors tts), ("at " <> tshow dc, ttsDutyCycle tts)]
 
 	tvNew top refresh (trainingThread log netUpdate ref)
 
