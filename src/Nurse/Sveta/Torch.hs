@@ -328,6 +328,7 @@ instance FromJSON GameStep where parseJSON v = parseJSON v <&> \(m, r, c) -> Gam
 -- Ints are how many pills were used when the thing happened
 data Preview = Preview
 	{ pVirusKills :: Map Position Int
+	, pLastVirusKill :: Int
 	, pPlacements :: HashMap Pill [Int]
 	, pClearLocation :: Map Position [Int]
 	, pClearPill :: HashMap PillContent [Int]
@@ -344,6 +345,7 @@ summarize gs [] = do
 	v <- evaluateFinalState gs
 	pure Preview
 		{ pVirusKills = M.empty
+		, pLastVirusKill = -1
 		, pPlacements = HM.empty
 		, pClearLocation = M.empty
 		, pClearPill = HM.empty
@@ -366,6 +368,7 @@ summarize gs (Placement path pill:ms) = mplaceDetails (board gs) pill >>= \case
 		pre <- summarize gs ms
 		pure pre
 			{ pVirusKills = M.union (pu <$ M.filter (any ((Virus==) . oshape)) allClears) (pVirusKills pre)
+			, pLastVirusKill = max (if clears summary > 0 then pu else -1) (pLastVirusKill pre)
 			, pPlacements = HM.insertWith (++) pill [pu] (pPlacements pre)
 			-- We may have multiple clears at a given location. But for
 			-- simplicity, we'll just count the current pill once. This makes
@@ -509,10 +512,16 @@ saveTensors tdir jsdir i0 cps_ (b0, steps) = do
 	let loop i rots [] = pure (i-i0)
 	    loop i rots (gs:gss) = case gsMove gs of
 	    	-- subtlety: go calls dmPlay, which records (l, r)
-	    	RNG l r -> go i . HM.fromListWith (++) $ zipWith
-	    		(\iRot pc -> (pc, [iRot]))
-	    		[0..3]
-	    		(iterate (`rotateContent` Clockwise) (PillContent startingOrientation l r))
+	    	RNG l r -> do
+	    		-- TODO: could record a few moves after the kill, too, maybe? but... why?
+	    		done <- (pLastVirusKill preview >=) <$> readIORef (pillsUsed currentState)
+	    		pu <- readIORef (pillsUsed currentState)
+	    		if pu <= pLastVirusKill preview
+	    			then go i . HM.fromListWith (++) $ zipWith
+	    				(\iRot pc -> (pc, [iRot]))
+	    				[0..3]
+	    				(iterate (`rotateContent` Clockwise) (PillContent startingOrientation l r))
+	    			else pure (i-i0)
 	    	Placement bm pill -> do
 	    		-- first the bits that are the same for all color permutations
 	    		zeroArray cellCount occupied
