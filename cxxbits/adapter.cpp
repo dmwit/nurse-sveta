@@ -19,8 +19,8 @@ const int64_t OUTPUT_LAYERS = ROTATIONS + 1 + 1 + PILLCONTENTS + 1 + 1;
 const int64_t OUTPUT_TYPES = 8;
 const int64_t OUTPUT_SCALARS = PILLCONTENTS+2; // clear pills, valuation, fall time
 
-const int64_t FILTERS = 64;
-const int64_t RESIDUAL_BLOCKS = 20;
+const int64_t FILTERS = 16;
+const int64_t RESIDUAL_BLOCKS = 3;
 const float LEAKAGE = 0.01;
 
 const int64_t BODY_SIZE = FILTERS * CELLS;
