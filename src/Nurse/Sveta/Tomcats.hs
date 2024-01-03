@@ -104,7 +104,7 @@ instance Gen a ~ GenIO => GameStateSeed (Gen a) where
 	-- note to self: when the NES does it, it generates the pill sequence first,
 	-- then the board
 	initialState g = do
-		level <- uniformRM (0, 20) g
+		level <- pure 0 -- uniformRM (0, 20) g
 		seed <- uniformRM (2, maxBound) g
 		b <- mrandomBoard seed level
 		frameParity <- uniformM g
