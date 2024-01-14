@@ -113,7 +113,7 @@ void free_structure(structure *s) { delete s; }
 
 ostream &dump_leaf_type(ostream &os, const structure_tag tag) {
 	switch(tag) {
-		case tag_unit: return os << "signum";
+		case tag_unit: return os << "sigmoid";
 		case tag_positive: return os << "exp";
 		case tag_categorical: return os << "softmax";
 		default:
