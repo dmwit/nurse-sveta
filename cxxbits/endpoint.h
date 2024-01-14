@@ -83,6 +83,7 @@ void endpoint_add_child(endpoint *parent, char *name, endpoint *child);
 
 structure_tag endpoint_get_tag(endpoint *e);
 // only valid for heterogeneous endpoints
+void endpoint_get_child_names(int *ret_size, char ***ret_names, endpoint *e);
 endpoint *endpoint_get_named_child(endpoint *parent, char *name);
 // only valid for masked endpoints
 endpoint *endpoint_get_masked_child(endpoint *parent);
@@ -95,6 +96,8 @@ dimensions *endpoint_get_dimensions(endpoint *e);
 void endpoint_read(structure_tag *ret_tag, int *ret_size, float **ret_values, endpoint *e);
 
 void dump_endpoint(endpoint *e);
+// use when finished with the names returned by an endpoint_get_child_names
+void free_endpoint_names(int size, char **names);
 // use when finished with the values returned by an endpoint_read
 void free_endpoint_values(float *values);
 void free_endpoint(endpoint *e);

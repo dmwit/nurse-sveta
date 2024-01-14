@@ -25,6 +25,7 @@ import Control.Applicative
 import Control.Exception
 import Control.Monad
 import Data.Foldable
+import Data.Traversable
 import Data.Vector.Storable (Vector)
 import Foreign
 import Foreign.C
@@ -340,11 +341,13 @@ foreign import ccall "new_endpoint_rectangle" c_new_endpoint_rectangle :: CInt -
 foreign import ccall "new_endpoint_heterogeneous" c_new_endpoint_heterogeneous :: CInt -> IO (Ptr CEndpoint)
 foreign import ccall "endpoint_add_child" c_endpoint_add_child :: Ptr CEndpoint -> Ptr CChar -> Ptr CEndpoint -> IO ()
 foreign import ccall "endpoint_get_tag" c_endpoint_get_tag :: Ptr CEndpoint -> IO CStructureTag
+foreign import ccall "endpoint_get_child_names" c_endpoint_get_child_names :: Ptr CInt -> Ptr (Ptr (Ptr CChar)) -> Ptr CEndpoint -> IO ()
 foreign import ccall "endpoint_get_named_child" c_endpoint_get_named_child :: Ptr CEndpoint -> Ptr CChar -> IO (Ptr CEndpoint)
 foreign import ccall "endpoint_get_masked_child" c_endpoint_get_masked_child :: Ptr CEndpoint -> IO (Ptr CEndpoint)
 foreign import ccall "endpoint_get_dimensions" c_endpoint_get_dimensions :: Ptr CEndpoint -> IO (Ptr CDimensions)
 foreign import ccall "endpoint_read" c_endpoint_read :: Ptr CStructureTag -> Ptr CInt -> Ptr (Ptr CFloat) -> Ptr CEndpoint -> IO ()
 foreign import ccall "dump_endpoint" c_dump_endpoint :: Ptr CEndpoint -> IO ()
+foreign import ccall "free_endpoint_names" c_free_endpoint_names :: CInt -> Ptr (Ptr CChar) -> IO ()
 foreign import ccall "&free_endpoint_values" c_free_endpoint_values :: FinalizerPtr CFloat
 foreign import ccall "&free_endpoint" c_free_endpoint :: FinalizerPtr CEndpoint
 
@@ -404,8 +407,16 @@ endpointAddChild (CEndpoint parent) nm (CEndpoint child) =
 endpointGetTag :: CEndpoint -> IO CStructureTag
 endpointGetTag (CEndpoint e) = withForeignPtr e c_endpoint_get_tag
 
-endpointGetNamedChild :: CEndpoint -> String -> IO CEndpoint
-endpointGetNamedChild (CEndpoint e) nm = withForeignPtr e (withCString nm . c_endpoint_get_named_child) >>= gcEndpoint
+endpointGetChildNames :: CEndpoint -> IO (Int, Ptr CString)
+endpointGetChildNames (CEndpoint e) =
+	withForeignPtr e \c_e ->
+	alloca \psize ->
+	alloca \pstrings -> do
+	c_endpoint_get_child_names psize pstrings c_e
+	liftA2 (,) (fromIntegral <$> peek psize) (peek pstrings)
+
+endpointGetNamedChild :: CEndpoint -> CString -> IO CEndpoint
+endpointGetNamedChild (CEndpoint e) nm = withForeignPtr e (flip c_endpoint_get_named_child nm) >>= gcEndpoint
 
 endpointGetMaskedChild :: CEndpoint -> IO CEndpoint
 endpointGetMaskedChild (CEndpoint e) = withForeignPtr e c_endpoint_get_masked_child >>= gcEndpoint
@@ -477,7 +488,17 @@ hsEndpoint e = do
 					, bounds = batchBounds
 					, contents = vals
 					}
-			| c_tag == c_tag_heterogeneous -> undefined
+			| c_tag == c_tag_heterogeneous -> do
+				(numChildren, names) <- endpointGetChildNames e
+				dict <- for [0..numChildren-1] \i -> do
+					pname <- peek (advancePtr names i)
+					name <- peekCString pname
+					c_child <- endpointGetNamedChild e pname
+					child <- hsEndpoint c_child
+					pure (name, child)
+				c_free_endpoint_names (fromIntegral numChildren) names
+				pure $ EHeterogeneous dict
+
 			| otherwise -> error $ "Invalid endpoint tag " ++ show c_tag
 
 dumpEndpoint :: CEndpoint -> IO ()

@@ -197,6 +197,17 @@ void _endpoint::add_child(string name, sp_endpoint child) {
 
 structure_tag endpoint_get_tag(endpoint *e) { return e->ref->shape->tag; }
 
+void endpoint_get_child_names(int *ret_size, char ***ret_names, endpoint *_e) {
+	auto e = _e->ref;
+	int i = 0;
+	*ret_names = new char *[*ret_size = e->heterogeneous_children.size()];
+	for(auto pair: e->heterogeneous_children) {
+		(*ret_names)[i] = new char[pair.first.size()+1];
+		copy(pair.first.begin(), pair.first.end(), (*ret_names)[i]);
+		++i;
+	}
+}
+
 endpoint *endpoint_get_named_child(endpoint *_parent, char *name) {
 	auto parent = _parent->ref;
 
@@ -317,6 +328,11 @@ bool _endpoint::has_masks() const {
 	cerr << "Invalid tag discovered in has_masks()" << endl;
 	cerr << "Current endpoint: " << *this << endl;
 	throw 0;
+}
+
+void free_endpoint_names(int size, char **names) {
+	for(int i=0; i<size; ++i) free(names[i]);
+	free(names);
 }
 
 void free_endpoint_values(float *values) { delete values; }
