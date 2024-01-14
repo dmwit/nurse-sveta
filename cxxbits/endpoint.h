@@ -19,6 +19,7 @@ typedef enum {
 } game_constant;
 
 int eval_game_constant(game_constant c);
+void dump_game_constant(game_constant c);
 
 typedef enum {
 	tag_product,
@@ -33,6 +34,9 @@ dimensions *new_dimensions_sum(int capacity_hint);
 void dimensions_add_constant(dimensions *d, game_constant c);
 dimensions_tag dimensions_get_tag(dimensions *d);
 void dimensions_read(int *ret_length, game_constant **ret_constants, dimensions *d);
+
+void dump_dimensions(dimensions *d);
+// use when finished with the values returned by a dimensions_read
 void free_dimensions_constants(game_constant *constants);
 void free_dimensions(dimensions *d);
 
@@ -56,6 +60,7 @@ structure *new_structure_rectangle(dimensions *d, structure *child);
 structure *new_structure_heterogeneous();
 void structure_add_child(structure *parent, char *name, structure *child);
 
+void dump_structure(structure *s);
 void free_structure(structure *s);
 
 typedef struct endpoint endpoint;
@@ -89,6 +94,7 @@ dimensions *endpoint_get_dimensions(endpoint *e);
 // Indices vary in the same way as for new_endpoint_rectangle.
 void endpoint_read(structure_tag *ret_tag, int *ret_size, float **ret_values, endpoint *e);
 
-// use when finished from the values returned by an endpoint_read
+void dump_endpoint(endpoint *e);
+// use when finished with the values returned by an endpoint_read
 void free_endpoint_values(float *values);
 void free_endpoint(endpoint *e);

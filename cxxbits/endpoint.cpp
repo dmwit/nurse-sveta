@@ -12,6 +12,7 @@ int eval_game_constant(game_constant c) {
 	}
 }
 
+void dump_game_constant(game_constant c) { flush(cout << c); }
 ostream &operator<<(ostream &os, const game_constant &c) {
 	return os << eval_game_constant(c);
 }
@@ -56,15 +57,17 @@ dimensions *new_dimensions_product(int capacity_hint) { return new dimensions(ne
 dimensions *new_dimensions_sum(int capacity_hint) { return new dimensions(new _dimensions(tag_sum, capacity_hint)); }
 void dimensions_add_constant(dimensions *d, game_constant c) { d->ref->constants.push_back(c); }
 dimensions_tag dimensions_get_tag(dimensions *d) { return d->ref->tag; }
-void dimensions_read(int *ret_length, game_constant **ret_constants, dimensions *_d) {
-	auto d = _d->ref;
-	*ret_length = d->constants.size();
+void dimensions_read(int *ret_length, game_constant **ret_constants, dimensions *d) {
+	auto constants = d->ref->constants;
+	*ret_length = constants.size();
 	*ret_constants = new game_constant[*ret_length];
-	throw 0;
+	copy(constants.begin(), constants.end(), *ret_constants);
 }
+
 void free_dimensions_constants(game_constant *constants) { delete constants; }
 void free_dimensions(dimensions *d) { delete d; }
 
+void dump_dimensions(dimensions *d) { flush(cout << *(d->ref)); }
 ostream &operator<<(ostream &os, const _dimensions &d) {
 	char identity = '!';
 	char op = '!';
@@ -108,22 +111,35 @@ void _structure::add_child(string name, sp_structure child) {
 
 void free_structure(structure *s) { delete s; }
 
-ostream &operator<<(ostream &os, const _structure &s) {
-	auto it(s.children.begin());
-	switch(s.tag) {
+ostream &dump_leaf_type(ostream &os, const structure_tag tag) {
+	switch(tag) {
 		case tag_unit: return os << "signum";
 		case tag_positive: return os << "exp";
 		case tag_categorical: return os << "softmax";
-		case tag_masked: return os << '!' << s.child();
-		case tag_rectangle: return os << s.tensor_dimensions << ' ' << s.child();
+		default:
+			cerr << "Invalid leaf type " << tag << endl;
+			throw 0;
+	}
+}
+
+void dump_structure(structure *s) { flush(cout << *(s->ref)); }
+ostream &operator<<(ostream &os, const _structure &s) {
+	switch(s.tag) {
+		case tag_unit:
+		case tag_positive:
+		case tag_categorical: return dump_leaf_type(os, s.tag);
+		case tag_masked: return os << '!' << *s.child();
+		case tag_rectangle: return os << *s.tensor_dimensions << ' ' << *s.child();
 		case tag_heterogeneous:
 			os << '{';
-			if(it != s.children.end()) while(true) {
-				// TODO: escape it->first in some sensible way
-				os << it->first << ": " << *it->second;
-				++it;
-				if(it == s.children.end()) break;
-				os << ", ";
+			{ auto it(s.children.begin());
+				if(it != s.children.end()) while(true) {
+					// TODO: escape it->first in some sensible way
+					os << it->first << ": " << *it->second;
+					++it;
+					if(it == s.children.end()) break;
+					os << ", ";
+				}
 			}
 			return os << '}';
 		default:
@@ -143,6 +159,12 @@ endpoint *new_endpoint_positive(int size, float *values, char *mask) { return ne
 endpoint *new_endpoint_categorical(int size, float *values, char *mask) { return new_endpoint_leaf(tag_categorical, size, values, mask); }
 
 endpoint *new_endpoint_masked(endpoint *child) {
+	if(!child->ref->has_masks()) {
+		cerr << "Attempted to declare an endpoint as masked, but some children do not have masks." << endl;
+		cerr << "Child endpoint: " << *(child->ref) << endl;
+		throw 0;
+	}
+
 	_endpoint *e = new _endpoint(*(child->ref));
 	e->shape = sp_structure(new _structure(e->shape));
 	return new endpoint(e);
@@ -168,7 +190,7 @@ void _endpoint::add_child(string name, sp_endpoint child) {
 	};
 
 	if(shape->tag != tag_heterogeneous) die("Adding children is only allowed for heterogeneous endpoints.");
-	if(size != child->size) die("Parent endpoint and child endpoint have differing sizes (" + to_string(size) + " in parent, " + to_string(child->size) + " in child).");
+	if(size != child->size) die("Parent endpoint and child endpoint have differing batch sizes (" + to_string(size) + " in parent, " + to_string(child->size) + " in child).");
 	if(!heterogeneous_children.emplace(name, child).second)
 		die("Attempted to add a child to a heterogeneous endpoint that already contained that name.");
 }
@@ -270,14 +292,9 @@ void _endpoint::initialize_tensors(float *values, char *mask) {
 	if(NULL != mask) masked_values = torch::from_blob(mask, dims, CPU_BYTE).clone();
 }
 
-sp_structure _endpoint::unmasked_shape() const {
-	auto ret = shape;
-	while(ret->tag == tag_masked) ret = ret->child();
-	return ret;
-}
-
 bool _endpoint::has_masks() const {
-	auto ushape = unmasked_shape();
+	auto ushape = shape;
+	while(shape->tag == tag_masked) ushape = shape->child();
 	switch(ushape->tag) {
 		case tag_unit:
 		case tag_positive:
@@ -305,38 +322,43 @@ bool _endpoint::has_masks() const {
 void free_endpoint_values(float *values) { delete values; }
 void free_endpoint(endpoint *e) { delete e; }
 
+void dump_endpoint(endpoint *e) { flush(cout << *(e->ref)); }
 ostream &operator<<(ostream &os, const _endpoint &e) {
-	auto ushape = e.unmasked_shape();
-	auto it(e.heterogeneous_children.begin());
-	switch(ushape->tag) {
+	auto print_leaf = [&](structure_tag tag) {
+		dump_leaf_type(os, tag) << " " << e.rectangle_values;
+		if(e.masked_values.defined())
+			os << '@' << e.masked_values;
+	};
+
+	switch(e.shape->tag) {
 		case tag_unit:
 		case tag_positive:
-		case tag_categorical:
-			os << e.rectangle_values;
-			if(e.masked_values.defined())
-				os << '@' << e.masked_values;
-			return os;
+		case tag_categorical: print_leaf(e.shape->tag); return os;
+		case tag_masked:
+			{ auto e_child(e);
+				e_child.shape = e.shape->child();
+				return os << "!" << e_child;
+			}
 		case tag_rectangle:
-			if(ushape->child()->is_leaf()) {
-				os << e.rectangle_values;
-				if(e.masked_values.defined())
-					os << '@' << e.masked_values;
-			} else {
+			if(e.shape->child()->is_leaf()) print_leaf(e.shape->child()->tag);
+			else {
 				cerr << "<TODO: pretty-print complex rectangular values>";
 				throw 0;
 			}
 			return os;
 		case tag_heterogeneous:
 			os << '{';
-			if(it != e.heterogeneous_children.begin()) while(true) {
-				os << it->first << ": " << it->second;
-				++it;
-				if(it == e.heterogeneous_children.end()) break;
-				os << ", ";
+			{ auto it = e.heterogeneous_children.begin();
+				if(it != e.heterogeneous_children.end()) while(true) {
+					os << it->first << ": " << *it->second;
+					++it;
+					if(it == e.heterogeneous_children.end()) break;
+					os << ", ";
+				}
 			}
 			return os << '}';
 	}
 
-	cerr << "Invalid endpoint tag " << ushape->tag << endl;
+	cerr << "Invalid endpoint tag " << e.shape->tag << endl;
 	throw 0;
 }

@@ -94,7 +94,6 @@ struct _endpoint {
 
 	void add_child(string name, sp_endpoint child);
 	bool has_masks() const;
-	sp_structure unmasked_shape() const;
 	void initialize_tensors(float *values, char *mask);
 };
 

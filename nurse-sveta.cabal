@@ -128,3 +128,7 @@ executable nurse-sveta-evaluate-stalls
     import:             executable
     main-is:            evaluate-stalls.hs
     build-depends:        multiset ^>=0.3
+
+executable nurse-sveta-endpoint-playground
+    import:             executable
+    main-is:            endpoint-playground.hs
