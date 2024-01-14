@@ -1,15 +1,12 @@
 #include <torch/torch.h>
 
+#include "constants.hpp"
+
 // #define DEBUG
 
-const int64_t BOARD_WIDTH = 8;
-const int64_t BOARD_HEIGHT = 16;
-const int64_t LOOKAHEAD_SIZE = 6;
-const int64_t CELL_SIZE = 7;
+const int64_t LOOKAHEAD_SIZE = COLORS + COLORS;
+const int64_t CELL_SIZE = COLORS + SHAPES;
 const int64_t SCALARS = 6; // frames, log(frames), sqrt(frames), starting viruses, log(starting viruses), 1/sqrt(starting viruses)
-const int64_t ROTATIONS = 4;
-const int64_t ORIENTATIONS = 2;
-const int64_t COLORS = 3;
 
 const int64_t CELLS = BOARD_WIDTH * BOARD_HEIGHT;
 const int64_t PILLCONTENTS = ORIENTATIONS*COLORS*COLORS;
@@ -24,10 +21,6 @@ const int64_t RESIDUAL_BLOCKS = 20;
 const float LEAKAGE = 0.01;
 
 const int64_t BODY_SIZE = FILTERS * CELLS;
-
-const torch::TensorOptions CPU_BYTE  = torch::TensorOptions().dtype(torch::kU8);
-const torch::TensorOptions CPU_FLOAT = torch::TensorOptions().dtype(torch::kF32);
-const torch::TensorOptions GPU_FLOAT = CPU_FLOAT.device(torch::kCUDA);
 
 // TODO: A0 started its LR off at 0.2 (!)
 const float INITIAL_LEARNING_RATE = 1e-3;

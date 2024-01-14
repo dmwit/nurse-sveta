@@ -18,3 +18,6 @@ forZipWithM as bs f = zipWithM f as bs
 
 forZipWithM_ :: Applicative f => [a] -> [b] -> (a -> b -> f c) -> f ()
 forZipWithM_ as bs f = zipWithM_ f as bs
+
+liftJ2 :: Monad m => (a -> b -> m c) -> m a -> m b -> m c
+liftJ2 f ma mb = join (liftM2 f ma mb)

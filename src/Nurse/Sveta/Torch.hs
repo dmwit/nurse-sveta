@@ -29,8 +29,7 @@ import Dr.Mario.Model.Internal
 import Nurse.Sveta.Tomcats
 import Nurse.Sveta.Util
 import Foreign
-import Foreign.C.String
-import Foreign.C.Types
+import Foreign.C
 import GHC.Generics
 import System.FilePath
 import System.IO
