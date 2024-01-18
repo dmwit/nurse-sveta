@@ -1,6 +1,8 @@
 #include "endpoint.hpp"
 #include "constants.hpp"
 
+using namespace std;
+
 int eval_game_constant(game_constant c) {
 	switch(c) {
 		case c_colors: return COLORS;
@@ -299,8 +301,12 @@ void _endpoint::initialize_tensors(float *values, char *mask) {
 	if(rectangle_dimensions) dims = rectangle_dimensions->to_vector();
 	dims.insert(dims.begin(), size);
 
-	rectangle_values = torch::from_blob(values, dims, CPU_FLOAT).clone();
-	if(NULL != mask) masked_values = torch::from_blob(mask, dims, CPU_BYTE).clone();
+	// TODO: Is to() is blocking by default? This clone() is there to make sure
+	// we don't pass control back to Haskell and free the data before we're
+	// done reading it, but if to() already doesn't return until it's done
+	// reading, then the clone is unnecessary.
+	rectangle_values = torch::from_blob(values, dims, CPU_FLOAT).clone().to(torch::kCUDA);
+	if(NULL != mask) masked_values = torch::from_blob(mask, dims, CPU_BYTE).clone().to(torch::kCUDA);
 }
 
 bool _endpoint::has_masks() const {

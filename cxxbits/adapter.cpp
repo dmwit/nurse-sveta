@@ -1,8 +1,6 @@
-#include <torch/torch.h>
-
 #include "constants.hpp"
-
-// #define DEBUG
+#include "debugging.hpp"
+#include "endpoint.hpp"
 
 const int64_t LOOKAHEAD_SIZE = COLORS + COLORS;
 const int64_t CELL_SIZE = COLORS + SHAPES;
@@ -25,89 +23,6 @@ const int64_t BODY_SIZE = FILTERS * CELLS;
 // TODO: A0 started its LR off at 0.2 (!)
 const float INITIAL_LEARNING_RATE = 1e-3;
 const float EPSILON = 1e-7;
-
-struct TensorSketch {
-	torch::Device dev;
-	torch::ScalarType ty;
-	std::vector<int> dims;
-	bool grad, defined, has_nan;
-
-	TensorSketch(torch::Tensor t)
-		: dev(t.defined()?t.device():c10::Device("cpu"))
-	{
-		defined = t.defined();
-		if(defined) {
-			ty = t.scalar_type();
-			grad = t.requires_grad();
-			has_nan = at::isnan(t).any().item<bool>();
-			for(int i = 0; i < t.dim(); i++) dims.push_back(t.size(i));
-		}
-	}
-};
-
-std::ostream &operator<<(std::ostream &o, const TensorSketch sketch) {
-	if(sketch.defined) {
-		o << sketch.ty << "[";
-		if(sketch.dims.size() > 0) {
-			o << sketch.dims[0];
-			for(int i = 1; i < sketch.dims.size(); i++)
-				o << ", " << sketch.dims[i];
-		}
-		return o << "]@" << sketch.dev << (sketch.grad?"+":"-") << (sketch.has_nan?"!":"");
-	} else {
-		return o << "<undefined>";
-	}
-}
-
-enum DebugVerbosity
-	{ SILENT = 0
-	, INFO
-	, CALLS
-	, VERBOSE = CALLS
-	};
-
-const DebugVerbosity DEFAULT_LAYER_VERBOSITY = INFO;
-const DebugVerbosity DEFAULT_CONSTRUCTOR_VERBOSITY = INFO;
-const DebugVerbosity DEFAULT_SERIALIZATION_VERBOSITY = INFO;
-const DebugVerbosity DEFAULT_TRANSFER_VERBOSITY = INFO;
-const DebugVerbosity DEFAULT_VERBOSITY = VERBOSE;
-
-class DebugScope {
-	public:
-		DebugScope(std::string nm, int vrb = DEFAULT_VERBOSITY)
-			: devnull(0) // https://stackoverflow.com/q/7818371/791604
-#ifdef DEBUG
-			, name(nm)
-			, verbosity(vrb)
-			{
-				if(verbosity >= CALLS) std::cerr << "entering " << name << std::endl;
-			}
-#else
-			{}
-#endif
-
-		~DebugScope() {
-#ifdef DEBUG
-			if(verbosity >= CALLS) std::cerr << "exiting  " << name << std::endl;
-#endif
-		}
-
-		template<typename T>
-		std::ostream &operator<<(const T &t) {
-#ifdef DEBUG
-			if(verbosity >= INFO)
-				return std::cerr << "\t" << name << ": " << t;
-#endif
-			return devnull;
-		}
-
-	private:
-#ifdef DEBUG
-		const std::string name;
-		const int verbosity;
-#endif
-		std::ostream devnull;
-};
 
 struct NetInput {
 	// boards: [n, 7, 8, 16]
@@ -424,6 +339,177 @@ class ResidualImpl : public torch::nn::Module {
 };
 TORCH_MODULE(Residual);
 
+bool is_board(sp_dimensions dims) {
+	auto n = dims->constants.size();
+	return dims->tag == tag_product && n >= 2 && dims->constants[n-2] == c_width && dims->constants[n-1] == c_height;
+}
+
+class Encoder;
+class EncoderImpl : public torch::nn::Module {
+	public:
+		EncoderImpl(sp_structure s, std::string name = "Encoder");
+		torch::Tensor forward(sp_endpoint e);
+
+	private:
+		torch::nn::Linear linear;
+		Conv2dReLUInit convolution;
+		std::map<std::string, Encoder> heterogeneous_children;
+};
+TORCH_MODULE(Encoder);
+
+class Decoder;
+class DecoderImpl : public torch::nn::Module {
+	public:
+		DecoderImpl(sp_structure s, std::string name = "Decoder");
+		sp_endpoint forward(torch::Tensor t);
+
+	private:
+		Conv2dReLUInit convolution;
+		sp_structure shape;
+};
+TORCH_MODULE(Decoder);
+
+EncoderImpl::EncoderImpl(sp_structure s, std::string name)
+	: linear(nullptr), convolution(nullptr)
+{
+	switch(s->tag) {
+		case tag_unit:
+		case tag_positive:
+		case tag_categorical:
+			linear = torch::nn::Linear(1, FILTERS);
+			register_module(name + ".linear", linear);
+			break;
+		case tag_masked:
+			std::cerr << "Masked encoder inputs are not supported. (But you can do the masking yourself.)" << std::endl;
+			throw 0;
+		case tag_rectangle:
+			if(s->child()->is_leaf()) {
+				if(is_board(s->tensor_dimensions)) {
+					convolution = Conv2dReLUInit(s->tensor_dimensions->eval()/CELLS, FILTERS, LEAKAGE);
+				} else {
+					linear = torch::nn::Linear(s->tensor_dimensions->eval(), FILTERS);
+				}
+			} else {
+				std::cerr << "Nested rectangular encoder inputs are not yet implemented." << std::endl;
+				throw 0;
+			}
+			break;
+		case tag_heterogeneous:
+			for(auto it = s->children.begin(); it != s->children.end(); ++it) {
+				auto child_name = name + "." + it->first;
+				auto child = std::shared_ptr<EncoderImpl>(new EncoderImpl(it->second, child_name));
+				heterogeneous_children.emplace(it->first, child);
+				register_module(child_name, child);
+			}
+			break;
+		default:
+			std::cerr << "Invalid tag " + std::to_string(s->tag) + " in EncoderImpl()." << std::endl;
+			throw 0;
+	}
+}
+
+DecoderImpl::DecoderImpl(sp_structure s, std::string name)
+	: convolution(nullptr), shape(s)
+{
+	switch(s->tag) {
+		case tag_unit:
+		case tag_positive:
+		case tag_categorical:
+			std::cerr << "Linear decoding is not yet implemented." << std::endl;
+			throw 0;
+		case tag_masked:
+			std::cerr << "Masked decoding is not yet implemented." << std::endl;
+			throw 0;
+		case tag_rectangle:
+			std::cerr << "Rectangular decoding is not yet implemented." << std::endl;
+			throw 0;
+		case tag_heterogeneous:
+			std::cerr << "Heterogeneous decoding is not yet implemented." << std::endl;
+			throw 0;
+		default:
+			std::cerr << "Invalid tag " + std::to_string(s->tag) + " in DecoderImpl()." << std::endl;
+			throw 0;
+	}
+}
+
+torch::Tensor EncoderImpl::forward(sp_endpoint e) {
+	int64_t n;
+	switch(e->shape->tag) {
+		case tag_unit:
+		case tag_positive:
+		case tag_categorical:
+			n = e->rectangle_values.size(0);
+			return linear
+				->forward(e->rectangle_values.reshape({n, 1}))
+				.reshape({n, FILTERS, 1, 1})
+				.expand({n, FILTERS, BOARD_WIDTH, BOARD_HEIGHT});
+		case tag_masked:
+			std::cerr << "Masked encoder inputs are not supported. (But you can do the masking yourself.)" << std::endl;
+			throw 0;
+		case tag_rectangle:
+			std::cerr << "Rectangular encoding is not yet implemented." << std::endl;
+			throw 0;
+		case tag_heterogeneous:
+			std::cerr << "Heterogeneous encoding is not yet implemented." << std::endl;
+		default:
+			std::cerr << "Invalid tag " + std::to_string(e->shape->tag) + " in EncoderImpl.forward()." << std::endl;
+			throw 0;
+	}
+}
+
+sp_endpoint DecoderImpl::forward(torch::Tensor t) {
+	switch(shape->tag) {
+		case tag_unit:
+		case tag_positive:
+		case tag_categorical:
+			std::cerr << "Linear decoding is not yet implemented." << std::endl;
+			throw 0;
+		case tag_masked:
+			std::cerr << "Masked decoding is not yet implemented." << std::endl;
+			throw 0;
+		case tag_rectangle:
+			std::cerr << "Rectangular decoding is not yet implemented." << std::endl;
+			throw 0;
+		case tag_heterogeneous:
+			std::cerr << "Heterogeneous decoding is not yet implemented." << std::endl;
+			throw 0;
+		default:
+			std::cerr << "Invalid tag " + std::to_string(shape->tag) + " in DecoderImpl.forward()." << std::endl;
+			throw 0;
+	}
+}
+
+class NextNetImpl : public torch::nn::Module {
+	public:
+		NextNetImpl(sp_structure in, sp_structure out)
+			: torch::nn::Module("Nurse Sveta net")
+			, enc(in)
+			, dec(out)
+		{
+			register_module("encoder", enc);
+			for(int64_t i = 0; i < RESIDUAL_BLOCKS; i++) {
+				residuals.push_back(Residual(FILTERS, LEAKAGE));
+				register_module("main body residual #" + std::to_string(i), residuals[i]);
+			}
+			register_module("decoder", dec);
+
+			to(torch::kCUDA);
+			to(torch::kF32);
+		}
+
+		sp_endpoint forward(sp_endpoint in) {
+			torch::Tensor t = enc->forward(in);
+			for(int i = 0; i < RESIDUAL_BLOCKS; i++) t = residuals[i]->forward(t);
+			return dec->forward(t);
+		}
+
+	private:
+		Encoder enc;
+		std::vector<Residual> residuals;
+		Decoder dec;
+};
+TORCH_MODULE(NextNet);
+
 class NetImpl : public torch::nn::Module {
 	public:
 		NetImpl()
@@ -497,6 +583,11 @@ NetOutput NetImpl::forward(const NetInput &in) {
 	if(i != OUTPUT_SCALARS) throw 0;
 
 	return out;
+}
+
+sp_endpoint next_loss(NextNet &net, sp_endpoint in, sp_endpoint out, sp_structure details = nullptr) {
+	std::cerr << "next_loss not yet implemented" << std::endl;
+	throw 0;
 }
 
 torch::Tensor detailed_loss(Net &net, const Batch &batch, float *loss_scaling_array) {

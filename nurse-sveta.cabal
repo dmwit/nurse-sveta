@@ -94,7 +94,10 @@ library
                         , primitive >=0.7 && <0.10
                         , stm ^>=2.5.1
                         , tomcats ^>=0.1
-    cxx-sources:        cxxbits/adapter.cpp, cxxbits/constants.cpp, cxxbits/endpoint.cpp
+    cxx-sources:          cxxbits/adapter.cpp
+                        , cxxbits/constants.cpp
+                        , cxxbits/debugging.cpp
+                        , cxxbits/endpoint.cpp
     include-dirs:       cxxbits
     includes:           endpoint.h
     extra-libraries:    stdc++, c10, torch, torch_cpu
