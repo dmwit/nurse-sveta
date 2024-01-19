@@ -9,55 +9,40 @@
 
 // Cyclic data is not supported, don't do it. Something will probably break.
 
-typedef enum {
-	c_colors,
-	c_shapes,
-	c_width,
-	c_height,
-	c_orientations,
-	NUM_GAME_CONSTANTS
-} game_constant;
+// game_constants can be negative, in which case they're the ones complement
+// (i.e. ~, not -) of a miscellaneous size; can't use enum for this reason.
+// See also [NOTE: FFI, switch, and linking].
+typedef int game_constant;
+#define c_colors ((game_constant)0)
+#define c_shapes ((game_constant)1)
+#define c_width ((game_constant)2)
+#define c_height ((game_constant)3)
+#define c_orientations ((game_constant)4)
 
 int eval_game_constant(game_constant c);
 void dump_game_constant(game_constant c);
 
-typedef enum {
-	tag_product,
-	tag_sum,
-	NUM_DIMENSIONS_TAGS
-} dimensions_tag;
+// I'm scared. What size is an enum, really? At least we know the size of an
+// int for sure, which makes it easier to get the FFI bindings correct.
+typedef int leaf_type;
+// 0-1, squared-error loss
+#define type_unit ((leaf_type)0)
+// 0-∞, squared-error loss
+#define type_positive ((leaf_type)1)
+// positive, sums to 1, cross-entropy loss
+#define type_categorical ((leaf_type)2)
 
-typedef struct dimensions dimensions;
+void dump_leaf_type(leaf_type ty);
 
-dimensions *new_dimensions_product(int capacity_hint);
-dimensions *new_dimensions_sum(int capacity_hint);
-void dimensions_add_constant(dimensions *d, game_constant c);
-dimensions_tag dimensions_get_tag(dimensions *d);
-void dimensions_read(int *ret_length, game_constant **ret_constants, dimensions *d);
-
-void dump_dimensions(dimensions *d);
-// use when finished with the values returned by a dimensions_read
-void free_dimensions_constants(game_constant *constants);
-void free_dimensions(dimensions *d);
-
-typedef enum {
-	tag_unit, // 0-1, squared-error loss
-	tag_positive, // 0-∞, squared-error loss
-	tag_categorical, // 0-1, part of a collection that sums to 1, cross-entropy loss
-	tag_masked, // only some entries are valid/should contribute to the loss
-	tag_rectangle, // tensor
-	tag_heterogeneous, // a mixed collection of types, specified as a dictionary with strings as keys
-	NUM_STRUCTURE_TAGS
-} structure_tag;
-
+typedef int structure_tag;
+#define tag_tensor ((structure_tag)0)
+#define tag_vector ((structure_tag)1)
+#define tag_dictionary ((structure_tag)2)
 typedef struct structure structure;
 
-structure *new_structure_unit();
-structure *new_structure_positive();
-structure *new_structure_categorical();
-structure *new_structure_masked(structure *child);
-structure *new_structure_rectangle(dimensions *d, structure *child);
-structure *new_structure_heterogeneous();
+structure *new_structure_tensor(leaf_type ty, int dim_count, game_constant *lens);
+structure *new_structure_vector(game_constant len, structure *child);
+structure *new_structure_dictionary();
 void structure_add_child(structure *parent, char *name, structure *child);
 
 void dump_structure(structure *s);
@@ -65,39 +50,22 @@ void free_structure(structure *s);
 
 typedef struct endpoint endpoint;
 
+// Indices vary slowest for the batch index, slower for earlier dimensions.
 // mask may be NULL
-endpoint *new_endpoint_unit(int size, float *values, char *mask);
-endpoint *new_endpoint_positive(int size, float *values, char *mask);
-endpoint *new_endpoint_categorical(int size, float *values, char *mask);
-endpoint *new_endpoint_masked(endpoint *child);
-// This not fully general (it doesn't allow the creation of rectangular
-// endpoints with non-leaf children), but let's delay making the API more
-// complicated until we know we need it.
-//
-// Indices vary slowest for the batch index, slower for earlier product
-// dimensions, and lower indices correspond to earlier sum dimensions.
-// Currently only the unit, positive, and categorical tags are supported.
-endpoint *new_endpoint_rectangle(int size, structure_tag child_type, dimensions *d, float *values, char *mask);
-endpoint *new_endpoint_heterogeneous(int size);
+endpoint *new_endpoint_tensor(int batch_size, int dim_count, game_constant *lens, float *values, char *mask);
+endpoint *new_endpoint_vector(game_constant len, endpoint **es);
+endpoint *new_endpoint_dictionary();
 void endpoint_add_child(endpoint *parent, char *name, endpoint *child);
 
 structure_tag endpoint_get_tag(endpoint *e);
-// only valid for heterogeneous endpoints
-void endpoint_get_child_names(int *ret_size, char ***ret_names, endpoint *e);
-endpoint *endpoint_get_named_child(endpoint *parent, char *name);
-// only valid for masked endpoints
-endpoint *endpoint_get_masked_child(endpoint *parent);
-// only valid for rectangle endpoints
-dimensions *endpoint_get_dimensions(endpoint *e);
-// valid for unit, positive, categorical, rectangle unit, rectangle positive,
-// or rectangle categorical
-//
-// Indices vary in the same way as for new_endpoint_rectangle.
-void endpoint_read(structure_tag *ret_tag, int *ret_size, float **ret_values, endpoint *e);
+// Indices vary in the same way as for new_endpoint_tensor.
+void endpoint_read_tensor(int *ret_batch_size, int *ret_dim_count, game_constant **ret_lens, float **ret_values, endpoint *e);
+void endpoint_read_vector(game_constant *ret_len, endpoint ***ret_children, endpoint *e);
+void endpoint_read_dictionary(int *ret_count, char ***ret_names, endpoint ***ret_children, endpoint *parent);
 
 void dump_endpoint(endpoint *e);
-// use when finished with the names returned by an endpoint_get_child_names
-void free_endpoint_names(int size, char **names);
-// use when finished with the values returned by an endpoint_read
-void free_endpoint_values(float *values);
+void free_endpoint_read_tensor_constants(game_constant *lens);
+void free_endpoint_read_tensor_values(float *values);
+void free_endpoint_read_vector(game_constant c, endpoint **children);
+void free_endpoint_read_dictionary(int count, char **names, endpoint **children);
 void free_endpoint(endpoint *e);

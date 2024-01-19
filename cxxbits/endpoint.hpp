@@ -11,13 +11,7 @@ extern "C" {
 #include "endpoint.h"
 }
 
-struct _dimensions;
-typedef std::shared_ptr<_dimensions> sp_dimensions;
-struct dimensions {
-	sp_dimensions ref;
-	dimensions(_dimensions *ref): ref(ref) {}
-	dimensions(sp_dimensions ref): ref(ref) {}
-};
+int eval_game_constants(std::vector<game_constant> cs);
 
 struct _structure;
 typedef std::shared_ptr<_structure> sp_structure;
@@ -35,66 +29,29 @@ struct endpoint {
 	endpoint(sp_endpoint ref): ref(ref) {}
 };
 
-struct _dimensions {
-	dimensions_tag tag;
-	std::vector<game_constant> constants;
-
-	_dimensions(dimensions_tag tag, int capacity_hint = 0)
-		: tag(tag)
-	{ constants.reserve(capacity_hint); }
-
-	int eval() const;
-	std::vector<int64_t> to_vector() const;
-};
-
 struct _structure {
 	structure_tag tag;
-	sp_dimensions tensor_dimensions;
-	std::map<std::string, sp_structure> children;
-
-	// caller MUST choose from unit, positive, categorical, or heterogeneous
-	_structure(structure_tag tag)
-		: tag(tag)
-	{}
-
-	// masked
-	_structure(sp_structure child)
-		: tag(tag_masked)
-	{ children.emplace("", child); }
-
-	// rectangle
-	_structure(sp_dimensions d, sp_structure child)
-		: tag(tag_rectangle), tensor_dimensions(d)
-	{ children.emplace("", child); }
+	leaf_type ty;
+	std::vector<game_constant> dims; // will have size 1 for tag_vector
+	sp_structure vec;
+	std::map<std::string, sp_structure> dict;
 
 	void add_child(std::string name, sp_structure child);
-	const sp_structure child() const { return children.at(""); }
-	bool is_leaf() { return tag == tag_unit || tag == tag_positive || tag == tag_categorical; }
  };
 
 struct _endpoint {
-	int size; // how large is the batch; this value is replicated at all levels
-	sp_structure shape;
-	std::map<std::string, sp_endpoint> heterogeneous_children;
-	// Normally, rectangle structures contain leaf types like unit or positive.
-	// These will be stored in rectangle_values. But they technically can
-	// contain other things, so we need to be able to deal with that. In other
-	// cases, the substructures will be stored in rectangle_children, with the
-	// first index varying fastest.
-	std::vector<sp_endpoint> rectangle_children;
-	torch::Tensor rectangle_values;
-	sp_dimensions rectangle_dimensions;
-	torch::Tensor masked_values;
-
-	_endpoint(int size, _structure *shape)
-		: size(size), shape(shape)
-	{}
+	int size; // how large is the batch; this value is replicated at all levels, and may be -1 to indicate an indeterminate size
+	structure_tag tag;
+	std::vector<game_constant> dims; // will have size 1 for tag_vector
+	torch::Tensor values, mask;
+	std::vector<sp_endpoint> vec;
+	std::map<std::string, sp_endpoint> dict;
 
 	void add_child(std::string name, sp_endpoint child);
-	bool has_masks() const;
-	void initialize_tensors(float *values, char *mask);
+	bool assert_size(int other_size);
 };
 
-std::ostream &operator<<(std::ostream &os, const _dimensions &d);
+std::ostream &dump_game_constant(std::ostream &os, const game_constant c);
+std::ostream &dump_leaf_type(std::ostream &os, const leaf_type ty);
 std::ostream &operator<<(std::ostream &os, const _structure &d);
 std::ostream &operator<<(std::ostream &os, const _endpoint &d);

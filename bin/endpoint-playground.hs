@@ -13,7 +13,6 @@ main = do
 	for_ exGameConstant \gc -> do
 		putStr if evalGameConstant gc == evalCGameConstant (cGameConstant_ gc) then "✓" else "❌"
 		putStrLn $ " " ++ show gc
-	testAll cDimensions hsDimensions dumpDimensions exDimensions
 	testDump cStructure dumpStructure exStructure
 	testAll cEndpoint hsEndpoint dumpEndpoint exEndpointNoMasks
 
@@ -30,42 +29,40 @@ testRoundtrip c hs = traverse_ \a -> do
 	putStrLn $ " " ++ show a
 
 exGameConstant :: [GameConstant]
-exGameConstant = [minBound..maxBound]
-
-exDimensions :: [Dimensions]
-exDimensions = [Sum [], Product [], Sum [GCColors], Product [GCShapes], Sum [minBound..maxBound], Product [minBound..maxBound]]
+exGameConstant = [GCColors, GCShapes, GCWidth, GCHeight, GCOrientations] ++ map GCMiscellaneous [0..10]
 
 exStructure :: [Structure]
-exStructure = map SLeaf [minBound..maxBound] ++ tail [undefined
-	, SHeterogeneous $ tail [undefined
-		,("A", SMasked (SRectangle (Product [GCWidth, GCHeight]) (SLeaf Categorical)))
-		,("B", SRectangle (Sum [GCColors, GCShapes]) (SHeterogeneous [("C", SLeaf Unit)]))
-		,("C", SHeterogeneous [])
+exStructure = [STensor ty [] | ty <- [minBound..maxBound]] ++ tail [undefined
+	, STensor Unit [GCMiscellaneous 3]
+	, STensor Unit [GCShapes]
+	, SVector GCShapes (STensor Unit [])
+	, SDictionary []
+	, SDictionary $ tail [undefined
+		,("A", STensor Categorical [GCWidth, GCHeight])
+		,("B", SVector GCColors (SVector GCShapes (SDictionary [("C", STensor Unit [])])))
+		,("C", SDictionary [])
 		]
 	]
 
 exEndpointNoMasks :: [Endpoint]
 exEndpointNoMasks =
-	[ ELeaf ty elems
-	| ty <- [minBound..maxBound]
-	, elems <- [V.empty, V.fromList [1..10]]
+	[ EFullTensor [] (generate bs \[i] -> fromIntegral i)
+	| bs <- [[0], [10]]
 	] ++
-	[ eRectangle ty dims len
-	| ty <- [minBound..maxBound]
-	, len <- [0, 3]
-	, con <- [Sum, Product]
-	, args <- [[], [GCOrientations, GCColors]]
-	, let dims = con args
+	[ eFullTensor len dims
+	| len <- [0, 3]
+	, dims <- [[], [GCOrientations, GCColors]]
 	] ++ tail [undefined
-	, EHeterogeneous $ tail [undefined
-		, ("A", eRectangle Categorical (Product [GCOrientations, GCColors]) 3)
-		, ("B", eRectangle Unit (Sum [GCColors, GCShapes]) 3)
+	, EDictionary $ tail [undefined
+		, ("A", eFullTensor 3 [GCOrientations, GCColors])
+		, ("B", eFullTensor 3 [GCColors, GCShapes])
+		, ("C", EVector GCOrientations [eFullTensor 3 [], eFullTensor 3 []])
 		]
 	]
 	where
 
-eRectangle :: LeafType -> Dimensions -> Int -> Endpoint
-eRectangle ty dims len = ERectangle ty dims (rectVals len dims)
+eFullTensor :: Int -> [GameConstant] -> Endpoint
+eFullTensor len dims = EFullTensor dims (tensorVals len dims)
 
-rectVals :: Int -> Dimensions -> StridedVector CFloat
-rectVals len dims = generate (len:evalDimensions dims) (fromIntegral . foldl' (\n i -> 10*n+i) 9)
+tensorVals :: Int -> [GameConstant] -> StridedVector CFloat
+tensorVals len dims = generate (len:evalGameConstants dims) (fromIntegral . foldl' (\n i -> 10*n+i) 9)

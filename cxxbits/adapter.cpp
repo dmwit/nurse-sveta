@@ -339,11 +339,6 @@ class ResidualImpl : public torch::nn::Module {
 };
 TORCH_MODULE(Residual);
 
-bool is_board(sp_dimensions dims) {
-	auto n = dims->constants.size();
-	return dims->tag == tag_product && n >= 2 && dims->constants[n-2] == c_width && dims->constants[n-1] == c_height;
-}
-
 class Encoder;
 class EncoderImpl : public torch::nn::Module {
 	public:
@@ -353,7 +348,8 @@ class EncoderImpl : public torch::nn::Module {
 	private:
 		torch::nn::Linear linear;
 		Conv2dReLUInit convolution;
-		std::map<std::string, Encoder> heterogeneous_children;
+		std::map<std::string, Encoder> dict;
+		std::vector<Encoder> vec;
 };
 TORCH_MODULE(Encoder);
 
@@ -369,112 +365,106 @@ class DecoderImpl : public torch::nn::Module {
 };
 TORCH_MODULE(Decoder);
 
+bool is_board(std::vector<game_constant> dims) {
+	auto n = dims.size();
+	return n >= 2 && dims[n-2] == c_width && dims[n-1] == c_height;
+}
+
 EncoderImpl::EncoderImpl(sp_structure s, std::string name)
 	: linear(nullptr), convolution(nullptr)
 {
 	switch(s->tag) {
-		case tag_unit:
-		case tag_positive:
-		case tag_categorical:
-			linear = torch::nn::Linear(1, FILTERS);
-			register_module(name + ".linear", linear);
-			break;
-		case tag_masked:
-			std::cerr << "Masked encoder inputs are not supported. (But you can do the masking yourself.)" << std::endl;
-			throw 0;
-		case tag_rectangle:
-			if(s->child()->is_leaf()) {
-				if(is_board(s->tensor_dimensions)) {
-					convolution = Conv2dReLUInit(s->tensor_dimensions->eval()/CELLS, FILTERS, LEAKAGE);
-				} else {
-					linear = torch::nn::Linear(s->tensor_dimensions->eval(), FILTERS);
-				}
+		case tag_tensor:
+			if(is_board(s->dims)) {
+				convolution = Conv2dReLUInit(eval_game_constants(s->dims)/CELLS, FILTERS, LEAKAGE);
+				register_module(name + ".convolution", convolution);
 			} else {
-				std::cerr << "Nested rectangular encoder inputs are not yet implemented." << std::endl;
-				throw 0;
+				linear = torch::nn::Linear(eval_game_constants(s->dims), FILTERS);
+				register_module(name + ".linear", linear);
 			}
 			break;
-		case tag_heterogeneous:
-			for(auto it = s->children.begin(); it != s->children.end(); ++it) {
-				auto child_name = name + "." + it->first;
-				auto child = std::shared_ptr<EncoderImpl>(new EncoderImpl(it->second, child_name));
-				heterogeneous_children.emplace(it->first, child);
+		case tag_vector:
+			for(int i = 0; i < eval_game_constant(s->dims[0]); i++) {
+				auto child_name = name + "." + std::to_string(i);
+				auto child = Encoder(s->vec, child_name);
+				vec.push_back(child);
+				register_module(child_name, child);
+			}
+			break;
+		case tag_dictionary:
+			for(auto pair: s->dict) {
+				// TODO: escape pair.first, I guess
+				auto child_name = name + "." + pair.first;
+				auto child = Encoder(pair.second, child_name);
+				dict.emplace(pair.first, child);
 				register_module(child_name, child);
 			}
 			break;
 		default:
-			std::cerr << "Invalid tag " + std::to_string(s->tag) + " in EncoderImpl()." << std::endl;
+			std::cerr << "Invalid tag " << s->tag << " in EncoderImpl()." << std::endl;
 			throw 0;
 	}
 }
+
+const int TODO = 0;
 
 DecoderImpl::DecoderImpl(sp_structure s, std::string name)
 	: convolution(nullptr), shape(s)
 {
 	switch(s->tag) {
-		case tag_unit:
-		case tag_positive:
-		case tag_categorical:
-			std::cerr << "Linear decoding is not yet implemented." << std::endl;
-			throw 0;
-		case tag_masked:
-			std::cerr << "Masked decoding is not yet implemented." << std::endl;
-			throw 0;
-		case tag_rectangle:
-			std::cerr << "Rectangular decoding is not yet implemented." << std::endl;
-			throw 0;
-		case tag_heterogeneous:
-			std::cerr << "Heterogeneous decoding is not yet implemented." << std::endl;
-			throw 0;
+		case tag_tensor:
+			std::cerr << "Tensor decoding setup is not yet implemented." << std::endl;
+			throw TODO;
+		case tag_vector:
+			std::cerr << "Vector decoding setup is not yet implemented." << std::endl;
+			throw TODO;
+		case tag_dictionary:
+			std::cerr << "Dictionary decoding setup is not yet implemented." << std::endl;
+			throw TODO;
 		default:
-			std::cerr << "Invalid tag " + std::to_string(s->tag) + " in DecoderImpl()." << std::endl;
+			std::cerr << "Invalid tag " << s->tag << " in DecoderImpl()." << std::endl;
 			throw 0;
 	}
 }
 
 torch::Tensor EncoderImpl::forward(sp_endpoint e) {
-	int64_t n;
-	switch(e->shape->tag) {
-		case tag_unit:
-		case tag_positive:
-		case tag_categorical:
-			n = e->rectangle_values.size(0);
-			return linear
-				->forward(e->rectangle_values.reshape({n, 1}))
-				.reshape({n, FILTERS, 1, 1})
-				.expand({n, FILTERS, BOARD_WIDTH, BOARD_HEIGHT});
-		case tag_masked:
-			std::cerr << "Masked encoder inputs are not supported. (But you can do the masking yourself.)" << std::endl;
-			throw 0;
-		case tag_rectangle:
-			std::cerr << "Rectangular encoding is not yet implemented." << std::endl;
-			throw 0;
-		case tag_heterogeneous:
-			std::cerr << "Heterogeneous encoding is not yet implemented." << std::endl;
+	switch(e->tag) {
+		case tag_tensor: {
+				int64_t n = e->values.size(0), sz_per_batch = eval_game_constants(e->dims);
+				if(is_board(e->dims)) {
+					return convolution->forward(e->values.reshape({n, sz_per_batch/CELLS, BOARD_WIDTH, BOARD_HEIGHT}));
+				} else {
+					return linear
+						->forward(e->values.reshape({n, sz_per_batch}))
+						.reshape({n, FILTERS, 1, 1})
+						.expand({n, FILTERS, BOARD_WIDTH, BOARD_HEIGHT});
+				}
+			}
+		case tag_vector:
+			std::cerr << "Vector encoding is not yet implemented." << std::endl;
+			throw TODO;
+		case tag_dictionary:
+			std::cerr << "Dictionary encoding is not yet implemented." << std::endl;
+			throw TODO;
 		default:
-			std::cerr << "Invalid tag " + std::to_string(e->shape->tag) + " in EncoderImpl.forward()." << std::endl;
+			std::cerr << "Invalid tag " << e->tag << " in EncoderImpl::forward()." << std::endl;
 			throw 0;
 	}
 }
 
 sp_endpoint DecoderImpl::forward(torch::Tensor t) {
 	switch(shape->tag) {
-		case tag_unit:
-		case tag_positive:
-		case tag_categorical:
-			std::cerr << "Linear decoding is not yet implemented." << std::endl;
-			throw 0;
-		case tag_masked:
-			std::cerr << "Masked decoding is not yet implemented." << std::endl;
-			throw 0;
-		case tag_rectangle:
-			std::cerr << "Rectangular decoding is not yet implemented." << std::endl;
-			throw 0;
-		case tag_heterogeneous:
-			std::cerr << "Heterogeneous decoding is not yet implemented." << std::endl;
-			throw 0;
+		case tag_tensor:
+			std::cerr << "Tensor decoding is not yet implemented." << std::endl;
+			throw TODO;
+		case tag_vector:
+			std::cerr << "Vector decoding is not yet implemented." << std::endl;
+			throw TODO;
+		case tag_dictionary:
+			std::cerr << "Dictionary decoding is not yet implemented." << std::endl;
+			throw TODO;
 		default:
-			std::cerr << "Invalid tag " + std::to_string(shape->tag) + " in DecoderImpl.forward()." << std::endl;
+			std::cerr << "Invalid tag " << shape->tag << " in DecoderImpl::forward()." << std::endl;
 			throw 0;
 	}
 }

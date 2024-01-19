@@ -10,90 +10,69 @@ int eval_game_constant(game_constant c) {
 		case c_width: return BOARD_WIDTH;
 		case c_height: return BOARD_HEIGHT;
 		case c_orientations: return ORIENTATIONS;
-		default: throw 0;
-	}
-}
-
-void dump_game_constant(game_constant c) { flush(cout << c); }
-ostream &operator<<(ostream &os, const game_constant &c) {
-	return os << eval_game_constant(c);
-}
-
-int _dimensions::eval() const {
-	int n;
-	switch(tag) {
-		case tag_product:
-			n = 1;
-			for(auto c: constants) n *= eval_game_constant(c);
-			break;
-		case tag_sum:
-			n = 0;
-			for(auto c: constants) n += eval_game_constant(c);
-			break;
 		default:
-			cerr << "Invalid dimensions tag " << tag << endl;
+			if(c < 0) return ~c;
+			cerr << "Invalid game constant " << c << endl;
 			throw 0;
 	}
-	return n;
 }
 
-vector<int64_t> _dimensions::to_vector() const {
-	vector<int64_t> d;
-	switch(tag) {
-		case tag_product:
-			d.reserve(constants.size());
-			for(auto c: constants) d.push_back(eval_game_constant(c));
-			break;
-		case tag_sum:
-			d.push_back(0);
-			for(auto c: constants) d[0] += eval_game_constant(c);
-			break;
+int eval_game_constants(vector<game_constant> cs) {
+	int v = 1;
+	for(auto c: cs) v *= eval_game_constant(c);
+	return v;
+}
+
+void dump_game_constant(game_constant c) { flush(dump_game_constant(cout, c)); }
+ostream &dump_game_constant(ostream &os, const game_constant c) {
+	os << eval_game_constant(c);
+	switch(c) {
+		case c_colors: return os << "(colors)";
+		case c_shapes: return os << "(shapes)";
+		case c_width: return os << "(width)";
+		case c_height: return os << "(height)";
+		case c_orientations: return os << "(orientations)";
 		default:
-			cerr << "Invalid dimensions tag " << tag << endl;
+			if(c<0) return os;
+			cerr << "Invalid game constant " << c << "in operator<<." << endl;
 			throw 0;
 	}
-	return d;
 }
 
-dimensions *new_dimensions_product(int capacity_hint) { return new dimensions(new _dimensions(tag_product, capacity_hint)); }
-dimensions *new_dimensions_sum(int capacity_hint) { return new dimensions(new _dimensions(tag_sum, capacity_hint)); }
-void dimensions_add_constant(dimensions *d, game_constant c) { d->ref->constants.push_back(c); }
-dimensions_tag dimensions_get_tag(dimensions *d) { return d->ref->tag; }
-void dimensions_read(int *ret_length, game_constant **ret_constants, dimensions *d) {
-	auto constants = d->ref->constants;
-	*ret_length = constants.size();
-	*ret_constants = new game_constant[*ret_length];
-	copy(constants.begin(), constants.end(), *ret_constants);
-}
-
-void free_dimensions_constants(game_constant *constants) { delete constants; }
-void free_dimensions(dimensions *d) { delete d; }
-
-void dump_dimensions(dimensions *d) { flush(cout << *(d->ref)); }
-ostream &operator<<(ostream &os, const _dimensions &d) {
-	char identity = '!';
-	char op = '!';
-	switch(d.tag) {
-		case tag_product: identity = '1'; op = 'x'; break;
-		case tag_sum: identity = '0'; op = '+'; break;
+void dump_leaf_type(leaf_type ty) { flush(dump_leaf_type(cout, ty)); }
+ostream &dump_leaf_type(ostream &os, const leaf_type ty) {
+	switch(ty) {
+		case type_unit: return os << "sigmoid";
+		case type_positive: return os << "exp";
+		case type_categorical: return os << "softmax";
 		default:
-			cerr << "Invalid dimensions tag " << d.tag << endl;
+			cerr << "Invalid leaf type " << ty << endl;
 			throw 0;
 	}
-
-	if(d.constants.size() == 0) os << identity;
-	else os << d.constants[0];
-	for(int i = 1; i < d.constants.size(); ++i)
-		os << op << d.constants[i];
-	return os;
 }
 
-structure *new_structure_unit() { return new structure(new _structure(tag_unit)); }
-structure *new_structure_positive() { return new structure(new _structure(tag_positive)); }
-structure *new_structure_categorical() { return new structure(new _structure(tag_categorical)); }
-structure *new_structure_heterogeneous() { return new structure(new _structure(tag_heterogeneous)); }
-structure *new_structure_masked(structure *child) { return new structure(new _structure(child->ref)); }
-structure *new_structure_rectangle(dimensions *d, structure *child) { return new structure(new _structure(d->ref, child->ref)); }
+structure *new_structure_tensor(leaf_type ty, int dim_count, game_constant *lens) {
+	_structure *s = new _structure();
+	s->tag = tag_tensor;
+	s->ty = ty;
+	s->dims.reserve(dim_count);
+	copy(lens, lens+dim_count, back_inserter(s->dims));
+	return new structure(s);
+}
+
+structure *new_structure_vector(game_constant len, structure *child) {
+	_structure *s = new _structure();
+	s->tag = tag_vector;
+	s->dims.push_back(len);
+	s->vec = child->ref;
+	return new structure(s);
+}
+
+structure *new_structure_dictionary() {
+	_structure *s = new _structure();
+	s->tag = tag_dictionary;
+	return new structure(s);
+}
 
 void structure_add_child(structure *parent, char *name, structure *child) { parent->ref->add_child(name, child->ref); }
 void _structure::add_child(string name, sp_structure child) {
@@ -106,40 +85,36 @@ void _structure::add_child(string name, sp_structure child) {
 		throw 0;
 	};
 
-	if(tag != tag_heterogeneous) die("Adding children is only allowed for heterogeneous structures.");
-	if(!children.emplace(name, child).second)
-		die("Attempted to add a child to a heterogeneous structure that already contained that name.");
+	if(tag != tag_dictionary) die("Adding children is only allowed for dictionaries.");
+	if(!dict.emplace(name, child).second)
+		die("Attempted to add a child to a dictionary that already contained that name.");
 }
 
 void free_structure(structure *s) { delete s; }
 
-ostream &dump_leaf_type(ostream &os, const structure_tag tag) {
-	switch(tag) {
-		case tag_unit: return os << "sigmoid";
-		case tag_positive: return os << "exp";
-		case tag_categorical: return os << "softmax";
-		default:
-			cerr << "Invalid leaf type " << tag << endl;
-			throw 0;
-	}
+ostream &dump_dimensions(ostream &os, const std::vector<game_constant> &gcs) {
+	if(gcs.size() == 0) os << '1';
+	else dump_game_constant(os, gcs[0]);
+	for(int i = 1; i < gcs.size(); ++i)
+		dump_game_constant(os << 'x', gcs[i]);
+	return os;
 }
 
 void dump_structure(structure *s) { flush(cout << *(s->ref)); }
 ostream &operator<<(ostream &os, const _structure &s) {
 	switch(s.tag) {
-		case tag_unit:
-		case tag_positive:
-		case tag_categorical: return dump_leaf_type(os, s.tag);
-		case tag_masked: return os << '!' << *s.child();
-		case tag_rectangle: return os << *s.tensor_dimensions << ' ' << *s.child();
-		case tag_heterogeneous:
+		case tag_tensor:
+			return dump_leaf_type(dump_dimensions(os, s.dims) << ' ', s.ty);
+		case tag_vector:
+			return dump_game_constant(os, s.dims[0]) << ' ' << *s.vec;
+		case tag_dictionary:
 			os << '{';
-			{ auto it(s.children.begin());
-				if(it != s.children.end()) while(true) {
+			{ auto it(s.dict.begin());
+				if(it != s.dict.end()) while(true) {
 					// TODO: escape it->first in some sensible way
 					os << it->first << ": " << *it->second;
 					++it;
-					if(it == s.children.end()) break;
+					if(it == s.dict.end()) break;
 					os << ", ";
 				}
 			}
@@ -150,36 +125,64 @@ ostream &operator<<(ostream &os, const _structure &s) {
 	}
 }
 
-endpoint *new_endpoint_leaf(structure_tag tag, int size, float *values, char *mask) {
-	_endpoint *e = new _endpoint(size, new _structure(tag));
-	e->initialize_tensors(values, mask);
+endpoint *new_endpoint_tensor(int batch_size, int dim_count, game_constant *lens, float *values, char *mask) {
+	_endpoint *e = new _endpoint();
+	e->size = batch_size;
+	e->tag = tag_tensor;
+	copy(lens, lens+dim_count, back_inserter(e->dims));
+
+	vector<int64_t> dims;
+	dims.reserve(e->dims.size()+1);
+	dims.push_back(batch_size);
+	transform(e->dims.begin(), e->dims.end(), back_inserter(dims), eval_game_constant);
+
+	// TODO: Is to() is blocking by default? This clone() is there to make sure
+	// we don't pass control back to Haskell and free the data before we're
+	// done reading it, but if to() already doesn't return until it's done
+	// reading, then the clone is unnecessary.
+	e->values = torch::from_blob(values, dims, CPU_FLOAT).clone().to(torch::kCUDA);
+	if(NULL != mask) e->mask = torch::from_blob(mask, dims, CPU_BYTE).clone().to(torch::kCUDA);
+
 	return new endpoint(e);
 }
 
-endpoint *new_endpoint_unit(int size, float *values, char *mask) { return new_endpoint_leaf(tag_unit, size, values, mask); }
-endpoint *new_endpoint_positive(int size, float *values, char *mask) { return new_endpoint_leaf(tag_positive, size, values, mask); }
-endpoint *new_endpoint_categorical(int size, float *values, char *mask) { return new_endpoint_leaf(tag_categorical, size, values, mask); }
+// TODO: we should assert that all the children have the same shape
+endpoint *new_endpoint_vector(game_constant len, endpoint **es) {
+	_endpoint *e = new _endpoint();
+	e->size = -1;
+	e->tag = tag_vector;
+	e->dims.push_back(len);
+	const int n = eval_game_constant(len);
 
-endpoint *new_endpoint_masked(endpoint *child) {
-	if(!child->ref->has_masks()) {
-		cerr << "Attempted to declare an endpoint as masked, but some children do not have masks." << endl;
-		cerr << "Child endpoint: " << *(child->ref) << endl;
-		throw 0;
+	for(int i = 0; i < n; i++) {
+		auto child = es[i]->ref;
+		auto die = [&](string err) {
+			cerr << err << endl;
+			cerr << "Parent size: " << e->size << endl;
+			cerr << "Child size: " << child->size << endl;
+			cerr << "Parent: " << *e << endl;
+			cerr << "Child: " << *child << endl;
+			throw 0;
+		};
+
+		if(!e->assert_size(child->size)) die("Tried to make a vector endpoint with children of differing batch sizes.");
+		// do not delete this line as an optimization after everything is
+		// working; we want the modifications it potentially does to the child
+		// to happen
+		if(!child->assert_size(e->size)) die("The impossible happened: a parent's size was compatible with its child's, but not vice versa. This is likely a bug in assert_size, not in the caller of new_endpoint_vector.");
+		e->vec.push_back(child);
 	}
 
-	_endpoint *e = new _endpoint(*(child->ref));
-	e->shape = sp_structure(new _structure(e->shape));
 	return new endpoint(e);
 }
 
-endpoint *new_endpoint_rectangle(int size, structure_tag child_type, dimensions *d, float *values, char *mask) {
-	_endpoint *e = new _endpoint(size, new _structure(d->ref, sp_structure(new _structure(child_type))));
-	e->rectangle_dimensions = d->ref;
-	e->initialize_tensors(values, mask);
+endpoint *new_endpoint_dictionary() {
+	_endpoint *e = new _endpoint();
+	e->size = -1;
+	e->tag = tag_dictionary;
 	return new endpoint(e);
 }
 
-endpoint *new_endpoint_heterogeneous(int size) { return new endpoint(new _endpoint(size, new _structure(tag_heterogeneous))); }
 void endpoint_add_child(endpoint *parent, char *name, endpoint *child) { parent->ref->add_child(name, child->ref); }
 void _endpoint::add_child(string name, sp_endpoint child) {
 	auto die = [&](string err) {
@@ -191,196 +194,135 @@ void _endpoint::add_child(string name, sp_endpoint child) {
 		throw 0;
 	};
 
-	if(shape->tag != tag_heterogeneous) die("Adding children is only allowed for heterogeneous endpoints.");
-	if(size != child->size) die("Parent endpoint and child endpoint have differing batch sizes (" + to_string(size) + " in parent, " + to_string(child->size) + " in child).");
-	if(!heterogeneous_children.emplace(name, child).second)
-		die("Attempted to add a child to a heterogeneous endpoint that already contained that name.");
+	if(tag != tag_dictionary) die("Adding children is only allowed for dictionaries.");
+	if(!assert_size(child->size)) die("Parent endpoint and child endpoint have differing batch sizes (" + to_string(size) + " in parent, " + to_string(child->size) + " in child).");
+	// do not delete this line as an optimization after everything is working;
+	// we want the modifications it potentially does to the child to happen
+	if(!child->assert_size(size)) die("The impossible happened: a parent's size was compatible with its child's, but not vice versa. This is likely a bug in assert_size, not in the caller of _endpoint::add_child.");
+	if(!dict.emplace(name, child).second) die("Attempted to add a child to a dictionary that already contained that name.");
 }
 
-structure_tag endpoint_get_tag(endpoint *e) { return e->ref->shape->tag; }
+bool _endpoint::assert_size(int other_size) {
+	if(other_size < 0) return true;
+	if(size < 0) {
+		size = other_size;
+		switch(tag) {
+			case tag_tensor: return true;
+			case tag_vector:
+				return all_of(vec.begin(), vec.end(), [&](auto child) { return child->assert_size(other_size); });
+			case tag_dictionary:
+				return all_of(dict.begin(), dict.end(), [&](auto child) { return child.second->assert_size(other_size); });
+			default:
+				cerr << "Invalid tag found in assert_size: " << tag << endl;
+				throw 0;
+		}
+	}
+	return size == other_size;
+}
 
-void endpoint_get_child_names(int *ret_size, char ***ret_names, endpoint *_e) {
+structure_tag endpoint_get_tag(endpoint *e) { return e->ref->tag; }
+
+void endpoint_read_tensor(int *ret_batch_size, int *ret_dim_count, game_constant **ret_lens, float **ret_values, endpoint *_e) {
 	auto e = _e->ref;
+	if(e->tag != tag_tensor) {
+		cerr << "Reading tensor contents is only allowed for tensor endpoints." << endl;
+		cerr << "Current endpoint: " << *e << endl;
+		throw 0;
+	}
+
+	*ret_batch_size = max(0, e->size);
+	*ret_dim_count = e->dims.size();
+	*ret_lens = new game_constant[*ret_dim_count];
+	copy(e->dims.begin(), e->dims.end(), *ret_lens);
+
+	int len = *ret_batch_size * eval_game_constants(e->dims);
+	*ret_values = new float[len];
+	auto contiguous = e->values.to(torch::kCPU).contiguous();
+	copy(contiguous.data_ptr<float>(), contiguous.data_ptr<float>() + len, *ret_values);
+}
+
+void endpoint_read_vector(game_constant *ret_len, endpoint ***ret_children, endpoint *_e) {
+	auto e = _e->ref;
+	if(e->tag != tag_vector) {
+		cerr << "Accessing recursive children is only allowed for vector endpoints." << endl;
+		cerr << "Current endpoint: " << *e << endl;
+		throw 0;
+	}
+
+	*ret_len = e->dims[0];
+	const int len_val = eval_game_constant(*ret_len);
+	*ret_children = new endpoint *[len_val];
+	for(int i = 0; i < len_val; i++) {
+		(*ret_children)[i] = new endpoint(e->vec[i]);
+	}
+}
+
+void endpoint_read_dictionary(int *ret_count, char ***ret_names, endpoint ***ret_children, endpoint *_parent) {
+	auto parent = _parent->ref;
+	if(parent->tag != tag_dictionary) {
+		cerr << "Accessing named children is only allowed for dictionary endpoints." << endl;
+		cerr << "Current endpoint: " << *parent << endl;
+		throw 0;
+	}
+
+	*ret_count = parent->dict.size();
+	*ret_names = new char *[*ret_count];
+	*ret_children = new endpoint *[*ret_count];
+
 	int i = 0;
-	*ret_names = new char *[*ret_size = e->heterogeneous_children.size()];
-	for(auto pair: e->heterogeneous_children) {
+	for(auto pair: parent->dict) {
 		(*ret_names)[i] = new char[pair.first.size()+1];
 		copy(pair.first.begin(), pair.first.end(), (*ret_names)[i]);
+		(*ret_names)[i][pair.first.size()] = 0;
+		(*ret_children)[i] = new endpoint(pair.second);
 		++i;
 	}
 }
 
-endpoint *endpoint_get_named_child(endpoint *_parent, char *name) {
-	auto parent = _parent->ref;
-
-	// This *should* be redundant. That is, if the tag is not heterogeneous, it
-	// ought to be the case that the heterogeneous_children field is empty, and
-	// so the next try-catch will fall into the catch block. But let's just be
-	// super paranoid.
-	if(parent->shape->tag != tag_heterogeneous) {
-		cerr << "Retrieving children is only allowed for heterogeneous endpoints." << endl;
-		cerr << "Details on the attempted retrieval:" << endl;
-		cerr << "\tParent: " << *parent << endl;
-		cerr << "\tName: " << name << endl;
-		throw 0;
+void free_endpoint_read_tensor_constants(game_constant *lens) { delete lens; }
+void free_endpoint_read_tensor_values(float *values) { delete values; }
+void free_endpoint_read_vector(game_constant c, endpoint **children) {
+	const int len = eval_game_constant(c);
+	for(int i = 0; i < len; i++) delete children[i];
+	delete children;
+}
+void free_endpoint_read_dictionary(int count, char **names, endpoint **children) {
+	for(int i = 0; i < count; i++) {
+		delete names[i];
+		delete children[i];
 	}
-
-	try { return new endpoint(parent->heterogeneous_children.at(name)); }
-	catch(const out_of_range &err) {
-		cerr << err.what() << endl;
-		cerr << "Current shape is " << *(parent->shape) << endl;
-		throw err;
-	}
+	delete names;
+	delete children;
 }
-
-endpoint *endpoint_get_masked_child(endpoint *_parent) {
-	auto parent = _parent->ref;
-	if(parent->shape->tag != tag_masked) {
-		cerr << "Retrieving the masked child is only allowed for masked endpoints." << endl;
-		cerr << "Endpoint was " << *parent << endl;
-		throw 0;
-	}
-	auto child = new _endpoint(*parent);
-	child->shape = child->shape->child();
-	return new endpoint(child);
-}
-
-dimensions *endpoint_get_dimensions(endpoint *_e) {
-	auto e = _e->ref;
-	if(e->shape->tag != tag_rectangle) {
-		cerr << "Retrieving dimensions is only allowed for rectangle endpoints." << endl;
-		cerr << "Endpoint was " << *e << endl;
-		throw 0;
-	}
-
-	return new dimensions(e->rectangle_dimensions);
-}
-
-void endpoint_read(structure_tag *ret_tag, int *ret_size, float **ret_values, endpoint *_e) {
-	auto e = _e->ref;
-	int len = e->size;
-
-	*ret_tag = e->shape->tag;
-	*ret_size = e->size;
-	*ret_values = NULL;
-
-	switch(e->shape->tag) {
-		case tag_unit:
-		case tag_positive:
-		case tag_categorical:
-			break;
-		case tag_rectangle:
-			switch(e->shape->child()->tag) {
-				case tag_unit:
-				case tag_positive:
-				case tag_categorical:
-					*ret_tag = e->shape->child()->tag;
-					len *= e->rectangle_dimensions->eval();
-					break;
-				default:
-					cerr << "Reading endpoints is only allowed for unit, positive, categorical, or the rectangular version of these." << endl;
-					cerr << "Attempted to read from " << *e << endl;
-					throw 0;
-			}
-			break;
-		default:
-			cerr << "Reading endpoints is only allowed for unit, positive, categorical, or the rectangular version of these." << endl;
-			cerr << "Attempted to read from " << *e << endl;
-			throw 0;
-	}
-
-	*ret_values = new float[len];
-	// TODO: is it safe to inline the definition of contiguous, or will that
-	// lead to the Tensor being destructed before memcpy finishes?
-	auto contiguous = e->rectangle_values.to(torch::kCPU).contiguous();
-	memcpy(*ret_values, contiguous.data_ptr<float>(), len*sizeof(**ret_values));
-}
-
-void _endpoint::initialize_tensors(float *values, char *mask) {
-	vector<int64_t> dims;
-	if(rectangle_dimensions) dims = rectangle_dimensions->to_vector();
-	dims.insert(dims.begin(), size);
-
-	// TODO: Is to() is blocking by default? This clone() is there to make sure
-	// we don't pass control back to Haskell and free the data before we're
-	// done reading it, but if to() already doesn't return until it's done
-	// reading, then the clone is unnecessary.
-	rectangle_values = torch::from_blob(values, dims, CPU_FLOAT).clone().to(torch::kCUDA);
-	if(NULL != mask) masked_values = torch::from_blob(mask, dims, CPU_BYTE).clone().to(torch::kCUDA);
-}
-
-bool _endpoint::has_masks() const {
-	auto ushape = shape;
-	while(shape->tag == tag_masked) ushape = shape->child();
-	switch(ushape->tag) {
-		case tag_unit:
-		case tag_positive:
-		case tag_categorical:
-			return masked_values.defined();
-		case tag_rectangle:
-			if(ushape->child()->is_leaf())
-				return masked_values.defined();
-			else {
-				for(auto e: rectangle_children)
-					if(!e->has_masks()) return false;
-				return true;
-			}
-		case tag_heterogeneous:
-			for(auto nm_child: heterogeneous_children)
-				if(!nm_child.second->has_masks()) return false;
-			return true;
-	}
-
-	cerr << "Invalid tag discovered in has_masks()" << endl;
-	cerr << "Current endpoint: " << *this << endl;
-	throw 0;
-}
-
-void free_endpoint_names(int size, char **names) {
-	for(int i=0; i<size; ++i) free(names[i]);
-	free(names);
-}
-
-void free_endpoint_values(float *values) { delete values; }
 void free_endpoint(endpoint *e) { delete e; }
 
 void dump_endpoint(endpoint *e) { flush(cout << *(e->ref)); }
 ostream &operator<<(ostream &os, const _endpoint &e) {
-	auto print_leaf = [&](structure_tag tag) {
-		dump_leaf_type(os, tag) << " " << e.rectangle_values;
-		if(e.masked_values.defined())
-			os << '@' << e.masked_values;
-	};
-
-	switch(e.shape->tag) {
-		case tag_unit:
-		case tag_positive:
-		case tag_categorical: print_leaf(e.shape->tag); return os;
-		case tag_masked:
-			{ auto e_child(e);
-				e_child.shape = e.shape->child();
-				return os << "!" << e_child;
-			}
-		case tag_rectangle:
-			if(e.shape->child()->is_leaf()) print_leaf(e.shape->child()->tag);
-			else {
-				cerr << "<TODO: pretty-print complex rectangular values>";
-				throw 0;
-			}
+	switch(e.tag) {
+		case tag_tensor:
+			os << e.values;
+			if(e.mask.defined()) os << '@' << e.mask;
 			return os;
-		case tag_heterogeneous:
+		case tag_vector:
+			os << '[';
+			if(e.vec.size() > 0) os << *e.vec[0];
+			for(int i = 1; i < e.vec.size(); i++) {
+				os << ", " << *e.vec[i];
+			}
+			return os << ']';
+		case tag_dictionary:
 			os << '{';
-			{ auto it = e.heterogeneous_children.begin();
-				if(it != e.heterogeneous_children.end()) while(true) {
+			{ auto it = e.dict.begin();
+				if(it != e.dict.end()) while(true) {
 					os << it->first << ": " << *it->second;
 					++it;
-					if(it == e.heterogeneous_children.end()) break;
+					if(it == e.dict.end()) break;
 					os << ", ";
 				}
 			}
 			return os << '}';
 	}
 
-	cerr << "Invalid endpoint tag " << e.shape->tag << endl;
+	cerr << "Invalid endpoint tag " << e.tag << endl;
 	throw 0;
 }
