@@ -360,6 +360,7 @@ class DecoderImpl : public torch::nn::Module {
 		sp_endpoint forward(torch::Tensor t);
 
 	private:
+		torch::nn::Linear linear;
 		Conv2dReLUInit convolution;
 		sp_structure shape;
 };
@@ -377,10 +378,10 @@ EncoderImpl::EncoderImpl(sp_structure s, std::string name)
 		case tag_tensor:
 			if(is_board(s->dims)) {
 				convolution = Conv2dReLUInit(eval_game_constants(s->dims)/CELLS, FILTERS, LEAKAGE);
-				register_module(name + ".convolution", convolution);
+				register_module(name + ":convolution", convolution);
 			} else {
 				linear = torch::nn::Linear(eval_game_constants(s->dims), FILTERS);
-				register_module(name + ".linear", linear);
+				register_module(name + ":linear", linear);
 			}
 			break;
 		case tag_vector:
@@ -394,7 +395,7 @@ EncoderImpl::EncoderImpl(sp_structure s, std::string name)
 		case tag_dictionary:
 			for(auto pair: s->dict) {
 				// TODO: escape pair.first, I guess
-				auto child_name = name + "." + pair.first;
+				auto child_name = name + ":" + pair.first;
 				auto child = Encoder(pair.second, child_name);
 				dict.emplace(pair.first, child);
 				register_module(child_name, child);
@@ -409,12 +410,18 @@ EncoderImpl::EncoderImpl(sp_structure s, std::string name)
 const int TODO = 0;
 
 DecoderImpl::DecoderImpl(sp_structure s, std::string name)
-	: convolution(nullptr), shape(s)
+	: linear(nullptr), convolution(nullptr), shape(s)
 {
 	switch(s->tag) {
 		case tag_tensor:
-			std::cerr << "Tensor decoding setup is not yet implemented." << std::endl;
-			throw TODO;
+			if(is_board(s->dims)) {
+				convolution = Conv2dReLUInit(FILTERS, eval_game_constants(s->dims)/CELLS, LEAKAGE);
+				register_module(name + ":convolution", convolution);
+			} else {
+				linear = torch::nn::Linear(BODY_SIZE, eval_game_constants(s->dims));
+				register_module(name + ":linear", linear);
+			}
+			break;
 		case tag_vector:
 			std::cerr << "Vector decoding setup is not yet implemented." << std::endl;
 			throw TODO;
@@ -453,10 +460,26 @@ torch::Tensor EncoderImpl::forward(sp_endpoint e) {
 }
 
 sp_endpoint DecoderImpl::forward(torch::Tensor t) {
+	auto e = new _endpoint();
+	e->size = t.size(0);
+	e->tag = shape->tag;
+	e->dims = shape->dims;
+
 	switch(shape->tag) {
 		case tag_tensor:
-			std::cerr << "Tensor decoding is not yet implemented." << std::endl;
-			throw TODO;
+			e->values = is_board(shape->dims)
+				? convolution->forward(t)
+				: linear->forward(t.reshape({e->size, BODY_SIZE}));
+			e->values = e->values.reshape(tensor_dimensions(e->size, shape->dims));
+			switch(shape->ty) {
+				case type_unit: e->values = e->values.sigmoid(); break;
+				case type_positive: // fall through
+				case type_categorical: e->values = e->values.exp(); break;
+				default:
+					std::cerr << "Invalid leaf type " << shape->ty << " in DecoderImpl::forward()." << std::endl;
+					throw 0;
+				}
+			break;
 		case tag_vector:
 			std::cerr << "Vector decoding is not yet implemented." << std::endl;
 			throw TODO;
@@ -467,6 +490,8 @@ sp_endpoint DecoderImpl::forward(torch::Tensor t) {
 			std::cerr << "Invalid tag " << shape->tag << " in DecoderImpl::forward()." << std::endl;
 			throw 0;
 	}
+
+	return sp_endpoint(e);
 }
 
 class NextNetImpl : public torch::nn::Module {
@@ -609,6 +634,26 @@ torch::Tensor detailed_loss(Net &net, const Batch &batch, float *loss_scaling_ar
 	loss /= n;
 	loss *= loss_scaling_tensor;
 	return loss;
+}
+
+extern "C" {
+	NextNet *next_sample_net(bool training, structure *in, structure *out);
+	void next_discard_net(NextNet *net);
+	endpoint *next_evaluate_net(NextNet *net, endpoint *in);
+}
+
+NextNet *next_sample_net(bool training, structure *in, structure *out) {
+	NextNet *net = new NextNet(in->ref, out->ref);
+	// TODO: does this do everything we want? turn off autograd e.g.?
+	(*net)->train(training);
+	return net;
+}
+
+void next_discard_net(NextNet *net) { delete net; }
+
+endpoint *next_evaluate_net(NextNet *net, endpoint *in) {
+	torch::NoGradGuard g;
+	return new endpoint((*net)->forward(in->ref));
 }
 
 void tensorcpy(float *out, const torch::Tensor &in) {

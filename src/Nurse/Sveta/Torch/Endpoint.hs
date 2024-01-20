@@ -1,6 +1,6 @@
 module Nurse.Sveta.Torch.Endpoint (
 	-- * Endpoints
-	Endpoint(..), CEndpoint,
+	Endpoint(..), CEndpoint, gcEndpoint,
 	cEndpoint, hsEndpoint,
 	unmask,
 	dumpEndpoint,
@@ -9,7 +9,7 @@ module Nurse.Sveta.Torch.Endpoint (
 	generate, generateM,
 	(!), the,
 	-- * Structures
-	Structure(..), CStructure,
+	Structure(..), CStructure, gcStructure,
 	cStructure,
 	dumpStructure,
 	-- * Leaf types
@@ -31,11 +31,11 @@ import Data.Vector.Storable (Vector)
 import Foreign
 import Foreign.C
 import GHC.Stack
+import Nurse.Sveta.Torch.CWrapper
+import Nurse.Sveta.Util
 import System.IO
 
 import qualified Data.Vector.Storable as V
-
-import Nurse.Sveta.Util
 
 data GameConstant = GCMiscellaneous Int | GCColors | GCShapes | GCWidth | GCHeight | GCOrientations deriving (Eq, Ord, Read, Show)
 newtype CGameConstant = CGameConstant CInt deriving newtype (Eq, Ord, Show, Storable)
@@ -154,7 +154,7 @@ data Structure
 	| SDictionary [(String, Structure)]
 	deriving (Eq, Ord, Read, Show)
 
-newtype CStructure = CStructure (ForeignPtr CStructure)
+newtype CStructure = CStructure (ForeignPtr CStructure) deriving newtype CWrapper
 
 foreign import ccall "new_structure_tensor" c_new_structure_tensor :: CLeafType -> CInt -> Ptr CGameConstant -> IO (Ptr CStructure)
 foreign import ccall "new_structure_vector" c_new_structure_vector :: CGameConstant -> Ptr CStructure -> IO (Ptr CStructure)
@@ -170,19 +170,17 @@ cStructure :: Structure -> IO CStructure
 cStructure = (gcStructure =<<) . \case
 	STensor ty cs -> withArrayLen (map cGameConstant_ cs) (c_new_structure_tensor (cLeafType_ ty) . fromIntegral)
 	SVector c s -> do
-		CStructure fp <- cStructure s
-		withForeignPtr fp $ c_new_structure_vector (cGameConstant_ c)
+		c_s <- cStructure s
+		withUnwrapped c_s $ c_new_structure_vector (cGameConstant_ c)
 	SDictionary dict -> do
 		parent <- c_new_structure_dictionary
-		for_ dict \(nm, child) ->
-			withCString nm \c_nm ->
-			cStructure child >>= \(CStructure fp) ->
-			withForeignPtr fp \c_child ->
-			c_structure_add_child parent c_nm c_child
+		for_ dict \(nm, child) -> do
+			fpChild <- cStructure child
+			withUnwrapped (WCS nm, fpChild) \(c_nm, c_child) -> c_structure_add_child parent c_nm c_child
 		pure parent
 
 dumpStructure :: CStructure -> IO ()
-dumpStructure (CStructure s) = hFlush stdout >> withForeignPtr s c_dump_structure
+dumpStructure s = hFlush stdout >> withUnwrapped s c_dump_structure
 
 data StridedVector a = StridedVector
 	{ strides :: [Int]
@@ -241,7 +239,7 @@ unmask = \case
 	EVector c es -> EVector c (unmask <$> es)
 	EDictionary dict -> EDictionary (fmap (fmap unmask) dict)
 
-newtype CEndpoint = CEndpoint (ForeignPtr CEndpoint)
+newtype CEndpoint = CEndpoint (ForeignPtr CEndpoint) deriving newtype CWrapper
 
 foreign import ccall "new_endpoint_tensor" c_new_endpoint_tensor :: CInt -> CInt -> Ptr CGameConstant -> Ptr CFloat -> Ptr CChar -> IO (Ptr CEndpoint)
 foreign import ccall "new_endpoint_vector" c_new_endpoint_vector :: CGameConstant -> Ptr (Ptr CEndpoint) -> IO (Ptr CEndpoint)
@@ -262,7 +260,7 @@ gcEndpoint :: Ptr CEndpoint -> IO CEndpoint
 gcEndpoint = fmap CEndpoint . newForeignPtr c_free_endpoint
 
 endpointGetTag :: CEndpoint -> IO CStructureTag
-endpointGetTag (CEndpoint e) = withForeignPtr e c_endpoint_get_tag
+endpointGetTag e = withUnwrapped e c_endpoint_get_tag
 
 cEndpoint :: HasCallStack => Endpoint -> IO CEndpoint
 cEndpoint = (gcEndpoint =<<) . \case
@@ -280,25 +278,20 @@ cEndpoint = (gcEndpoint =<<) . \case
 	EVector c es
 		| evalGameConstant c == length es ->
 			traverse cEndpoint es >>= \es' ->
-			withEndpointArray es' \c_es ->
+			withUnwrapped es' \c_es ->
 			withArray c_es \c_es' ->
 			c_new_endpoint_vector (cGameConstant_ c) c_es'
 	EDictionary dict -> do
 		parent <- c_new_endpoint_dictionary
-		for_ dict \(nm, child) ->
-			withCString nm \c_nm ->
-			cEndpoint child >>= \(CEndpoint fp) ->
-			withForeignPtr fp \c_child ->
-			c_endpoint_add_child parent c_nm c_child
+		for_ dict \(nm, child) -> do
+			fpChild <- cEndpoint child
+			withUnwrapped (WCS nm, fpChild) \(c_nm, c_child) ->
+				c_endpoint_add_child parent c_nm c_child
 		pure parent
 	e -> error $ "Unsupported endpoint in cEndpoint: " ++ show e
 
-withEndpointArray :: [CEndpoint] -> ([Ptr CEndpoint] -> IO a) -> IO a
-withEndpointArray [] f = f []
-withEndpointArray (CEndpoint fp:es) f = withForeignPtr fp \c_e -> withEndpointArray es (f . (c_e:))
-
 hsEndpoint :: HasCallStack => CEndpoint -> IO Endpoint
-hsEndpoint (CEndpoint fp) = withForeignPtr fp hsEndpoint_
+hsEndpoint e = withUnwrapped e hsEndpoint_
 
 hsEndpoint_ :: HasCallStack => Ptr CEndpoint -> IO Endpoint
 hsEndpoint_ c_e = do
@@ -352,4 +345,4 @@ hsEndpoint_ c_e = do
 	   | otherwise -> error $ "Unknown structure tag " ++ show tag ++ " in hsEndpoint"
 
 dumpEndpoint :: CEndpoint -> IO ()
-dumpEndpoint (CEndpoint e) = hFlush stdout >> withForeignPtr e c_dump_endpoint
+dumpEndpoint e = hFlush stdout >> withUnwrapped e c_dump_endpoint

@@ -23,6 +23,14 @@ int eval_game_constants(vector<game_constant> cs) {
 	return v;
 }
 
+vector<int64_t> tensor_dimensions(int64_t batch_size, const vector<game_constant> &dims) {
+	vector<int64_t> out;
+	out.reserve(dims.size()+1);
+	out.push_back(batch_size);
+	transform(dims.begin(), dims.end(), back_inserter(out), eval_game_constant);
+	return out;
+}
+
 void dump_game_constant(game_constant c) { flush(dump_game_constant(cout, c)); }
 ostream &dump_game_constant(ostream &os, const game_constant c) {
 	os << eval_game_constant(c);
@@ -130,11 +138,7 @@ endpoint *new_endpoint_tensor(int batch_size, int dim_count, game_constant *lens
 	e->size = batch_size;
 	e->tag = tag_tensor;
 	copy(lens, lens+dim_count, back_inserter(e->dims));
-
-	vector<int64_t> dims;
-	dims.reserve(e->dims.size()+1);
-	dims.push_back(batch_size);
-	transform(e->dims.begin(), e->dims.end(), back_inserter(dims), eval_game_constant);
+	auto dims = tensor_dimensions(batch_size, e->dims);
 
 	// TODO: Is to() is blocking by default? This clone() is there to make sure
 	// we don't pass control back to Haskell and free the data before we're

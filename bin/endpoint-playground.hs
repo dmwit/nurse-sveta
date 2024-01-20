@@ -5,6 +5,7 @@ import System.IO
 
 import qualified Data.Vector.Storable as V
 
+import Nurse.Sveta.Torch
 import Nurse.Sveta.Torch.Endpoint
 
 main :: IO ()
@@ -15,6 +16,17 @@ main = do
 		putStrLn $ " " ++ show gc
 	testDump cStructure dumpStructure exStructure
 	testAll cEndpoint hsEndpoint dumpEndpoint exEndpointNoMasks
+
+	putStrLn "net evaluation time!"
+	net <- nextNetSample True
+		(STensor Positive [GCWidth, GCHeight])
+		(STensor Positive [GCWidth, GCHeight])
+	let i = EFullTensor [GCWidth, GCHeight] (generate [2, 8, 16] \[n, i, c] -> fromIntegral n*0.2 + fromIntegral i*0.03 + fromIntegral c*0.005)
+	o <- nextNetEvaluate net i
+	putStr "Input: "
+	print i
+	putStr "\n\nOutput: "
+	print o
 
 testAll :: (Eq a, Show a) => (a -> IO b) -> (b -> IO a) -> (b -> IO ()) -> [a] -> IO ()
 testAll c hs dump as = testDump c dump as >> testRoundtrip c hs as

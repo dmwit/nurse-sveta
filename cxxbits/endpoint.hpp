@@ -12,6 +12,7 @@ extern "C" {
 }
 
 int eval_game_constants(std::vector<game_constant> cs);
+std::vector<int64_t> tensor_dimensions(int64_t batch_size, const std::vector<game_constant> &dims);
 
 struct _structure;
 typedef std::shared_ptr<_structure> sp_structure;

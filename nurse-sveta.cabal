@@ -81,6 +81,7 @@ library
                         , Nurse.Sveta.STM.BatchProcessor
                         , Nurse.Sveta.Tomcats
                         , Nurse.Sveta.Torch
+                        , Nurse.Sveta.Torch.CWrapper
                         , Nurse.Sveta.Torch.Endpoint
                         , Nurse.Sveta.Util
                         , Nurse.Sveta.Widget

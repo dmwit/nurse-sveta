@@ -1,6 +1,8 @@
 {-# Language AllowAmbiguousTypes #-}
 
 module Nurse.Sveta.Torch (
+	NextNet, nextNetSample, nextNetEvaluate,
+
 	Net, netSample, netEvaluation, netTrain, netDetailedLoss, netIntrospect,
 	netSave, netLoadForInference, netLoadForTraining,
 	HSTensor(..), Prediction(..), NetIntrospection(..),
@@ -27,6 +29,8 @@ import Data.Vector (Vector)
 import Dr.Mario.Model
 import Dr.Mario.Model.Internal
 import Nurse.Sveta.Tomcats
+import Nurse.Sveta.Torch.CWrapper
+import Nurse.Sveta.Torch.Endpoint
 import Nurse.Sveta.Util
 import Foreign
 import Foreign.C
@@ -106,6 +110,27 @@ netDetailedLoss net_ batch_ scaling_ = withUnwrapped (net_, batch_) $ \(net, bat
 		withLossScaling scaling_ $ \scaling -> do
 			cxx_detailed_loss net out batch scaling
 			zipWith (\ty w -> (ty, realToFrac w)) [minBound..] <$> peekArray lossTypes out
+
+foreign import ccall "next_sample_net" cxx_next_sample_net :: Bool -> Ptr CStructure -> Ptr CStructure -> IO (Ptr NextNet)
+foreign import ccall "&next_discard_net" cxx_next_discard_net :: FinalizerPtr NextNet
+foreign import ccall "next_evaluate_net" cxx_next_evaluate_net :: Ptr NextNet -> Ptr CEndpoint -> IO (Ptr CEndpoint)
+
+newtype NextNet = NextNet (ForeignPtr NextNet) deriving newtype CWrapper
+
+gcNextNet :: Ptr NextNet -> IO NextNet
+gcNextNet ptr = NextNet <$> newForeignPtr cxx_next_discard_net ptr
+
+nextNetSample :: Bool -> Structure -> Structure -> IO NextNet
+nextNetSample training i o = do
+	c_i <- cStructure i
+	c_o <- cStructure o
+	withUnwrapped (c_i, c_o) \(ptr_i, ptr_o) -> cxx_next_sample_net training ptr_i ptr_o >>= gcNextNet
+
+nextNetEvaluate :: NextNet -> Endpoint -> IO Endpoint
+nextNetEvaluate net_ i = do
+	c_i <- cEndpoint i
+	withUnwrapped (net_, c_i) \(net, ptr_i) ->
+		cxx_next_evaluate_net net ptr_i >>= gcEndpoint >>= hsEndpoint
 
 class OneHot a where
 	indexCount :: Int
@@ -648,31 +673,6 @@ numPriors = rotations*cellCount; logNumPriors = logRotations+logCellCount
 -- TODO: really should add gravity here
 numScalars = 6 -- frames, log(frames), sqrt(frames), starting viruses, log(starting viruses), 1/sqrt(starting viruses) (in that order)
 lossTypes = 1 + fromEnum (maxBound :: LossType)
-
-class CWrapper a where
-	type Unwrapped a
-	withUnwrapped :: a -> (Unwrapped a -> IO b) -> IO b
-
-instance CWrapper (ForeignPtr a) where
-	type Unwrapped (ForeignPtr a) = Ptr a
-	withUnwrapped = withForeignPtr
-
-instance CWrapper () where
-	type Unwrapped () = ()
-	withUnwrapped _ f = f ()
-
-instance (CWrapper a, CWrapper b) => CWrapper (a, b) where
-	type Unwrapped (a, b) = (Unwrapped a, Unwrapped b)
-	withUnwrapped (wa, wb) f = withUnwrapped wa $ \a -> withUnwrapped wb $ \b -> f (a, b)
-
-instance CWrapper a => CWrapper [a] where
-	type Unwrapped [a] = [Unwrapped a]
-	withUnwrapped = withMany withUnwrapped
-
-newtype WrappedCString = WCS String
-instance CWrapper WrappedCString where
-	type Unwrapped WrappedCString = CString
-	withUnwrapped (WCS s) = withCString s
 
 mallocZeroArray :: Storable a => Int -> IO (Ptr a)
 mallocZeroArray n = mallocArray n >>= zeroArray n
