@@ -53,6 +53,7 @@ struct _endpoint {
 };
 
 std::ostream &dump_game_constant(std::ostream &os, const game_constant c);
+std::ostream &dump_game_constants(std::ostream &os, const std::vector<game_constant> &gcs);
 std::ostream &dump_leaf_type(std::ostream &os, const leaf_type ty);
 std::ostream &operator<<(std::ostream &os, const _structure &d);
 std::ostream &operator<<(std::ostream &os, const _endpoint &d);

@@ -111,12 +111,12 @@ evalCGameConstant = fromIntegral . c_eval_game_constant
 dumpGameConstant :: CGameConstant -> IO ()
 dumpGameConstant c = hFlush stdout >> c_dump_game_constant c
 
-data LeafType = Unit | Positive | Categorical deriving (Bounded, Enum, Eq, Ord, Read, Show)
+data LeafType = Unit | Positive | Categorical | Probability deriving (Bounded, Enum, Eq, Ord, Read, Show)
 newtype CLeafType = CLeafType CInt deriving newtype (Eq, Ord, Show, Storable)
 
 -- See [NOTE: FFI, switch, and linking].
-c_type_unit, c_type_positive, c_type_categorical :: CLeafType
-c_type_unit:c_type_positive:c_type_categorical:_ = CLeafType <$> [0..]
+c_type_unit, c_type_positive, c_type_categorical, c_type_probability :: CLeafType
+c_type_unit:c_type_positive:c_type_categorical:c_type_probability:_ = CLeafType <$> [0..]
 
 foreign import ccall "dump_leaf_type" c_dump_leaf_type :: CLeafType -> IO ()
 
@@ -125,6 +125,7 @@ cLeafType_ = \case
 	Unit -> c_type_unit
 	Positive -> c_type_positive
 	Categorical -> c_type_categorical
+	Probability -> c_type_probability
 
 cLeafType :: LeafType -> IO CLeafType
 cLeafType = pure . cLeafType_
@@ -134,6 +135,7 @@ hsLeafType_ ty
 	| ty == c_type_unit = Unit
 	| ty == c_type_positive = Positive
 	| ty == c_type_categorical = Categorical
+	| ty == c_type_probability = Probability
 	| otherwise = error $ "Unknown leaf type " ++ show ty
 
 hsLeafType :: HasCallStack => CLeafType -> IO LeafType

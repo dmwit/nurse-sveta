@@ -1,7 +1,7 @@
 {-# Language AllowAmbiguousTypes #-}
 
 module Nurse.Sveta.Torch (
-	NextNet, nextNetSample, nextNetEvaluate,
+	NextNet, nextNetSample, nextNetEvaluation, nextNetDetailedLoss,
 
 	Net, netSample, netEvaluation, netTrain, netDetailedLoss, netIntrospect,
 	netSave, netLoadForInference, netLoadForTraining,
@@ -113,7 +113,9 @@ netDetailedLoss net_ batch_ scaling_ = withUnwrapped (net_, batch_) $ \(net, bat
 
 foreign import ccall "next_sample_net" cxx_next_sample_net :: Bool -> Ptr CStructure -> Ptr CStructure -> IO (Ptr NextNet)
 foreign import ccall "&next_discard_net" cxx_next_discard_net :: FinalizerPtr NextNet
+foreign import ccall "next_net_get_decoder_shape" cxx_next_net_get_decoder_shape :: Ptr NextNet -> IO (Ptr CStructure)
 foreign import ccall "next_evaluate_net" cxx_next_evaluate_net :: Ptr NextNet -> Ptr CEndpoint -> IO (Ptr CEndpoint)
+foreign import ccall "next_detailed_loss" cxx_next_detailed_loss :: Ptr CStructure -> Ptr CEndpoint -> Ptr CEndpoint -> IO (Ptr CEndpoint)
 
 newtype NextNet = NextNet (ForeignPtr NextNet) deriving newtype CWrapper
 
@@ -126,11 +128,21 @@ nextNetSample training i o = do
 	c_o <- cStructure o
 	withUnwrapped (c_i, c_o) \(ptr_i, ptr_o) -> cxx_next_sample_net training ptr_i ptr_o >>= gcNextNet
 
-nextNetEvaluate :: NextNet -> Endpoint -> IO Endpoint
-nextNetEvaluate net_ i = do
+nextNetEvaluation :: NextNet -> Endpoint -> IO Endpoint
+nextNetEvaluation net_ i = do
 	c_i <- cEndpoint i
 	withUnwrapped (net_, c_i) \(net, ptr_i) ->
 		cxx_next_evaluate_net net ptr_i >>= gcEndpoint >>= hsEndpoint
+
+nextNetDetailedLoss :: NextNet -> Endpoint -> Endpoint -> IO Endpoint
+nextNetDetailedLoss net_ i o = do
+	c_i <- cEndpoint i
+	c_o <- cEndpoint o
+	withUnwrapped (net_, (c_i, c_o)) \(net, (ptr_i, ptr_o)) -> do
+		c_shape <- cxx_next_net_get_decoder_shape net >>= gcStructure
+		c_o' <- cxx_next_evaluate_net net ptr_i >>= gcEndpoint
+		withUnwrapped (c_shape, c_o') \(ptr_shape, ptr_o') ->
+			cxx_next_detailed_loss ptr_shape ptr_o ptr_o' >>= gcEndpoint >>= hsEndpoint
 
 class OneHot a where
 	indexCount :: Int

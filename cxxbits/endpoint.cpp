@@ -50,9 +50,10 @@ ostream &dump_game_constant(ostream &os, const game_constant c) {
 void dump_leaf_type(leaf_type ty) { flush(dump_leaf_type(cout, ty)); }
 ostream &dump_leaf_type(ostream &os, const leaf_type ty) {
 	switch(ty) {
-		case type_unit: return os << "sigmoid";
-		case type_positive: return os << "exp";
-		case type_categorical: return os << "softmax";
+		case type_unit: return os << "sigmoid/L2";
+		case type_positive: return os << "exp/L2";
+		case type_categorical: return os << "softmax/KL divergence";
+		case type_probability: return os << "sigmoid/cross entropy";
 		default:
 			cerr << "Invalid leaf type " << ty << endl;
 			throw 0;
@@ -100,8 +101,8 @@ void _structure::add_child(string name, sp_structure child) {
 
 void free_structure(structure *s) { delete s; }
 
-ostream &dump_dimensions(ostream &os, const std::vector<game_constant> &gcs) {
-	if(gcs.size() == 0) os << '1';
+ostream &dump_game_constants(ostream &os, const vector<game_constant> &gcs) {
+	if(gcs.size() == 0) os << '-';
 	else dump_game_constant(os, gcs[0]);
 	for(int i = 1; i < gcs.size(); ++i)
 		dump_game_constant(os << 'x', gcs[i]);
@@ -112,7 +113,7 @@ void dump_structure(structure *s) { flush(cout << *(s->ref)); }
 ostream &operator<<(ostream &os, const _structure &s) {
 	switch(s.tag) {
 		case tag_tensor:
-			return dump_leaf_type(dump_dimensions(os, s.dims) << ' ', s.ty);
+			return dump_leaf_type(dump_game_constants(os, s.dims) << ' ', s.ty);
 		case tag_vector:
 			return dump_game_constant(os, s.dims[0]) << ' ' << *s.vec;
 		case tag_dictionary:

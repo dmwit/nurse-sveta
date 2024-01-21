@@ -29,8 +29,10 @@ typedef int leaf_type;
 #define type_unit ((leaf_type)0)
 // 0-∞, squared-error loss
 #define type_positive ((leaf_type)1)
-// positive, sums to 1, cross-entropy loss
+// positive, sums to 1, Kullback-Leibler divergence
 #define type_categorical ((leaf_type)2)
+// 0-1, cross-entropy loss
+#define type_probability ((leaf_type)3)
 
 void dump_leaf_type(leaf_type ty);
 
