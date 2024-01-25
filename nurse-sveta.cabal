@@ -24,6 +24,7 @@ common shared
                         , filepath ^>=1.4
                         , gi-cairo-render ^>=0.1
                         , gi-gtk ^>=4.0.8
+                        , haskell-gi-base ^>=0.26
                         , maryodel ^>=0.1
                         , mwc-random ^>=0.15
                         , text ^>=2.1
@@ -135,3 +136,7 @@ executable nurse-sveta-evaluate-stalls
 executable nurse-sveta-endpoint-playground
     import:             executable
     main-is:            endpoint-playground.hs
+
+executable nurse-sveta-endpoint-browser
+    import:             executable
+    main-is:            endpoint-browser.hs

@@ -44,6 +44,9 @@ module Nurse.Sveta.Widget (
 
 	Tracker,
 	newTracker, tWhenUpdated, tWhenUpdated_,
+
+	-- * Utilities
+	tshow, tread,
 	) where
 
 import Control.Concurrent

@@ -2,7 +2,7 @@ module Nurse.Sveta.Torch.Endpoint (
 	-- * Endpoints
 	Endpoint(..), CEndpoint, gcEndpoint,
 	cEndpoint, hsEndpoint,
-	unmask,
+	unmask, batchSize,
 	dumpEndpoint,
 	-- * Strided vectors
 	StridedVector,
@@ -240,6 +240,13 @@ unmask = \case
 	EMaskedTensor cs vals mask -> EFullTensor cs vals
 	EVector c es -> EVector c (unmask <$> es)
 	EDictionary dict -> EDictionary (fmap (fmap unmask) dict)
+
+batchSize :: Endpoint -> Maybe Int
+batchSize = \case
+	EFullTensor _ (StridedVector { bounds = n:_ }) -> Just n
+	EMaskedTensor _ (StridedVector { bounds = n:_ }) _ -> Just n
+	EVector _ es -> asum (batchSize <$> es)
+	EDictionary dict -> asum (batchSize . snd <$> dict)
 
 newtype CEndpoint = CEndpoint (ForeignPtr CEndpoint) deriving newtype CWrapper
 

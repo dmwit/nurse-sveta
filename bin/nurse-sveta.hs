@@ -132,9 +132,6 @@ main = do
 	args <- getArgs
 	() <$ #run app (Just args)
 
-tshow :: Show a => a -> T.Text
-tshow = T.pack . show
-
 commaSeparatedNumber :: (Integral a, Show a) => a -> T.Text
 commaSeparatedNumber = T.pack . flip go "" where
 	go n = case n `quotRem` 1000 of
