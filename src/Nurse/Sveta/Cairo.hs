@@ -34,10 +34,10 @@ import Nurse.Sveta.Util
 -- with x increasing to the right and y increasing down. This converts to (0,0)
 -- at the bottom left, with x increasing to the right and y increasing up.
 --
--- A call to @initMath w0 h0 w1 h1@ takes converts a coordinate system in which
--- @(w0, h0)@ is just off-screen to the bottom right to a coordinate system in
--- which @(w1, h1)@ is just off-screen to the top right. If the aspect ratios
--- do not match, the image will appear stretched, so maybe try to avoid that.
+-- A call to @initMath w0 h0 w1 h1@ converts a coordinate system in which @(w0,
+-- h0)@ is just off-screen to the bottom right to a coordinate system in which
+-- @(w1, h1)@ is just off-screen to the top right. If the aspect ratios do not
+-- match, the image will appear stretched, so maybe try to avoid that.
 initMath :: Integral a => a -> a -> Double -> Double -> Render ()
 initMath w0 h0 w1 h1 = do
 	scale (fromIntegral w0 / w1) (-fromIntegral h0 / h1)
