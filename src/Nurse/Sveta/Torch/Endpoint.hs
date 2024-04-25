@@ -2,7 +2,7 @@ module Nurse.Sveta.Torch.Endpoint (
 	-- * Endpoints
 	Endpoint(..), CEndpoint, gcEndpoint,
 	cEndpoint, hsEndpoint,
-	unmask, batchSize,
+	unmask, batchSize, batchSize', outermostGameConstant,
 	dumpEndpoint,
 	-- * Strided vectors
 	StridedVector,
@@ -26,6 +26,7 @@ import Control.Applicative
 import Control.Exception
 import Control.Monad
 import Data.Foldable
+import Data.Maybe
 import Data.Traversable
 import Data.Vector.Storable (Vector)
 import Foreign
@@ -247,6 +248,17 @@ batchSize = \case
 	EMaskedTensor _ (StridedVector { bounds = n:_ }) _ -> Just n
 	EVector _ es -> asum (batchSize <$> es)
 	EDictionary dict -> asum (batchSize . snd <$> dict)
+
+-- | If the batch size is indeterminate, this returns 0.
+batchSize' :: Endpoint -> Int
+batchSize' = fromMaybe 0 . batchSize
+
+outermostGameConstant :: Endpoint -> Maybe GameConstant
+outermostGameConstant = \case
+	EFullTensor (gc:_) _ -> Just gc
+	EMaskedTensor (gc:_) _ _ -> Just gc
+	EVector gc _ -> Just gc
+	_ -> Nothing
 
 newtype CEndpoint = CEndpoint (ForeignPtr CEndpoint) deriving newtype CWrapper
 

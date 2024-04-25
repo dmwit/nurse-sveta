@@ -5,17 +5,28 @@ module Nurse.Sveta.Cairo (
 	pill, cell, setColor, neutral,
 	fitText, fitTexts, TextRequest(..),
 	-- * Heatmaps
-	--
-	-- | Heatmaps display a board with a colored background to convey numerical
-	-- information associated with positions on the board. When you supply
-	-- numerical information, all the numbers should be at unique board
-	-- positions that are in-bounds for the board. (This is not checked.)
+	-- | Heatmaps display a grid of colors to convey numerical information.
+	-- When you supply the information, you should reserve enough space on your
+	-- canvas to contain all the positions supplied. (This is not checked.)
 	-- Heatmaps also come with a legend describing the connection between
 	-- colors and numbers.
-	heatmapSizeRecommendation,
-	heatmap01, heatmap0Dyn, heatmap0Max, heatmapDyn, heatmapRange, heatmapWith,
+	--
+	-- ** Board heatmaps
+	-- | Board heatmaps also display a board and lookahead over the heatmap, to
+	-- make it easy to connect colors with positions on the board. All
+	-- positions in the data you supply should be in bounds for the board.
+	-- (This is not checked.)
+	boardHeatmapSizeRecommendation,
+	boardHeatmap01, boardHeatmap0Dyn, boardHeatmap0Max, boardHeatmapDyn, boardHeatmapRange, boardHeatmapWith,
+	-- ** Labeled heatmaps
+	-- | These are the no-frills version of heatmaps.
+	labeledHeatmapSizeRecommendation,
+	labeledHeatmap01, labeledHeatmap0Dyn, labeledHeatmap0Max, labeledHeatmapDyn, labeledHeatmapRange, labeledHeatmapWith,
+	-- ** Heatmap options
 	HeatmapOptions(..), heatmapOptions01, heatmapOptions0Max, heatmapOptionsDyn, heatmapOptionsDyn', heatmapOptionsRange,
 	bwGradient, saturatingGradient, bSaturatingGradient,
+	-- * Re-exports
+	Board, Cell(..), Color(..), Orientation(..), PillContent(..), Position(..), Render, Shape(..),
 	) where
 
 import Control.Applicative
@@ -243,73 +254,128 @@ unsafeGradient n = setSourceRGB (m*r + m'*r') (m*g + m'*g') (m*b + m'*b') where
 neutral :: Render ()
 neutral = setSourceRGB 0.8 0.8 0.8
 
--- | If you want to render a heatmap, you should reserve a rectangle of this
--- size to contain it and its legend.
-heatmapSizeRecommendation :: Board -> (Int, Int)
-heatmapSizeRecommendation = fmap succ . bottleSizeRecommendation
+-- | If you want to render a board heatmap, you should reserve a rectangle of
+-- this size to contain it and its legend.
+boardHeatmapSizeRecommendation :: Board -> (Int, Int)
+boardHeatmapSizeRecommendation = uncurry labeledHeatmapSizeRecommendation . bottleSizeRecommendation
 
 -- | Good for when all your numbers are in the range [0,1]. The gradient used
 -- for this makes it especially easy to spot values that are exactly 0 or
 -- exactly 1.
-heatmap01 :: Board -> PillContent -> [(Position, Float)] -> Render ()
-heatmap01 = heatmapWith heatmapOptions01
+boardHeatmap01 :: Board -> PillContent -> [(Position, Float)] -> Render ()
+boardHeatmap01 = boardHeatmapWith heatmapOptions01
 
 -- | Good for distributions. The gradient used makes it easy to spot values
 -- that are exactly 0 and scales the upper bound to be near the highest
 -- probability given.
-heatmap0Dyn :: Board -> PillContent -> [(Position, Float)] -> Render ()
-heatmap0Dyn b pc heat = heatmap0Max (maximum (0:map snd heat)) b pc heat
+boardHeatmap0Dyn :: Board -> PillContent -> [(Position, Float)] -> Render ()
+boardHeatmap0Dyn b pc heat = boardHeatmap0Max (maximum (0:map snd heat)) b pc heat
 
 -- | Good for distributions where you expect a probability to be at most a
 -- certain maximum. The gradient used makes it easy to spot values that are
 -- exactly 0, but doesn't treat values equal to the upper bound specially.
-heatmap0Max :: Float -> Board -> PillContent -> [(Position, Float)] -> Render ()
-heatmap0Max = heatmapWith . heatmapOptions0Max
+boardHeatmap0Max :: Float -> Board -> PillContent -> [(Position, Float)] -> Render ()
+boardHeatmap0Max = boardHeatmapWith . heatmapOptions0Max
 
 -- | Good when you don't really know ahead of time how big your numbers will
 -- be. Prints rounded versions of the min and max in the legend.
-heatmapDyn :: Board -> PillContent -> [(Position, Float)] -> Render ()
-heatmapDyn b pc heat = heatmapWith (heatmapOptionsDyn heat) b pc heat
+boardHeatmapDyn :: Board -> PillContent -> [(Position, Float)] -> Render ()
+boardHeatmapDyn b pc heat = boardHeatmapWith (heatmapOptionsDyn heat) b pc heat
 
 -- | Good for when you know what you want the smallest and largest values in
 -- your legend to be. The bounds are rounded before being printed in the
 -- legend.
-heatmapRange :: Float -> Float -> Board -> PillContent -> [(Position, Float)] -> Render ()
-heatmapRange lo hi = heatmapWith (heatmapOptionsRange lo hi)
+boardHeatmapRange :: Float -> Float -> Board -> PillContent -> [(Position, Float)] -> Render ()
+boardHeatmapRange lo hi = boardHeatmapWith (heatmapOptionsRange lo hi)
 
 -- | See 'HeatmapOptions' below for more on exactly what knobs you can tweak
 -- here.
-heatmapWith :: HeatmapOptions -> Board -> PillContent -> [(Position, Float)] -> Render ()
-heatmapWith ho b pc heat = do
+boardHeatmapWith :: HeatmapOptions -> Board -> PillContent -> [(Position, Float)] -> Render ()
+boardHeatmapWith ho b pc heat = do
 	rectangle 0 0 w h
 	neutral
 	fill
-	for_ heat $ \(Position x y, n) -> do
-		rectangle (fromIntegral x+1) (fromIntegral y+1) 1 1
-		hoGradient ho (rescale n)
-		fill
-	for_ (hoLegendLabels ho) $ \(l, r) -> do
-		let skip = 1.5*hoPadding ho + hoLabelWidth ho
-		withLinearPattern skip h (w-skip) h $ \pat -> do
-			forZipWithM_ [0..] gradientStops $ \i (r, g, b) ->
-				patternAddColorStopRGB pat (i / fromIntegral (length gradientStops - 1)) r g b
-			rectangle skip (h-0.75) (w-2*skip) 0.5
-			setSource pat
-			fill
-		setSourceRGB 0 0 0
-		fitTexts $ tail [undefined
-			, TextRequest { trX =                   0.5*hoPadding ho, trY = h-1, trW = hoLabelWidth ho, trH = 1, trText = l }
-			, TextRequest { trX = w-hoLabelWidth ho-0.5*hoPadding ho, trY = h-1, trW = hoLabelWidth ho, trH = 1, trText = r }
-			]
+	save
+	translate 1 1
+	heatmapGrid ho heat
+	restore
+	heatmapLabels ho w h
 	bottle b
 	lookaheadContent (width b) (height b) pc
 	where
-	(fromIntegral -> w, fromIntegral -> h) = heatmapSizeRecommendation b
+	(fromIntegral -> w, fromIntegral -> h) = boardHeatmapSizeRecommendation b
+
+-- | If you want to render a heatmap with given dimensions, but also want a
+-- legend above the map, you should reserve a rectangle with these dimensions
+-- to render it into.
+labeledHeatmapSizeRecommendation :: Int -> Int -> (Int, Int)
+labeledHeatmapSizeRecommendation w h = (w, h + 1)
+
+-- | Good for when all your numbers are in the range [0,1]. The gradient used
+-- for this makes it especially easy to spot values that are exactly 0 or
+-- exactly 1.
+labeledHeatmap01 :: Int -> Int -> [(Position, Float)] -> Render ()
+labeledHeatmap01 = labeledHeatmapWith heatmapOptions01
+
+-- | Good for distributions. The gradient used makes it easy to spot values
+-- that are exactly 0 and scales the upper bound to be near the highest
+-- probability given.
+labeledHeatmap0Dyn :: Int -> Int -> [(Position, Float)] -> Render ()
+labeledHeatmap0Dyn w h heat = labeledHeatmap0Max (maximum (0:map snd heat)) w h heat
+
+-- | Good for distributions where you expect a probability to be at most a
+-- certain maximum. The gradient used makes it easy to spot values that are
+-- exactly 0, but doesn't treat values equal to the upper bound specially.
+labeledHeatmap0Max :: Float -> Int -> Int -> [(Position, Float)] -> Render ()
+labeledHeatmap0Max = labeledHeatmapWith . heatmapOptions0Max
+
+-- | Good when you don't really know ahead of time how big your numbers will
+-- be. Prints rounded versions of the min and max in the legend.
+labeledHeatmapDyn :: Int -> Int -> [(Position, Float)] -> Render ()
+labeledHeatmapDyn w h heat = labeledHeatmapWith (heatmapOptionsDyn heat) w h heat
+
+-- | Good for when you know what you want the smallest and largest values in
+-- your legend to be. The bounds are rounded before being printed in the
+-- legend.
+labeledHeatmapRange :: Float -> Float -> Int -> Int -> [(Position, Float)] -> Render ()
+labeledHeatmapRange lo hi = labeledHeatmapWith (heatmapOptionsRange lo hi)
+
+labeledHeatmapWith :: HeatmapOptions -> Int -> Int -> [(Position, Float)] -> Render ()
+labeledHeatmapWith ho w_ h_ heat = do
+	rectangle 0 0 w h
+	neutral
+	fill
+	heatmapGrid ho heat
+	heatmapLabels ho w h
+	where
+	(fromIntegral -> w, fromIntegral -> h) = labeledHeatmapSizeRecommendation w_ h_
+
+heatmapGrid :: HeatmapOptions -> [(Position, Float)] -> Render ()
+heatmapGrid ho = traverse_ \(Position x y, n) -> do
+	rectangle (fromIntegral x) (fromIntegral y) 1 1
+	hoGradient ho (rescale n)
+	fill
+	where
 	rescale = case hoRescale ho of
 		Nothing -> id
 		Just (lo, hi)
 			| lo >= hi -> const 0.5
 			| otherwise -> \n -> (n-lo) / (hi-lo)
+
+heatmapLabels :: HeatmapOptions -> Double -> Double -> Render ()
+heatmapLabels ho w h = for_ (hoLegendLabels ho) \(l, r) -> do
+	let skip = 1.5*hoPadding ho + hoLabelWidth ho
+	withLinearPattern skip h (w-skip) h $ \pat -> do
+		forZipWithM_ [0..] gradientStops $ \i (r, g, b) ->
+			patternAddColorStopRGB pat (i / fromIntegral (length gradientStops - 1)) r g b
+		rectangle skip (h-0.75) (w-2*skip) 0.5
+		setSource pat
+		fill
+	setSourceRGB 0 0 0
+	fitTexts $ tail [undefined
+		, TextRequest { trX =                   0.5*hoPadding ho, trY = h-1, trW = hoLabelWidth ho, trH = 1, trText = l }
+		, TextRequest { trX = w-hoLabelWidth ho-0.5*hoPadding ho, trY = h-1, trW = hoLabelWidth ho, trH = 1, trText = r }
+		]
 
 data HeatmapOptions = HeatmapOptions
 	{ hoRescale :: Maybe (Float, Float) -- ^ the 'hoGradient' generally clips its input to the range [0, 1]; if this is a 'Just', the inputs will be linearly scaled from the given range before 'hoGradient' is called

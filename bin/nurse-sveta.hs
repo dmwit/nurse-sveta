@@ -1161,7 +1161,7 @@ logVisualization log rng sc net dir category historySize = do
 	now <- Time.getCurrentTime
 
 	for_ mhst $ \hst -> do
-		let (w, h) = heatmapSizeRecommendation (hstBoard hst)
+		let (w, h) = boardHeatmapSizeRecommendation (hstBoard hst)
 		    scale = 16
 		    [wi, hi] = (scale*) <$> [w, h]
 		    [wd, hd] = fromIntegral <$> [w, h]
@@ -1202,14 +1202,14 @@ logVisualization log rng sc net dir category historySize = do
 		logHeatmapGrid 4 3 "priors" . for_ outPriors $ \(roti, pc, rotPriors) -> do
 			G.save
 			G.translate (fromIntegral roti*wd) 0
-			heatmapRange outPriorsLo outPriorsHi (hstBoard hst) pc rotPriors
+			boardHeatmapRange outPriorsLo outPriorsHi (hstBoard hst) pc rotPriors
 			G.translate 0 hd
-			heatmap0Max allPriorsHi (hstBoard hst) pc
+			boardHeatmap0Max allPriorsHi (hstBoard hst) pc
 				[ (pos, p / reachablePriorsSum)
 				| (pos, p) <- reachablePriors !! roti
 				]
 			G.translate 0 hd
-			heatmap0Max allPriorsHi (hstBoard hst) pc
+			boardHeatmap0Max allPriorsHi (hstBoard hst) pc
 				[ (pos, prior)
 				| (Pill pc' pos, prior) <- HM.toList (hstPriors hst)
 				, pc' == pc
@@ -1218,11 +1218,11 @@ logVisualization log rng sc net dir category historySize = do
 
 		logHeatmapGrid 1 3 "virus kills" $ do
 			let outKills = onPositionsVec niVirusKills
-			heatmap0Dyn (hstBoard hst) initialPC outKills
+			boardHeatmap0Dyn (hstBoard hst) initialPC outKills
 			G.translate 0 hd
-			heatmap01 (hstBoard hst) initialPC outKills
+			boardHeatmap01 (hstBoard hst) initialPC outKills
 			G.translate 0 hd
-			heatmap01 (hstBoard hst) initialPC . onPositionsC $ \pos -> M.findWithDefault 0 pos . pVirusKillWeight
+			boardHeatmap01 (hstBoard hst) initialPC . onPositionsC $ \pos -> M.findWithDefault 0 pos . pVirusKillWeight
 
 		logHeatmapGrid 2 2 "non-heatmaps" $ do
 			G.rectangle 0 0 20 42 >> neutral >> G.fill
@@ -1253,11 +1253,11 @@ logVisualization log rng sc net dir category historySize = do
 
 		logHeatmapGrid 1 3 "final occupation" $ do
 			let outOccupied = onPositionsVec niOccupied
-			heatmap0Dyn (hstBoard hst) initialPC outOccupied
+			boardHeatmap0Dyn (hstBoard hst) initialPC outOccupied
 			G.translate 0 hd
-			heatmap01 (hstBoard hst) initialPC outOccupied
+			boardHeatmap01 (hstBoard hst) initialPC outOccupied
 			G.translate 0 hd
-			heatmap01 (hstBoard hst) initialPC . onPositionsC $ \pos p -> if HS.member pos (pOccupied p) then 1 else 0
+			boardHeatmap01 (hstBoard hst) initialPC . onPositionsC $ \pos p -> if HS.member pos (pOccupied p) then 1 else 0
 
 		logHeatmapGrid (length allPCs) 3 "future placements" $ do
 			let placementHi = max
@@ -1266,22 +1266,22 @@ logVisualization log rng sc net dir category historySize = do
 			forZipWithM_ [0..] allPCs $ \i pc -> do
 				G.save
 				G.translate (i*wd) 0
-				heatmap0Dyn (hstBoard hst) pc $ onPositionsVec ((HM.! pc) . niPlacements)
+				boardHeatmap0Dyn (hstBoard hst) pc $ onPositionsVec ((HM.! pc) . niPlacements)
 				G.translate 0 hd
-				heatmap0Max placementHi (hstBoard hst) pc $ onPositionsVec ((HM.! pc) . niPlacements)
+				boardHeatmap0Max placementHi (hstBoard hst) pc $ onPositionsVec ((HM.! pc) . niPlacements)
 				G.translate 0 hd
-				heatmap0Max placementHi (hstBoard hst) pc . onPositionsC $ \pos -> HM.findWithDefault 0 (Pill pc pos) . pPlacementWeight
+				boardHeatmap0Max placementHi (hstBoard hst) pc . onPositionsC $ \pos -> HM.findWithDefault 0 (Pill pc pos) . pPlacementWeight
 				G.restore
 
 		logHeatmapGrid 1 3 "clear locations" $ do
 			let clearHi = max
 			    	(realToFrac . maximum . (0:) . M.elems $ pClearLocationWeight pred)
 			    	(maximum . fmap maximum $ niClearLocation netOut)
-			heatmap0Dyn (hstBoard hst) initialPC (onPositionsVec niClearLocation)
+			boardHeatmap0Dyn (hstBoard hst) initialPC (onPositionsVec niClearLocation)
 			G.translate 0 hd
-			heatmap0Max clearHi (hstBoard hst) initialPC (onPositionsVec niClearLocation)
+			boardHeatmap0Max clearHi (hstBoard hst) initialPC (onPositionsVec niClearLocation)
 			G.translate 0 hd
-			heatmap0Max clearHi (hstBoard hst) initialPC . onPositionsC $ \pos -> M.findWithDefault 0 pos . pClearLocationWeight
+			boardHeatmap0Max clearHi (hstBoard hst) initialPC . onPositionsC $ \pos -> M.findWithDefault 0 pos . pClearLocationWeight
 
 data LogMessage
 	= Metric String Float
