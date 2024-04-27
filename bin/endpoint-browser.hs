@@ -29,11 +29,10 @@ main = do
 		top <- new Box [#orientation := OrientationVertical]
 		sel <- new Box [#orientation := OrientationHorizontal, #spacing := 10]
 		sli <- new Box [#orientation := OrientationVertical]
-		grf <- new Box [#orientation := OrientationVertical]
-		scr <- new ScrolledWindow [#child := grf]
+		grf <- newHomogeneousGridView
 		#append top sel
 		#append top sli
-		#append top scr
+		#append top =<< hgvWidget grf
 
 		ssRef <- newIORef SelectionState
 			{ ssTop = exampleEndpoint
@@ -62,7 +61,7 @@ main = do
 data GraphsState = GraphsState
 	{ gsSliders :: [Scale]
 	, gsSliderContainer :: Box
-	, gsGraphContainer :: Box
+	, gsGraphContainer :: HomogeneousGridView
 	, gsPreviousDrawArguments :: Maybe (Path, [Int])
 	}
 
@@ -82,32 +81,63 @@ drawGraphs :: IORef GraphsState -> Endpoint -> Path -> [Int] -> IO ()
 drawGraphs gsRef e path is = do
 	gs <- readIORef gsRef
 	when (currentDrawArguments /= gsPreviousDrawArguments gs) do
-		removeAll (gsGraphContainer gs)
-		let hms = heatmaps e path is
-		for_ hms (autoHeatmap hms def (PillContent Horizontal Blue Yellow) >=> #append (gsGraphContainer gs))
+		graphs <- for hms \hm -> do
+			dg <- newDrawingGrid (hsFullWidth stats) (hsFullHeight stats)
+			dgSetRenderer dg if hsBoard stats
+				then boardHeatmapWith (hsOptions stats) def (PillContent Horizontal Blue Yellow) (hHeat hm)
+				else labeledHeatmapWith (hsOptions stats) (hsMapWidth stats) (hsMapHeight stats) (hHeat hm)
+			dgWidget dg
+		hgvSetModel (gsGraphContainer gs) HGM
+			{ hgmIndividualWidth = hsFullWidth stats
+			, hgmIndividualHeight = hsFullHeight stats
+			, hgmChildren = graphs
+			}
 		writeIORef gsRef gs { gsPreviousDrawArguments = currentDrawArguments }
-	where currentDrawArguments = Just (path, is)
-
-autoHeatmap :: [Heatmap] -> Board -> PillContent -> Heatmap -> IO Widget
-autoHeatmap hms@(hm0:_) = \b pc hm -> do
-	dg <- newDrawingGrid (fromIntegral w) (fromIntegral h)
-	dgSetRenderer dg (renderer opts b pc (hHeat hm))
-	dgWidget dg
 	where
+	hms = heatmaps e path is
+	stats = summarizeHeatmaps hms
+	currentDrawArguments = Just (path, is)
+
+data HeatmapsSummary = HeatmapsSummary
+	{ hsBoard :: Bool
+	, hsMapWidth :: Int
+	, hsMapHeight :: Int
+	, hsFullWidth :: Double
+	, hsFullHeight :: Double
+	, hsOptions :: HeatmapOptions
+	}
+
+summarizeHeatmaps :: [Heatmap] -> HeatmapsSummary
+summarizeHeatmaps hms@(hm:_) = HeatmapsSummary
+	{ hsBoard = isBoard
+	, hsMapWidth = mw
+	, hsMapHeight = mh
+	, hsFullWidth = fromIntegral fw
+	, hsFullHeight = fromIntegral fh
+	, hsOptions = opts
+	} where
+	isBoard = hWidth hm == GCWidth && hHeight hm == GCHeight
 	allFloats = [v | hm <- hms, row <- hContents hm, Just v <- row]
 	lo = case allFloats of [] -> 0; _ -> minimum allFloats
 	hi = case allFloats of [] -> 1; _ -> maximum allFloats
-	((w, h), renderer) = case hm0 of
-		Heatmap { hWidth = GCWidth, hHeight = GCHeight } -> (boardHeatmapSizeRecommendation def, boardHeatmapWith)
-		Heatmap { hWidth = evalGameConstant -> gcw, hHeight = evalGameConstant -> gch } -> (labeledHeatmapSizeRecommendation gcw gch, \o _b _pc -> labeledHeatmapWith o gcw gch)
+	mw = evalGameConstant (hWidth hm)
+	mh = evalGameConstant (hHeight hm)
+	(fw, fh) = if isBoard
+		then boardHeatmapSizeRecommendation def
+		else labeledHeatmapSizeRecommendation mw mh
 	opts
 		| 0 <= lo && hi <= 1 && (hi-lo) >= 0.1 = heatmapOptions01
 		| 0 == lo = heatmapOptions0Max hi
 		| 0 < lo && hi/lo >= 3 = heatmapOptions0Max hi
 		| otherwise = heatmapOptionsRange lo hi
-
-removeAll :: Box -> IO ()
-removeAll b = widgetGetFirstChild b >>= traverse_ \w -> #remove b w >> removeAll b
+summarizeHeatmaps [] = HeatmapsSummary
+	{ hsBoard = False
+	, hsMapWidth = 1
+	, hsMapHeight = 1
+	, hsFullWidth = 1
+	, hsFullHeight = 1
+	, hsOptions = heatmapOptions01
+	}
 
 sliders :: HasCallStack => Residue -> [Selector] -> IO [Scale]
 sliders r (FVector Slider:path) = case residueBranch r of

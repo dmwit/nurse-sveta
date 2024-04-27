@@ -35,6 +35,14 @@ module Nurse.Sveta.Widget (
 	newConfigurationRequestView,
 	crvRequest, crvSet, crvUpdateStatus, crvGridAttributes, crvAttach,
 
+	-- * Grids of objects all with the same size
+	HomogeneousGridModel(..), HomogeneousGridView,
+	newHomogeneousGridView, hgvWidget, hgvSetModel,
+
+	-- * Watching widget size
+	SizeAllocationMonitor, newSizeAllocationMonitor, samWidget,
+	samOnResize, samDisconnectHandler,
+
 	-- * Noticing when things change
 	Stable,
 	newStable,
@@ -46,6 +54,7 @@ module Nurse.Sveta.Widget (
 	newTracker, tWhenUpdated, tWhenUpdated_,
 
 	-- * Utilities
+	removeAll,
 	tshow, tread,
 	) where
 
@@ -57,6 +66,7 @@ import Control.Monad.IO.Class
 import Data.Foldable
 import Data.Functor
 import Data.GI.Base.Attributes
+import Data.GI.Base.Signals
 import Data.HashMap.Strict (HashMap)
 import Data.Int
 import Data.IORef
@@ -623,6 +633,118 @@ tmCheckStatus tsRef = StatusCheck
 		pure ()
 	}
 
+data HomogeneousGridModel = HGM
+	{ hgmIndividualWidth :: Double
+	, hgmIndividualHeight :: Double
+	, hgmChildren :: [Widget]
+	}
+
+data HomogeneousGridView = HGV
+	{ hgvMonitor :: SizeAllocationMonitor
+	, hgvContainer :: Box
+	, hgvModel :: IORef HomogeneousGridModel
+	}
+
+-- | Arguments are the width and height of each child.
+newHomogeneousGridView :: MonadIO m => m HomogeneousGridView
+newHomogeneousGridView = do
+	box <- new Box [#orientation := OrientationVertical, #hexpand := True, #vexpand := True]
+	sam <- newSizeAllocationMonitor box
+	ref <- liftIO $ newIORef HGM
+		{ hgmIndividualWidth = 1
+		, hgmIndividualHeight = 1
+		, hgmChildren = []
+		}
+
+	samOnResize sam (readIORef ref >>= hgvReflow box)
+	pure HGV
+		{ hgvMonitor = sam
+		, hgvContainer = box
+		, hgvModel = ref
+		}
+
+hgvSetModel :: MonadIO m => HomogeneousGridView -> HomogeneousGridModel -> m ()
+hgvSetModel hgv hgm = liftIO do
+	writeIORef (hgvModel hgv) hgm
+	hgvReflow (hgvContainer hgv) hgm
+
+-- | Internal use only; if you see this in any documentation, please file a bug.
+hgvReflow :: MonadIO m => Box -> HomogeneousGridModel -> m ()
+hgvReflow box hgm = liftIO do
+	w <- #getAllocatedWidth  box
+	h <- #getAllocatedHeight box
+	let denom = fromIntegral h * hgmIndividualWidth  hgm
+	    numer = fromIntegral w * hgmIndividualHeight hgm * fromIntegral (length (hgmChildren hgm))
+	    gridWidth = if denom == 0
+	    	then 1
+	    	else round . sqrt . max 1 $ numer / denom
+	removeAll box >>= traverse_ (castTo Box >=> traverse_ removeAll)
+	for_ (chunksOf gridWidth (hgmChildren hgm)) \chunk -> do
+		hbox <- new Box [#orientation := OrientationHorizontal]
+		traverse_ (#append hbox) chunk
+		#append box hbox
+
+hgvWidget :: MonadIO m => HomogeneousGridView -> m Widget
+hgvWidget = samWidget . hgvMonitor
+
+-- | Split the input into chunks, each no larger than the given maximum size,
+-- and where no chunk is more than one element longer than another.
+chunksOf :: Int -> [a] -> [[a]]
+chunksOf (max 1 -> wMax) as = goBig extras as where
+	n = length as
+	h = (n + wMax - 1) `quot` wMax
+	(wLo, extras) = n `quotRem` max 1 h
+
+	goBig 0 xs = goSmall xs
+	goBig i xs = b : goBig (i-1) e where (b, e) = splitAt (wLo+1) xs
+	goSmall [] = []
+	goSmall xs = b : goSmall e where (b, e) = splitAt wLo xs
+
+data SizeAllocationMonitor = SAM
+	{ samHorizontalArea :: DrawingArea
+	, samVerticalArea :: DrawingArea
+	, samHorizontalBox :: Box
+	, samVerticalBox :: Box
+	, samChild :: Widget
+	}
+
+newSizeAllocationMonitor :: (IsWidget w, MonadIO m) => w -> m SizeAllocationMonitor
+newSizeAllocationMonitor child_ = do
+	child <- toWidget child_
+	ha <- new DrawingArea [#hexpand := True , #vexpand := False]
+	va <- new DrawingArea [#hexpand := False, #vexpand := True ]
+	hb <- new Box $ tail [undefined
+		, #orientation := OrientationHorizontal
+		, #hexpand :=> G.get child #hexpand
+		, #widthRequest :=> G.get child #widthRequest
+		]
+	vb <- new Box $ tail [undefined
+		, #orientation := OrientationVertical
+		, #vexpand :=> G.get child #vexpand
+		, #heightRequest :=> G.get child #heightRequest
+		]
+
+	#append vb ha
+	#append vb hb
+	#append hb va
+	#append hb child
+
+	pure (SAM ha va hb vb child)
+
+samOnResize :: MonadIO m => SizeAllocationMonitor -> IO () -> m [SignalHandlerId]
+samOnResize sam callback = do
+	hid <- on (samHorizontalArea sam) #resize \_ _ -> callback
+	vid <- on (samVerticalArea   sam) #resize \_ _ -> callback
+	pure [hid, vid]
+
+samDisconnectHandler :: MonadIO m => SizeAllocationMonitor -> [SignalHandlerId] -> m ()
+samDisconnectHandler sam [hid, vid] = liftIO do
+	disconnectSignalHandler (samHorizontalArea sam) hid
+	disconnectSignalHandler (samVerticalArea   sam) vid
+
+samWidget :: MonadIO m => SizeAllocationMonitor -> m Widget
+samWidget = toWidget . samVerticalBox
+
 -- | A type for tracking the updates to something that doesn't change very often.
 data Stable a = Stable
 	-- this generation is in the sense of epoch/number of steps/etc.
@@ -677,6 +799,11 @@ tWhenUpdated t s f = do
 
 tWhenUpdated_ :: Tracker -> Stable a -> IO b -> IO ()
 tWhenUpdated_ t s = tWhenUpdated t s . const
+
+removeAll :: MonadIO m => Box -> m [Widget]
+removeAll b = widgetGetFirstChild b >>= \case
+	Nothing -> pure []
+	Just w -> #remove b w >> fmap (w:) (removeAll b)
 
 tshow :: Show a => a -> T.Text
 tshow = T.pack . show
