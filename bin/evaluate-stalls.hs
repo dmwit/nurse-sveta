@@ -11,11 +11,10 @@ import Data.Set (Set)
 import Data.Tree
 import Dr.Mario.Model
 import GHC.IO.Exception
+import Nurse.Sveta.Files
 import Nurse.Sveta.Tomcats (dmPlay, initialState, GameState(..), Move(..))
 import Nurse.Sveta.Torch
-import System.Directory
 import System.Environment
-import System.FilePath
 import System.IO
 import System.IO.Error
 

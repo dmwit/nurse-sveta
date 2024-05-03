@@ -25,19 +25,15 @@ import Dr.Mario.Model
 import GI.Gtk as G
 import Numeric
 import Nurse.Sveta.Cairo
+import Nurse.Sveta.Files
 import Nurse.Sveta.STM
 import Nurse.Sveta.STM.BatchProcessor
 import Nurse.Sveta.Tomcats
 import Nurse.Sveta.Torch
 import Nurse.Sveta.Util
 import Nurse.Sveta.Widget
-import Paths_nurse_sveta
 import System.Clock.Seconds
-import System.Directory
 import System.Environment
--- TODO: this is now built into the directory package, we should switch to that
-import System.Environment.XDG.BaseDir
-import System.FilePath
 import System.IO
 import System.IO.Error
 import System.Mem
@@ -300,8 +296,7 @@ recordGame gs steps = do
 	b <- mfreeze (board gs)
 	now <- Time.getCurrentTime
 	rand <- BS.foldr (\w s -> printf "%02x" w ++ s) "" <$> withFile "/dev/urandom" ReadMode (\h -> BS.hGet h 8)
-	dir <- nsDataDir
-	path <- prepareFile dir GamesPending $ show now ++ "-" ++ rand <.> "json"
+	path <- relPrepareFile GamesPending $ show now ++ "-" ++ rand <.> "json"
 	encodeFile path ((b, originalSensitive gs, speed gs), reverse steps)
 
 data InferenceThreadState = InferenceThreadState
@@ -415,8 +410,7 @@ inferenceThread eval netUpdate itsRef sc = forever $ do
 
 inferenceThreadLoadLatestNet :: IO (Maybe (Integer, Net))
 inferenceThreadLoadLatestNet = do
-	dir <- nsDataDir
-	n <- decodeFileLoop (dir </> subdirectory Weights latestFilename)
+	n <- relDecodeFileLoop Weights latestFilename
 	traverse inferenceThreadLoadNet n
 
 -- TODO: better error handling
@@ -424,18 +418,8 @@ inferenceThreadLoadNet :: Integer -> IO (Integer, Net)
 inferenceThreadLoadNet tensor = do
 	dir <- nsDataDir
 	-- [N]urse [S]veta [n]et
-	net <- netLoadForInference (dir </> subdirectory Weights (show tensor <.> "nsn"))
+	net <- netLoadForInference (absFileName dir Weights (show tensor <.> "nsn"))
 	pure (tensor, net)
-
-nsDataDir :: IO FilePath
-nsDataDir = getUserDataDir "nurse-sveta"
-
-nsRuntimeDir :: IO FilePath
-nsRuntimeDir = (</> "nurse-sveta") <$> do
-	fromEnv <- lookupEnv "XDG_RUNTIME_DIR"
-	case fromEnv of
-		Just fp -> pure fp
-		Nothing -> getTemporaryDirectory
 
 data LevelMetric = LevelMetric
 	{ lmMetric :: Int
@@ -657,7 +641,7 @@ bureaucracyThread log lock status sc = do
 	forever $ do
 		-- TODO: is this really doing the right thing if gameFileToTensorFiles throws an exception? seems like probably not?
 		modifyMVar_ lock $ \bgs -> do
-			pending <- catch (listDirectory (dir </> subdirectory GamesPending "")) $ \e ->
+			pending <- catch (listDirectory (absDirectoryName dir GamesPending)) $ \e ->
 				if isDoesNotExistError e || isAlreadyInUseError e then pure [] else throw e
 			btsUpdate status $ \bts -> bts { btsLatestGlobal = bgs }
 			traverse_ (gameFileToTensorFiles log status dir) (sort pending)
@@ -685,27 +669,23 @@ gameFileToTensorFiles log status dir fp = recallGame dir fp >>= \case
 		    bgs = btsLatestGlobal bts
 		firstTensor <- asum [empty
 			, maybe empty pure $ HM.lookup categoryT (bgsNextTensor bgs)
-			, maybe empty (pure . succ) =<< decodeFileLoop (dir </> subdirectory (Tensors category) latestFilename)
+			, maybe empty (pure . succ) =<< absDecodeFileLoop dir (Tensors category) latestFilename
 			, pure 0
 			]
 		meta_ <- asum [empty
 			, maybe empty pure $ HM.lookup categoryT (bgsMetadata bgs)
-			, maybe empty pure =<< decodeFileLoop (dir </> subdirectory (GamesProcessed category) metadataFilename)
+			, maybe empty pure =<< absDecodeFileLoop dir (GamesProcessed category) metadataFilename
 			, pure newCategoryMetadata
 			]
 
-		tpath <- prepareFile dir (Tensors category) ""
-		jspath <- prepareFile dir (Positions category) ""
+		tpath <- absPrepareDirectory dir (Tensors category)
+		jspath <- absPrepareDirectory dir (Positions category)
 		sts <- saveTensors tpath jspath firstTensor [minBound..maxBound] history
 		let meta = cmInsert fp (stsVirusesOriginal sts) (stsVirusesKilled sts) (stsFrames sts) meta_
 
 		relocate dir fp GamesPending (GamesProcessed category)
-		encodeFileLoop
-			(dir </> subdirectory (Tensors category) latestFilename)
-			(firstTensor + stsTensorsSaved sts - 1)
-		encodeFileLoop
-			(dir </> subdirectory (GamesProcessed category) metadataFilename)
-			meta
+		absEncodeFileLoop dir (Tensors category) latestFilename (firstTensor + stsTensorsSaved sts - 1)
+		absEncodeFileLoop dir (GamesProcessed category) metadataFilename meta
 
 		let logKinds = zip ["viruses", "frames/won", "frames/lost" :: String]
 		                   [cmVirusesKilled, cmFramesToWin, cmFramesToLoss]
@@ -755,17 +735,6 @@ gameFileToTensorFiles log status dir fp = recallGame dir fp >>= \case
 			, btsTensorsProcessed = HM.insertWith (+) categoryT (stsTensorsSaved sts) (btsTensorsProcessed bts)
 			}
 
-encodeFileLoop :: ToJSON a => FilePath -> a -> IO ()
-encodeFileLoop fp a = catch
-	(encodeFile fp a)
-	(\e -> if isAlreadyInUseError e then threadDelay 1000 >> encodeFileLoop fp a else throwIO e)
-
-decodeFileLoop :: FromJSON a => FilePath -> IO (Maybe a)
-decodeFileLoop fp = catch (decodeFileStrict' fp) $ \e -> if
-	| isAlreadyInUseError e -> threadDelay 1000 >> decodeFileLoop fp
-	| isDoesNotExistError e -> pure Nothing
-	| otherwise -> throwIO e
-
 data GameDecodingResult
 	= GDParseError
 	| GDStillWriting
@@ -773,45 +742,13 @@ data GameDecodingResult
 
 recallGame :: FilePath -> FilePath -> IO GameDecodingResult
 recallGame dir fp = handle (\e -> if isAlreadyInUseError e then pure GDStillWriting else throwIO e) $ do
-	result <- decodeFileStrict' (dir </> subdirectory GamesPending fp)
+	result <- decodeFileStrict' (absFileName dir GamesPending fp)
 	pure $ case result of
 		Nothing -> GDParseError
 		Just history -> GDSuccess history
 
-data Directory
-	= GamesPending
-	| GamesProcessed FilePath
-	| GamesParseError
-	| Tensors FilePath
-	| Positions FilePath
-	| Weights
-	deriving (Eq, Ord, Read, Show)
-
-subdirectory :: Directory -> FilePath -> FilePath
-subdirectory dir fp = case dir of
-	GamesPending            -> "games" </> "pending" </> fp
-	GamesProcessed category -> "games" </> "processed" </> category </> fp
-	GamesParseError         -> "games" </> "parse-error" </> fp
-	Tensors category        -> "tensors" </> category </> fp
-	Positions category      -> "positions" </> category </> fp
-	Weights                 -> "weights" </> fp
-
-relocate :: FilePath -> FilePath -> Directory -> Directory -> IO ()
-relocate root fp from to = do
-	path <- prepareFile root to fp
-	renameFile (root </> subdirectory from fp) path
-
-prepareFile :: FilePath -> Directory -> FilePath -> IO FilePath
-prepareFile root dir fp = (subdir </> fp) <$ createDirectoryIfMissing True subdir where
-	subdir = root </> subdirectory dir ""
-
-latestFilename, metadataFilename :: FilePath
-latestFilename = "latest.json"
-metadataFilename = "meta.json"
-
 readLatestTensor :: FilePath -> FilePath -> IO (Maybe Integer)
-readLatestTensor root category = decodeFileLoop
-	(root </> subdirectory (Tensors category) latestFilename)
+readLatestTensor root category = absDecodeFileLoop root (Tensors category) latestFilename
 
 newSumView :: Grid -> Int32 -> T.Text -> IO Grid
 newSumView parent i description = do
@@ -1105,9 +1042,9 @@ trainingThread log netUpdate ref sc = do
 	    		]
 
 	    saveWeights ten = do
-	    		path <- prepareFile dir Weights (show ten <.> "nsn")
+	    		path <- absPrepareFile dir Weights (show ten <.> "nsn")
 	    		netSave net sgd path
-	    		encodeFileLoop (dir </> subdirectory Weights latestFilename) ten
+	    		absEncodeFileLoop dir Weights latestFilename ten
 	    		atomically . writeTVar netUpdate $ Just ten
 	    		atomically . modifyTVar ref $ \tts -> tts { ttsLastSaved = sSet (Just ten) (ttsLastSaved tts) }
 
@@ -1126,14 +1063,14 @@ trainingThread log netUpdate ref sc = do
 trainingThreadLoadLatestNet :: IO (Integer, Net, Optimizer)
 trainingThreadLoadLatestNet = do
 	dir <- nsDataDir
-	mn <- decodeFileLoop (dir </> subdirectory Weights latestFilename)
+	mn <- absDecodeFileLoop dir Weights latestFilename
 	case mn of
 		Nothing -> do
 			net <- netSample True
 			sgd <- newOptimizer net
 			pure (0, net, sgd)
 		Just n -> do
-			(net, sgd) <- netLoadForTraining (dir </> subdirectory Weights (show n <.> "nsn"))
+			(net, sgd) <- netLoadForTraining (absFileName dir Weights (show n <.> "nsn"))
 			pure (n, net, sgd)
 
 chooseTensors :: GenIO -> StatusCheck -> FilePath -> String -> Integer -> Int -> IO [Integer]
@@ -1148,16 +1085,15 @@ chooseTensors rng sc dir category historySize batchSize = do
 loadBatch :: GenIO -> StatusCheck -> FilePath -> String -> Integer -> Int -> IO Batch
 loadBatch rng sc dir category historySize batchSize = do
 	ixs <- chooseTensors rng sc dir category historySize batchSize
-	batchLoad [dir </> subdirectory (Tensors category) (show ix <.> "nst") | ix <- ixs]
+	batchLoad [absFileName dir (Tensors category) (show ix <.> "nst") | ix <- ixs]
 
 logVisualization :: Procedure LogMessage () -> GenIO -> StatusCheck -> Net -> FilePath -> String -> Integer -> IO ()
 logVisualization log rng sc net dir category historySize = do
 	[ix] <- chooseTensors rng sc dir category historySize 1
-	dataDir <- nsDataDir
 	runtimeDir <- nsRuntimeDir
-	netIn <- batchLoad [dir </> subdirectory (Tensors category) (show ix <.> "nst")]
+	netIn <- batchLoad [absFileName dir (Tensors category) (show ix <.> "nst")]
 	[netOut] <- netIntrospect net netIn
-	mhst <- decodeFileLoop (dataDir </> subdirectory (Positions category) (show ix <.> "json"))
+	mhst <- absDecodeFileLoop dir (Positions category) (show ix <.> "json")
 	now <- Time.getCurrentTime
 
 	for_ mhst $ \hst -> do
@@ -1298,11 +1234,11 @@ loggingThread :: Procedure LogMessage () -> StatusCheck -> IO ()
 loggingThread log sc = do
 	wandbCat <- getDataFileName "pybits/wandb-cat.py"
 	dir <- nsDataDir
-	previousRuntime <- catch (readFile (dir </> "runtime") >>= readIO) \e ->
+	previousRuntime <- catch (readFile (dir </> runtimeFilename) >>= readIO) \e ->
 		if isDoesNotExistError e
 			then pure 0
 			else throwIO e
-	createDirectoryIfMissing True (dir </> "wandb")
+	absPrepareDirectory dir Logging
 	(Just h, Nothing, Nothing, ph) <- createProcess (proc "python3" [wandbCat, "-q"]) { std_in = CreatePipe }
 
 	hPutStrLn h dir
@@ -1322,7 +1258,7 @@ loggingThread log sc = do
 	    	hPrint h =<< getRuntime
 	    	hPutStrLn h k
 	    	hPutStrLn h s
-	    saveRuntime = writeFile (dir </> "runtime") . show =<< getRuntime
+	    saveRuntime = writeFile (dir </> runtimeFilename) . show =<< getRuntime
 	    getRuntime = getTime Monotonic <&> \now -> previousRuntime + round (now - start)
 
 	forever $ do
@@ -1366,17 +1302,6 @@ numericLabel t = do
 loadFromDataLen :: CssProvider -> T.Text -> IO ()
 loadFromDataLen cssPrv t = #loadFromData cssPrv t tLen where
 	tLen = fromIntegral $ T.foldl' (\len c -> len + T.utf8Length c) 0 t
-
-dirEncode :: String -> FilePath
-dirEncode "" = "q"
-dirEncode s = go s where
-	go = \case
-		[] -> []
-		'/' :s -> "qs" ++ go s
-		'\\':s -> "qb" ++ go s
-		'q' :s@(c:_) -> (if c `elem` ("sbq" :: String) then "qq" else "q") ++ go s
-		"q" -> "qq"
-		c:s -> c:go s
 
 data SearchSpeed = SearchSpeed
 	{ searchStart :: UTCTime

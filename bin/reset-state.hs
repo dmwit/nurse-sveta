@@ -1,13 +1,12 @@
 module Main where
 
 import Control.Exception
-import System.Directory
-import System.Environment.XDG.BaseDir
+import Nurse.Sveta.Files
 import System.IO.Error
 
 main :: IO ()
 main = do
-	dir <- getUserDataDir "nurse-sveta"
+	dir <- nsDataDir
 	catch (removeDirectoryRecursive dir) $ \e -> if isDoesNotExistError e
 		then pure ()
 		else throwIO e
