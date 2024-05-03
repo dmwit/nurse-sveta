@@ -295,6 +295,11 @@ recordGame :: GameState -> [GameStep] -> IO ()
 recordGame gs steps = do
 	b <- mfreeze (board gs)
 	now <- Time.getCurrentTime
+	-- The clever version uses BS.foldr (printf "%02x%s"). The mundane version
+	-- below is definitely linear-time in the length of the bytestring, because
+	-- ++ doesn't do a deep copy of its second argument. It's not so clear in
+	-- the clever version; I think it's possible each printf would do a deep
+	-- copy, leading to quadratic time.
 	rand <- BS.foldr (\w s -> printf "%02x" w ++ s) "" <$> withFile "/dev/urandom" ReadMode (\h -> BS.hGet h 8)
 	path <- relPrepareFile GamesPending $ show now ++ "-" ++ rand <.> "json"
 	encodeFile path ((b, originalSensitive gs, speed gs), reverse steps)
