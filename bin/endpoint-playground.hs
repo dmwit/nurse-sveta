@@ -28,6 +28,7 @@ main = do
 		print i
 		putStr "\nOutput: "
 		print o
+		-- TODO: test maskedtensor ground truths
 		putStr "\nSelf-input loss: "
 		nextNetDetailedLoss net i i >>= print
 

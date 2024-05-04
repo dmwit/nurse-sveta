@@ -735,11 +735,15 @@ NextNet *next_sample_net(bool training, structure *in, structure *out) {
 
 void next_discard_net(NextNet *net) { delete net; }
 
+// TODO: perhaps we should delete this from the API and just call it internally
+// in detailed_loss (which would therefore take a net and a net input rather
+// than a shape and a net output)
 structure *next_net_get_decoder_shape(NextNet *net) {
 	return new structure((*net)->dec->shape);
 }
 
 endpoint *next_evaluate_net(NextNet *net, endpoint *in) {
+	// TODO: think very very hard about where exactly we want gradient control and training control in the API
 	torch::NoGradGuard g;
 	return new endpoint((*net)->forward(in->ref));
 }
