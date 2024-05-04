@@ -21,7 +21,6 @@ import System.IO.Error
 import qualified Data.Set as S
 import qualified Data.MultiSet as MS
 
-type JSONContent = ((Board, Bool, CoarseSpeed), [GameStep])
 data Result = Result
 	{ lossDistribution :: MultiSet Int
 	, clearDistribution :: MultiSet Int
@@ -79,7 +78,7 @@ processAsFile parent fp = decodeFileStrict' fp' >>= \case
 	fp' = parent </> fp
 	produce res = Node (fp, False, res) []
 
-processGame :: JSONContent -> IO Result
+processGame :: GameDetails -> IO Result
 processGame (seed, gss0) = do
 	state <- initialState seed
 	let go vk pu [] = do

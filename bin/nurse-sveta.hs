@@ -743,7 +743,7 @@ gameFileToTensorFiles log status dir fp = recallGame dir fp >>= \case
 data GameDecodingResult
 	= GDParseError
 	| GDStillWriting
-	| GDSuccess ((Board, Bool, CoarseSpeed), [GameStep])
+	| GDSuccess GameDetails
 
 recallGame :: FilePath -> FilePath -> IO GameDecodingResult
 recallGame dir fp = handle (\e -> if isAlreadyInUseError e then pure GDStillWriting else throwIO e) $ do

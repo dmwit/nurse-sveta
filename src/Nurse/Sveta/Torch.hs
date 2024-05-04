@@ -9,7 +9,7 @@ module Nurse.Sveta.Torch (
 	LossType(..), describeLossType,
 	Optimizer, newOptimizer,
 	Batch, batchLoad,
-	GameStep(..), SaveTensorsSummary(..), saveTensors,
+	GameStep(..), GameDetails, SaveTensorsSummary(..), saveTensors,
 	)
 	where
 
@@ -519,6 +519,8 @@ instance Permutable Prediction where
 -- distribution, NES vs SNES (vs other?) pathfinding, and then passing info on
 -- which choice was made into the net
 
+type GameDetails = ((Board, Bool, CoarseSpeed), [GameStep])
+
 -- | Arguments: directory to save tensors in; directory to save JSON files in;
 -- an index; color permutations to use; and the game record. Tensors will be
 -- saved in files named @<i>.nst@, @<i+1>.nst@, etc., up to @<i+di-1>.nst@,
@@ -528,7 +530,7 @@ instance Permutable Prediction where
 -- (i.e. only record the exact game given) or @[minBound..maxBound]@ (i.e.
 -- record each game position multiple times, once for each way the colors can
 -- be swapped out for each other).
-saveTensors :: FilePath -> FilePath -> Integer -> [ColorPermutation] -> ((Board, Bool, CoarseSpeed), [GameStep]) -> IO SaveTensorsSummary
+saveTensors :: FilePath -> FilePath -> Integer -> [ColorPermutation] -> GameDetails -> IO SaveTensorsSummary
 saveTensors tdir jsdir i0 cps_ (b0, steps) = do
 	currentState <- initialState b0
 	-- summarize mutates its argument, so make a fresh clone to pass to it

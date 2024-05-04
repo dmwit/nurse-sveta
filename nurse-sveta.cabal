@@ -141,3 +141,4 @@ executable nurse-sveta-endpoint-browser
     import:             executable
     main-is:            endpoint-browser.hs
     build-depends:        data-default ^>=0.7
+                        , gi-gio ^>=2.0

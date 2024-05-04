@@ -8,14 +8,19 @@ import Data.GI.Base.Signals
 import Data.IORef
 import Data.List
 import Data.Maybe
+import Data.Text (Text)
 import Data.Traversable
 import GHC.Stack
-import GI.Gtk
+import GI.Gio (fileNewForPath)
+import GI.Gtk hiding (Text)
 import Nurse.Sveta.Torch.Endpoint
 import Nurse.Sveta.Cairo
+import Nurse.Sveta.Files
 import Nurse.Sveta.Widget
+import Nurse.Sveta.Torch
 import Nurse.Sveta.Util
 import System.Environment
+import System.IO
 import Util
 
 import qualified Data.Text as T
@@ -27,9 +32,13 @@ main = do
 
 	on app #activate $ do
 		top <- new Box [#orientation := OrientationVertical]
+		gmr <- newFileSelector "game recording" (GamesProcessed "") "*-*-* *:*:*.* UTC-*.json"
+		nnw <- newFileSelector "neural net weights" Weights "*.nsn"
 		sel <- new Box [#orientation := OrientationHorizontal, #spacing := 10]
 		sli <- new Box [#orientation := OrientationVertical]
 		grf <- newHomogeneousGridView
+		#append top =<< fsWidget gmr
+		#append top =<< fsWidget nnw
 		#append top sel
 		#append top sli
 		#append top =<< hgvWidget grf
@@ -49,11 +58,18 @@ main = do
 			}
 		selectorWidget gsRef ssRef
 
+		fsOnLoad gmr \fp -> rawDecodeFileLoop fp >>= \case
+			Nothing -> pure False
+			Just (_v :: GameDetails) -> True <$ resetSelection gsRef ssRef exampleEndpoint
+
 		w <- new Window $ tail [undefined
 			, #title := "Nurse Sveta endpoint browser"
 			, #application := app
 			, #child := top
 			]
+		fsSetParent gmr w
+		fsSetParent nnw w
+
 		#show w
 	args <- getArgs
 	() <$ #run app (Just args)
@@ -97,6 +113,17 @@ drawGraphs gsRef e path is = do
 	hms = heatmaps e path is
 	stats = summarizeHeatmaps hms
 	currentDrawArguments = Just (path, is)
+
+removeGraphs :: IORef GraphsState -> IO ()
+removeGraphs gsRef = do
+	gs <- readIORef gsRef
+	removeAll (gsSliderContainer gs)
+	hgvSetModel (gsGraphContainer gs) HGM
+		{ hgmIndividualWidth = 1
+		, hgmIndividualHeight = 1
+		, hgmChildren = []
+		}
+	writeIORef gsRef gs { gsSliders = [], gsPreviousDrawArguments = Nothing }
 
 data HeatmapsSummary = HeatmapsSummary
 	{ hsBoard :: Bool
@@ -163,6 +190,20 @@ data SelectorWidget = SelectorWidget
 	, swList :: ListBox
 	, swChoices :: [(ListBoxRow, Selector)]
 	}
+
+resetSelection :: IORef GraphsState -> IORef SelectionState -> Endpoint -> IO ()
+resetSelection gsRef ssRef newTop = do
+	ss <- readIORef ssRef
+	removeAll (ssContainer ss)
+	writeIORef ssRef SelectionState
+		{ ssTop = newTop
+		, ssCur = newResidue newTop
+		, ssSelections = newPath
+		, ssContainer = ssContainer ss
+		, ssChildren = []
+		}
+	removeGraphs gsRef
+	selectorWidget gsRef ssRef
 
 selectorWidget :: IORef GraphsState -> IORef SelectionState -> IO ()
 selectorWidget gsRef ssRef = do
@@ -422,6 +463,87 @@ hHeat hm =
 	| (x, col) <- zip [0..] (hContents hm)
 	, (y, Just val) <- zip [0..] col
 	]
+
+data FileSelector = FileSelector
+	{ fsTop :: Box
+	, fsDialog :: FileChooserNative
+	, fsCallback :: IORef (FilePath -> IO Bool)
+	}
+
+-- TODO: handle odd characters in filenames
+newFileSelector ::
+	-- | description of what kind of file is being loaded
+	Text ->
+	-- | where the user probably wants to start
+	Directory ->
+	-- | file glob that should be shown by default
+	Text ->
+	IO FileSelector
+newFileSelector description dir glob = do
+	defaultFilter <- new FileFilter [#name := description, #patterns := [glob]]
+	noFilter <- new FileFilter [#name := "(any)", #patterns := ["*"]]
+	root <- nsDataDir
+	-- [PORT]: handle case sensitivity and varying path separators here and in the stripPrefix below
+	let hsDir = absDirectoryName root dir ++ "/"
+	gDir <- fileNewForPath hsDir
+
+	box <- new Box [#orientation := OrientationHorizontal]
+	txt <- new Entry [#placeholderText := description, #widthRequest := 600]
+	buf <- get txt #buffer
+	btn <- new Button [#iconName := "document-new"]
+	dlg <- new FileChooserNative $ tail [undefined
+		, #title := description
+		, #modal := True
+		, #filter := defaultFilter
+		]
+	act <- newIORef (\_ -> pure False)
+
+	#addFilter dlg defaultFilter
+	#addFilter dlg noFilter
+
+	#append box txt
+	#append box btn
+
+	let callback nm = do
+	    	f <- readIORef act
+	    	success <- f nm
+	    	(if success then #removeCssClass else #addCssClass) txt "error"
+
+	on btn #clicked do
+		#setCurrentFolder dlg (Just gDir)
+		#show dlg
+	on dlg #response \v -> case toEnum (fromIntegral v) of
+		ResponseTypeAccept -> #getFile dlg >>= \case
+			Just file -> #getPath file >>= \case
+				Just absNm -> do
+					set buf [#text := T.pack (fromMaybe absNm (stripPrefix hsDir absNm))]
+					callback absNm
+				Nothing -> hPutStrLn stderr "WARNING: file chooser dialog reported success but the associated file had no path"
+			Nothing -> hPutStrLn stderr "WARNING: file chooser dialog reported success but did not have a file associated"
+		ResponseTypeCancel -> pure ()
+		ResponseTypeDeleteEvent -> pure ()
+		rt -> hPutStrLn stderr $ "WARNING: file chooser dialog returned unknown response " ++ show rt
+	on txt #activate do
+		rawPath <- T.unpack <$> get buf #text
+		callback case rawPath of
+			-- [PORT]: detect absolute paths on other OSs
+			'/':_ -> rawPath
+			_ -> hsDir </> rawPath
+
+	pure FileSelector
+		{ fsTop = box
+		, fsDialog = dlg
+		, fsCallback = act
+		}
+
+fsWidget :: FileSelector -> IO Widget
+fsWidget = toWidget . fsTop
+
+fsSetParent :: FileSelector -> Window -> IO ()
+fsSetParent fs w = set (fsDialog fs) [#transientFor := w]
+
+fsOnLoad :: FileSelector -> (FilePath -> IO Bool) -> IO ()
+fsOnLoad fs = writeIORef (fsCallback fs)
 
 exampleEndpoint :: Endpoint
 exampleEndpoint = EDictionary $ tail [undefined
