@@ -1,9 +1,15 @@
+{-# Language AllowAmbiguousTypes #-}
+
 module Nurse.Sveta.Torch.Endpoint (
 	-- * Endpoints
 	Endpoint(..), CEndpoint, gcEndpoint,
 	cEndpoint, hsEndpoint,
 	unmask, batchSize, batchSize', outermostGameConstant,
 	dumpEndpoint,
+	-- ** Marshalling
+	ToEndpoint(..), FromEndpoint(..), fromEndpoint,
+	ToEndpointRecordDescription(..), toEndpointRecord,
+	OneHot(..),
 	-- * Strided vectors
 	StridedVector,
 	generate, generateM,
@@ -18,6 +24,7 @@ module Nurse.Sveta.Torch.Endpoint (
 	-- * Sizes
 	GameConstant(..), CGameConstant,
 	cGameConstant_, cGameConstant, hsGameConstant_, hsGameConstant,
+	orMiscellaneous,
 	dumpGameConstant,
 	evalGameConstant, evalGameConstants, evalCGameConstant,
 	) where
@@ -28,7 +35,7 @@ import Control.Monad
 import Data.Foldable
 import Data.Maybe
 import Data.Traversable
-import Data.Vector.Storable (Vector)
+import Dr.Mario.Model
 import Foreign
 import Foreign.C
 import GHC.Stack
@@ -36,7 +43,8 @@ import Nurse.Sveta.Torch.CWrapper
 import Nurse.Sveta.Util
 import System.IO
 
-import qualified Data.Vector.Storable as V
+import qualified Data.Vector.Storable as VS
+import qualified Data.Vector as V
 
 data GameConstant = GCMiscellaneous Int | GCColors | GCShapes | GCWidth | GCHeight | GCOrientations deriving (Eq, Ord, Read, Show)
 newtype CGameConstant = CGameConstant CInt deriving newtype (Eq, Ord, Show, Storable)
@@ -111,6 +119,11 @@ evalCGameConstant = fromIntegral . c_eval_game_constant
 
 dumpGameConstant :: CGameConstant -> IO ()
 dumpGameConstant c = hFlush stdout >> c_dump_game_constant c
+
+orMiscellaneous :: GameConstant -> Int -> GameConstant
+orMiscellaneous gc n
+	| evalGameConstant gc == n = gc
+	| otherwise = GCMiscellaneous n
 
 data LeafType = Unit | Positive | Categorical | Probability deriving (Bounded, Enum, Eq, Ord, Read, Show)
 newtype CLeafType = CLeafType CInt deriving newtype (Eq, Ord, Show, Storable)
@@ -188,7 +201,7 @@ dumpStructure s = hFlush stdout >> withUnwrapped s c_dump_structure
 data StridedVector a = StridedVector
 	{ strides :: [Int]
 	, bounds :: [Int]
-	, contents :: Vector a
+	, contents :: VS.Vector a
 	} deriving (Eq, Ord, Read, Show)
 
 lenStridesFor :: [Int] -> [Int]
@@ -206,17 +219,17 @@ generate :: Storable a => [Int] -> ([Int] -> a) -> StridedVector a
 generate bs f = StridedVector
 	{ strides = ss
 	, bounds = bs
-	, contents = V.generate len (f . indexFor ss)
+	, contents = VS.generate len (f . indexFor ss)
 	} where
 	len:ss = lenStridesFor bs
 
 generateM :: (Storable a, Monad m) => [Int] -> ([Int] -> m a) -> m (StridedVector a)
-generateM bs f = StridedVector ss bs <$> V.generateM len (f . indexFor ss) where
+generateM bs f = StridedVector ss bs <$> VS.generateM len (f . indexFor ss) where
 	len:ss = lenStridesFor bs
 
 the :: (HasCallStack, Storable a) => StridedVector a -> a
 the StridedVector { bounds = bs, contents = c } = case bs of
-	[] -> c V.! 0
+	[] -> c VS.! 0
 	_ -> error $ "Tried to retrieve the unique element from a strided vector with non-empty bounds " ++ show bs ++ ".\nThis is almost always a bug, even if those bounds really do result in just one element."
 
 infixl 9 !
@@ -224,7 +237,7 @@ infixl 9 !
 StridedVector { strides = s:ss, bounds = b:bs, contents = c } ! i | 0 <= i && i < b = StridedVector
 	{ strides = ss
 	, bounds = bs
-	, contents = V.drop (i*s) c
+	, contents = VS.drop (i*s) c
 	}
 sv ! i = error $ "Indexing error while computing StridedVector { strides = " ++ show (strides sv) ++ ", bounds = " ++ show (bounds sv) ++ ", contents = <elided> } ! " ++ show i
 
@@ -288,13 +301,13 @@ cEndpoint = (gcEndpoint =<<) . \case
 	EFullTensor cs StridedVector { bounds = b:bs, contents = vals }
 		| bs == evalGameConstants cs ->
 			withArrayLen (map cGameConstant_ cs) \n c_cs ->
-			V.unsafeWith vals \c_vals ->
+			VS.unsafeWith vals \c_vals ->
 			c_new_endpoint_tensor (fromIntegral b) (fromIntegral n) c_cs c_vals nullPtr
 	EMaskedTensor cs StridedVector { bounds = b:bs, contents = vals } StridedVector { bounds = bs', contents = mask }
 		| bs == evalGameConstants cs && b:bs == bs' ->
 			withArrayLen (map cGameConstant_ cs) \n c_cs ->
-			V.unsafeWith vals \c_vals ->
-			V.unsafeWith mask \c_mask ->
+			VS.unsafeWith vals \c_vals ->
+			VS.unsafeWith mask \c_mask ->
 			c_new_endpoint_tensor (fromIntegral b) (fromIntegral n) c_cs c_vals c_mask
 	EVector c es
 		| evalGameConstant c == length es ->
@@ -335,7 +348,7 @@ hsEndpoint_ c_e = do
 	   	pure $ EFullTensor lens StridedVector
 	   		{ bounds = bs
 	   		, strides = ss
-	   		, contents = V.unsafeFromForeignPtr0 fpValues lenValues
+	   		, contents = VS.unsafeFromForeignPtr0 fpValues lenValues
 	   		}
 	   | tag == c_tag_vector ->
 	   	alloca \pLen ->
@@ -367,3 +380,103 @@ hsEndpoint_ c_e = do
 
 dumpEndpoint :: CEndpoint -> IO ()
 dumpEndpoint e = hFlush stdout >> withUnwrapped e c_dump_endpoint
+
+class ToEndpoint a where
+	-- TODO: would a free functor over Vector (i.e. (Vector top, top -> a)) be more efficient?
+	toEndpoint :: V.Vector a -> Endpoint
+
+class FromEndpoint a where
+	endpointIndex :: HasCallStack => Endpoint -> Int -> a
+
+fromEndpoint :: (HasCallStack, FromEndpoint a) => Endpoint -> V.Vector a
+fromEndpoint e = V.generate (batchSize' e) (endpointIndex e)
+
+instance ToEndpoint CFloat where
+	toEndpoint v = EFullTensor [] (generate [V.length v] \[i] -> v V.! i)
+
+instance FromEndpoint CFloat where
+	endpointIndex (EFullTensor _ v) i = the (v ! i)
+
+instance ToEndpoint Float where toEndpoint = toEndpoint . fmap (realToFrac @_ @CFloat)
+instance FromEndpoint Float where endpointIndex e i = realToFrac @CFloat (endpointIndex e i)
+
+instance ToEndpoint Board where
+	toEndpoint boards = EDictionary $ tail [undefined
+		, ("shape", full shape)
+		, ("color", full color)
+		] where
+		full :: forall a. (Eq a, OneHot a) => (Cell -> Maybe a) -> Endpoint
+		full f = EFullTensor gcs $ generate
+			(V.length boards:map evalGameConstant gcs)
+			-- it is important to use toIndex rather than fromIndex here,
+			-- because the Shape instance collapses multiple shapes to the same
+			-- index
+			\[i, v, x, y] -> if Just v == (toIndex <$> f (unsafeGet (boards V.! i) (Position x y)))
+				then 1 else 0
+			where gcs = [indexCountGC @a, gcw, gch]
+		(gcw, gch) = case boards V.!? 0 of
+			Nothing -> (GCWidth, GCHeight)
+			Just b -> (GCWidth `orMiscellaneous` width b, GCHeight `orMiscellaneous` height b)
+
+infixr 3 :=:
+infix 2 :&:
+-- | Together with 'toEndpointRecord', this makes defining 'ToEndpoint' instances for
+-- record types relatively easy. For example, for
+--
+-- > data Foo = { bar :: Bar, baz :: Baz }
+--
+-- you might write the instance
+--
+-- > instance ToEndpoint Foo where toEndpoint = toEndpointRecord $ "bar" :=: bar :&: "baz" :=: baz
+--
+-- This requires @Bar@ and @Baz@ to have their own 'ToEndpoint' instances.
+data ToEndpointRecordDescription a where
+	(:=:) :: ToEndpoint tgt => String -> (src -> tgt) -> ToEndpointRecordDescription src
+	(:&:) :: ToEndpointRecordDescription a -> ToEndpointRecordDescription a -> ToEndpointRecordDescription a
+
+-- | See 'ToEndpointDescription'.
+toEndpointRecord :: HasCallStack => ToEndpointRecordDescription a -> V.Vector a -> Endpoint
+toEndpointRecord desc vs = EDictionary (go desc) where
+	go (nm :=: f) = [(nm, toEndpoint (f <$> vs))]
+	go (l :&: r) = go l ++ go r
+
+class OneHot a where
+	indexCount :: Int
+	indexCountGC :: GameConstant
+	toIndex :: a -> Int
+	fromIndex :: Int -> a
+
+	indexCount = evalGameConstant (indexCountGC @a)
+	indexCountGC = GCMiscellaneous (indexCount @a)
+
+	default toIndex :: Enum a => a -> Int
+	default fromIndex :: Enum a => Int -> a
+	toIndex = fromEnum
+	fromIndex = toEnum
+
+instance OneHot Color where indexCountGC = GCColors
+instance OneHot Orientation where indexCountGC = GCOrientations
+
+instance OneHot Shape where
+	indexCountGC = GCShapes
+	toIndex = \case
+		Virus -> 0
+		West -> 1
+		East -> 2
+		_ -> 3 -- Disconnected, North, and South all have the same strategic content
+	fromIndex = \case
+		0 -> Virus
+		1 -> West
+		2 -> East
+		3 -> Disconnected
+
+instance OneHot PillContent where
+	indexCount = indexCount @Orientation * indexCount @Color * indexCount @Color
+	toIndex pc = (toIndex (orientation pc) * indexCount @Color + toIndex (bottomLeftColor pc)) * indexCount @Color + toIndex (otherColor pc)
+	fromIndex n = PillContent
+		{ orientation = fromIndex o
+		, bottomLeftColor = fromIndex l
+		, otherColor = fromIndex r
+		} where
+		(n', r) = n `quotRem` indexCount @Color
+		(o , l) = n' `quotRem` indexCount @Color

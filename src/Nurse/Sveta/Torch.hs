@@ -1,7 +1,6 @@
-{-# Language AllowAmbiguousTypes #-}
-
 module Nurse.Sveta.Torch (
 	NextNet, nextNetSample, nextNetEvaluation, nextNetDetailedLoss,
+	nextSaveTensors,
 
 	Net, netSample, netEvaluation, netTrain, netDetailedLoss, netIntrospect,
 	netSave, netLoadForInference, netLoadForTraining,
@@ -143,45 +142,6 @@ nextNetDetailedLoss net_ i o = do
 		c_o' <- cxx_next_evaluate_net net ptr_i >>= gcEndpoint
 		withUnwrapped (c_shape, c_o') \(ptr_shape, ptr_o') ->
 			cxx_next_detailed_loss ptr_shape ptr_o ptr_o' >>= gcEndpoint >>= hsEndpoint
-
-class OneHot a where
-	indexCount :: Int
-	toIndex :: a -> Int
-	fromIndex :: Int -> a
-
-instance OneHot Color where
-	indexCount = 1 + fromEnum (maxBound :: Color)
-	toIndex = fromEnum
-	fromIndex = toEnum
-
-instance OneHot Shape where
-	indexCount = 4
-	toIndex = \case
-		Virus -> 0
-		East -> 1
-		West -> 2
-		_ -> 3 -- Disconnected, North, and South all have the same strategic content
-	fromIndex = \case
-		0 -> Virus
-		1 -> East
-		2 -> West
-		3 -> Disconnected
-
-instance OneHot Orientation where
-	indexCount = 1 + fromEnum (maxBound :: Orientation)
-	toIndex = fromEnum
-	fromIndex = toEnum
-
-instance OneHot PillContent where
-	indexCount = indexCount @Orientation * indexCount @Color * indexCount @Color
-	toIndex pc = (toIndex (orientation pc) * indexCount @Color + toIndex (bottomLeftColor pc)) * indexCount @Color + toIndex (otherColor pc)
-	fromIndex n = PillContent
-		{ orientation = fromIndex o
-		, bottomLeftColor = fromIndex l
-		, otherColor = fromIndex r
-		} where
-		(n', r) = n `quotRem` indexCount @Color
-		(o , l) = n' `quotRem` indexCount @Color
 
 renderLookahead :: Ptr CChar -> (Color, Color) -> IO ()
 renderLookahead lookahead (l, r) = do
@@ -467,6 +427,12 @@ data HSTensor = HSTensor
 	, hstValuation :: Float
 	} deriving (Eq, Ord, Read, Show, Generic, ToJSON, FromJSON)
 
+instance ToEndpoint HSTensor where
+	toEndpoint = toEndpointRecord
+		$   "board" :=: hstBoard
+		:&: "valuation" :=: hstValuation
+		-- TODO: and other fields lol
+
 data SaveTensorsSummary = SaveTensorsSummary
 	{ stsTensorsSaved :: Integer
 	, stsVirusesOriginal :: Int
@@ -520,6 +486,52 @@ instance Permutable Prediction where
 -- which choice was made into the net
 
 type GameDetails = ((Board, Bool, CoarseSpeed), [GameStep])
+
+-- TODO: when switching from nextSaveTensors to saveTensors:
+-- * move the Vector HSTensor into the summary
+-- * rename away from "save" to "make" or something like that
+-- * split the scalars into fields for frames and virus count, each of the
+--   appropriate Haskell-native type (convert to C types only in the ToEndpoint
+--   definition)
+nextSaveTensors :: GameDetails -> IO (Vector HSTensor, SaveTensorsSummary)
+nextSaveTensors (b0, steps) = do
+	currentState <- initialState b0
+	-- summarize mutates its argument, so make a fresh clone to pass to it
+	preview <- initialState b0 >>= \gs -> summarize gs (gsMove <$> steps)
+	let valuation = realToFrac (pFinalValuation preview) :: CFloat
+
+	let loop [] = pure []
+	    loop (gs:gss) = case gsMove gs of
+	    	-- subtlety: go calls dmPlay, which records (l, r)
+	    	RNG{} -> go
+	    	Placement{} -> do
+	    		pred <- prediction preview <$> readIORef (pillsUsed currentState)
+	    		frames <- readIORef (framesPassed currentState)
+	    		let hsScalars = fromIntegral <$> [frames, originalVirusCount currentState]
+	    		board <- mfreeze (board currentState)
+	    		lookbehind <- readIORef (lookbehind currentState)
+
+	    		-- TODO: why is the root's visit count always one bigger than the sum of the children's visit counts?
+	    		let scaling = recip . max 1 . visitCount $ gsRoot gs
+	    		    priors = HM.fromList [(pill, scaling * visitCount stats) | (Placement _ pill, stats) <- HM.toList (gsChildren gs)]
+	    		    hst = HSTensor
+	    		    	{ hstBoard = board
+	    		    	, hstPrediction = pred
+	    		    	, hstScalars = hsScalars
+	    		    	, hstLookahead = lookbehind
+	    		    	, hstPriors = priors
+	    		    	, hstValuation = pFinalValuation preview
+	    		    	}
+	    		(hst:) <$> go
+	    	where go = dmPlay currentState (gsMove gs) >> loop gss
+
+	hsts <- V.fromList <$> loop steps
+	pure (hsts, SaveTensorsSummary
+		{ stsTensorsSaved = toInteger (V.length hsts)
+		, stsVirusesOriginal = originalVirusCount currentState
+		, stsVirusesKilled = M.size (pVirusKills preview)
+		, stsFrames = pTotalFrames preview
+		})
 
 -- | Arguments: directory to save tensors in; directory to save JSON files in;
 -- an index; color permutations to use; and the game record. Tensors will be

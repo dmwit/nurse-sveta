@@ -32,6 +32,7 @@ common shared
                         , vector ^>=0.13
     default-language:   Haskell2010
     default-extensions:   BlockArguments
+                        , DefaultSignatures
                         , DeriveAnyClass
                         , DeriveGeneric
                         , DerivingStrategies

@@ -42,8 +42,8 @@ main = do
 		#append top =<< hgvWidget grf
 
 		ssRef <- newIORef SelectionState
-			{ ssTop = exampleEndpoint
-			, ssCur = newResidue exampleEndpoint
+			{ ssTop = defaultEndpoint
+			, ssCur = newResidue defaultEndpoint
 			, ssSelections = newPath
 			, ssContainer = sel
 			, ssChildren = []
@@ -58,7 +58,9 @@ main = do
 
 		fsOnLoad gmr \fp -> rawDecodeFileLoop fp >>= \case
 			Nothing -> pure False
-			Just (_v :: GameDetails) -> True <$ resetSelection gsRef ssRef exampleEndpoint
+			Just gm -> do
+				(hsts, _) <- nextSaveTensors gm
+				True <$ resetSelection gsRef ssRef (toEndpoint hsts)
 
 		w <- new Window $ tail [undefined
 			, #title := "Nurse Sveta endpoint browser"
@@ -152,6 +154,7 @@ summarizeHeatmaps hms@(hm:_) = HeatmapsSummary
 		else labeledHeatmapSizeRecommendation mw mh
 	opts
 		| 0 <= lo && hi <= 1 && (hi-lo) >= 0.1 = heatmapOptions01
+		| 0 <= lo && hi <= 1 && lo == hi = heatmapOptions01
 		| 0 == lo = heatmapOptions0Max hi
 		| 0 < lo && hi/lo >= 3 = heatmapOptions0Max hi
 		| otherwise = heatmapOptionsRange lo hi
@@ -543,8 +546,5 @@ fsSetParent fs w = set (fsDialog fs) [#transientFor := w]
 fsOnLoad :: FileSelector -> (FilePath -> IO Bool) -> IO ()
 fsOnLoad fs = writeIORef (fsCallback fs)
 
-exampleEndpoint :: Endpoint
-exampleEndpoint = EDictionary $ tail [undefined
-	, ("A", EFullTensor [GCOrientations, GCWidth, GCHeight] $ generate [3,2,8,16] \[n,o,x,y] -> fromIntegral n/3 + fromIntegral o/6 + fromIntegral x/48 + fromIntegral y/768)
-	, ("B", EVector (GCMiscellaneous 1) [EFullTensor [] $ generate [3] \[n] -> fromIntegral n/3])
-	]
+defaultEndpoint :: Endpoint
+defaultEndpoint = EFullTensor [] (generate [1] \_ -> 0)
