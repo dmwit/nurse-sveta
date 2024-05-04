@@ -694,9 +694,10 @@ chunksOf (max 1 -> wMax) as = goBig extras as where
 	n = length as
 	h = (n + wMax - 1) `quot` wMax
 	(wLo, extras) = n `quotRem` max 1 h
+	wBig = wLo+1
 
 	goBig 0 xs = goSmall xs
-	goBig i xs = b : goBig (i-1) e where (b, e) = splitAt (wLo+1) xs
+	goBig i xs = b : goBig (i-1) e where (b, e) = splitAt wBig xs
 	goSmall [] = []
 	goSmall xs = b : goSmall e where (b, e) = splitAt wLo xs
 
