@@ -499,11 +499,11 @@ nextSaveTensors (b0, steps) = do
 	-- summarize mutates its argument, so make a fresh clone to pass to it
 	preview <- initialState b0 >>= \gs -> summarize gs (gsMove <$> steps)
 	let valuation = realToFrac (pFinalValuation preview) :: CFloat
+	    numPlacements = length [() | GameStep { gsMove = Placement{} } <- steps]
 
-	let loop [] = pure []
-	    loop (gs:gss) = case gsMove gs of
-	    	-- subtlety: go calls dmPlay, which records (l, r)
-	    	RNG{} -> go
+	let loop (gs:gss) = case gsMove gs of
+	    	-- subtlety: dmPlay records the lookbehind
+	    	RNG{} -> dmPlay currentState (gsMove gs) >> loop gss
 	    	Placement{} -> do
 	    		pred <- prediction preview <$> readIORef (pillsUsed currentState)
 	    		frames <- readIORef (framesPassed currentState)
@@ -522,10 +522,9 @@ nextSaveTensors (b0, steps) = do
 	    		    	, hstPriors = priors
 	    		    	, hstValuation = pFinalValuation preview
 	    		    	}
-	    		(hst:) <$> go
-	    	where go = dmPlay currentState (gsMove gs) >> loop gss
+	    		(hst, gss) <$ dmPlay currentState (gsMove gs)
 
-	hsts <- V.fromList <$> loop steps
+	hsts <- V.unfoldrExactNM numPlacements loop steps
 	pure (hsts, SaveTensorsSummary
 		{ stsTensorsSaved = toInteger (V.length hsts)
 		, stsVirusesOriginal = originalVirusCount currentState
