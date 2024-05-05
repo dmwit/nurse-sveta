@@ -8,6 +8,7 @@ import Data.List
 import Data.Maybe
 import Data.Text (Text)
 import Data.Traversable
+import Data.Vector (Vector)
 import GHC.Stack
 import GI.Gio (fileNewForPath)
 import GI.Gtk hiding (Text)
@@ -22,6 +23,7 @@ import System.IO
 import Util
 
 import qualified Data.Text as T
+import qualified Data.Vector as V
 
 main :: IO ()
 main = do
@@ -42,8 +44,8 @@ main = do
 		#append top =<< hgvWidget grf
 
 		ssRef <- newIORef SelectionState
-			{ ssTop = defaultEndpoint
-			, ssCur = newResidue defaultEndpoint
+			{ ssTop = defaultResidue
+			, ssCur = defaultResidue
 			, ssSelections = newPath
 			, ssContainer = sel
 			, ssChildren = []
@@ -60,7 +62,7 @@ main = do
 			Nothing -> pure False
 			Just gm -> do
 				(hsts, _) <- nextSaveTensors gm
-				True <$ resetSelection gsRef ssRef (toEndpoint hsts)
+				True <$ resetSelection gsRef ssRef (newResidue (toEndpoint hsts) (hstBackground <$> hsts))
 
 		w <- new Window $ tail [undefined
 			, #title := "Nurse Sveta endpoint browser"
@@ -81,26 +83,26 @@ data GraphsState = GraphsState
 	, gsPreviousDrawArguments :: Maybe (Path, [Int])
 	}
 
-resetGraphs :: IORef GraphsState -> Endpoint -> Path -> IO ()
-resetGraphs gsRef e path = do
+resetGraphs :: IORef GraphsState -> Residue -> Path -> IO ()
+resetGraphs gsRef r path = do
 	gs <- readIORef gsRef
 	removeAll (gsSliderContainer gs)
-	scales <- sliders (newResidue e) (getPath path)
+	scales <- sliders r (getPath path)
 	writeIORef gsRef gs { gsSliders = scales }
 	for_ scales \scale -> do
 		#append (gsSliderContainer gs) scale
 		on scale #valueChanged do
-			drawGraphs gsRef e path . map round =<< traverse #getValue scales
-	drawGraphs gsRef e path (0 <$ scales)
+			drawGraphs gsRef r path . map round =<< traverse #getValue scales
+	drawGraphs gsRef r path (0 <$ scales)
 
-drawGraphs :: IORef GraphsState -> Endpoint -> Path -> [Int] -> IO ()
-drawGraphs gsRef e path is = do
+drawGraphs :: IORef GraphsState -> Residue -> Path -> [Int] -> IO ()
+drawGraphs gsRef r path is = do
 	gs <- readIORef gsRef
 	when (currentDrawArguments /= gsPreviousDrawArguments gs) do
 		graphs <- for hms \hm -> do
 			dg <- newDrawingGrid (hsFullWidth stats) (hsFullHeight stats)
 			dgSetRenderer dg if hsBoard stats
-				then boardHeatmapWith (hsOptions stats) def (PillContent Horizontal Blue Yellow) (hHeat hm)
+				then boardHeatmapWith (hsOptions stats) (hBoard hm) (hLookahead hm) (hHeat hm)
 				else labeledHeatmapWith (hsOptions stats) (hsMapWidth stats) (hsMapHeight stats) (hHeat hm)
 			dgWidget dg
 		hgvSetModel (gsGraphContainer gs) HGM
@@ -110,7 +112,7 @@ drawGraphs gsRef e path is = do
 			}
 		writeIORef gsRef gs { gsPreviousDrawArguments = currentDrawArguments }
 	where
-	hms = heatmaps e path is
+	hms = heatmaps r path is
 	stats = summarizeHeatmaps hms
 	currentDrawArguments = Just (path, is)
 
@@ -179,7 +181,7 @@ sliders r (sel:path) = sliders (r `extendResidue` sel) path
 sliders r [] = pure []
 
 data SelectionState = SelectionState
-	{ ssTop :: Endpoint
+	{ ssTop :: Residue
 	, ssCur :: Residue
 	, ssSelections :: Path
 	, ssContainer :: Box
@@ -192,13 +194,13 @@ data SelectorWidget = SelectorWidget
 	, swChoices :: [(ListBoxRow, Selector)]
 	}
 
-resetSelection :: IORef GraphsState -> IORef SelectionState -> Endpoint -> IO ()
+resetSelection :: IORef GraphsState -> IORef SelectionState -> Residue -> IO ()
 resetSelection gsRef ssRef newTop = do
 	ss <- readIORef ssRef
 	removeAll (ssContainer ss)
 	writeIORef ssRef SelectionState
 		{ ssTop = newTop
-		, ssCur = newResidue newTop
+		, ssCur = newTop
 		, ssSelections = newPath
 		, ssContainer = ssContainer ss
 		, ssChildren = []
@@ -320,18 +322,34 @@ bVector nm = \case
 	[] -> Leaf
 	vals -> BVector nm vals
 
+data Background = Background
+	{ bgBoard :: Board
+	, bgLookahead :: (Color, Color)
+	} deriving (Eq, Ord, Read, Show)
+
+hstBackground :: HSTensor -> Background
+hstBackground hst = Background
+	{ bgBoard = hstBoard hst
+	, bgLookahead = hstLookahead hst
+	}
+
+bgLookaheadPillContent :: Background -> PillContent
+bgLookaheadPillContent = uncurry (PillContent Horizontal) . bgLookahead
+
 data BatchSelection = NotYetSelected | Pending Int | Selected deriving (Eq, Ord, Read, Show)
 data Residue = Residue
-	-- invariant: if the representative is a tensor, the batchSelection is Selected
+	-- invariant: if the representative is a tensor, the batchSelection is Selected and the background is a singleton
 	{ representative :: Endpoint
+	, background :: Vector Background
 	, batchSelection :: BatchSelection
 	, xUsed :: Bool
 	, yUsed :: Bool
 	} deriving (Eq, Ord, Read, Show)
 
-newResidue :: Endpoint -> Residue
-newResidue e = Residue
+newResidue :: Endpoint -> Vector Background -> Residue
+newResidue e bgs = Residue
 	{ representative = e
+	, background = bgs
 	, batchSelection = NotYetSelected
 	, xUsed = False
 	, yUsed = False
@@ -346,9 +364,17 @@ outermostVectorSize r = case batchSelection r of
 
 normalizeBatchSelection :: Residue -> Residue
 normalizeBatchSelection r = case (batchSelection r, representative r) of
-	(Pending b, EFullTensor gcs v) -> r { batchSelection = Selected, representative = EFullTensor gcs (v ! b) }
-	(Pending b, EMaskedTensor gcs v m) -> r { batchSelection = Selected, representative = EMaskedTensor gcs (v ! b) (m ! b) }
+	(Pending b, EFullTensor gcs v) -> r { batchSelection = Selected, representative = EFullTensor gcs (v ! b), background = bg' b }
+	(Pending b, EMaskedTensor gcs v m) -> r { batchSelection = Selected, representative = EMaskedTensor gcs (v ! b) (m ! b), background = bg' b }
 	_ -> r
+	where
+	bg' b = case (background r V.!? b, background r V.!? 0) of
+		(Just bg, _) -> V.singleton bg
+		(_, Just bg) -> V.singleton bg
+		_ -> V.singleton Background
+			{ bgBoard = def
+			, bgLookahead = (minBound, minBound)
+			}
 
 useAxis :: Axis -> Residue -> Residue
 useAxis axis r = normalizeBatchSelection r
@@ -414,10 +440,11 @@ data Heatmap = Heatmap
 	{ hWidth :: GameConstant
 	, hHeight :: GameConstant
 	, hContents :: [[Maybe Float]]
+	, hBackground :: Background
 	} deriving (Eq, Ord, Read, Show)
 
-heatmaps :: HasCallStack => Endpoint -> Path -> [Int] -> [Heatmap]
-heatmaps e p is0 = go (newResidue e) is0 (getPath p) where
+heatmaps :: HasCallStack => Residue -> Path -> [Int] -> [Heatmap]
+heatmaps r0 p is0 = go r0 is0 (getPath p) where
 	go r is = \case
 		FVector axis : sels -> combine axis gc (go' <$> bs) where
 			gc = outermostVectorSize r
@@ -437,6 +464,7 @@ heatmaps e p is0 = go (newResidue e) is0 (getPath p) where
 				EMaskedTensor _ vals mask -> if the mask == 0 then Nothing else justTheFloat vals
 				_ -> error $ "Reached the end of the path, but still looking at a dictionary, not a particular number\nResidue: " ++ show r ++ "\nOriginal path: " ++ show p
 				]]
+			, hBackground = V.head (background r)
 			}]
 	justTheFloat = Just . realToFrac . the
 	combine axis sz heatmapTable = case axis of
@@ -444,6 +472,7 @@ heatmaps e p is0 = go (newResidue e) is0 (getPath p) where
 		     	{ hWidth = sz
 		     	, hHeight = hHeight (head hms)
 		     	, hContents = concat . transpose $ map hContents hms
+		     	, hBackground = hBackground (head hms)
 		     	}
 		     | hms <- transpose heatmapTable
 		     ]
@@ -451,6 +480,7 @@ heatmaps e p is0 = go (newResidue e) is0 (getPath p) where
 		     	{ hWidth = hWidth (head hms)
 		     	, hHeight = sz
 		     	, hContents = map concat . transpose $ map hContents hms
+		     	, hBackground = hBackground (head hms)
 		     	}
 		     | hms <- transpose heatmapTable
 		     ]
@@ -464,6 +494,12 @@ hHeat hm =
 	| (x, col) <- zip [0..] (hContents hm)
 	, (y, Just val) <- zip [0..] col
 	]
+
+hBoard :: Heatmap -> Board
+hBoard = bgBoard . hBackground
+
+hLookahead :: Heatmap -> PillContent
+hLookahead = bgLookaheadPillContent . hBackground
 
 data FileSelector = FileSelector
 	{ fsTop :: Box
@@ -546,5 +582,7 @@ fsSetParent fs w = set (fsDialog fs) [#transientFor := w]
 fsOnLoad :: FileSelector -> (FilePath -> IO Bool) -> IO ()
 fsOnLoad fs = writeIORef (fsCallback fs)
 
-defaultEndpoint :: Endpoint
-defaultEndpoint = EFullTensor [] (generate [1] \_ -> 0)
+defaultResidue :: Residue
+defaultResidue = newResidue
+	(EFullTensor [] (generate [1] \_ -> 0))
+	(V.singleton Background { bgBoard = def, bgLookahead = (minBound, minBound) })
