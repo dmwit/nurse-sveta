@@ -9,10 +9,12 @@ module Nurse.Sveta.Torch.Endpoint (
 	-- ** Marshalling
 	ToEndpoint(..), FromEndpoint(..), fromEndpoint,
 	ToEndpointRecordDescription(..), toEndpointRecord,
-	OneHot(..),
+	OneHot(..), ToEndpointKey(..), MapLike(..),
+	eqAsFloat, oneHotValue,
+	OneHotScalar(..), ZeroDefault(..), NoDefault(..), ContainerEndpoint(..),
 	-- * Strided vectors
 	StridedVector,
-	generate, generateM,
+	generate, generateM, fromList,
 	(!), the,
 	-- * Structures
 	Structure(..), CStructure, gcStructure,
@@ -32,7 +34,11 @@ module Nurse.Sveta.Torch.Endpoint (
 import Control.Applicative
 import Control.Exception
 import Control.Monad
+import Data.Coerce
 import Data.Foldable
+import Data.HashMap.Strict (HashMap)
+import Data.HashSet (HashSet)
+import Data.Map.Strict (Map)
 import Data.Maybe
 import Data.Traversable
 import Dr.Mario.Model
@@ -43,7 +49,11 @@ import Nurse.Sveta.Torch.CWrapper
 import Nurse.Sveta.Util
 import System.IO
 
+import qualified Data.HashMap.Strict as HM
+import qualified Data.HashSet as HS
+import qualified Data.Map as M
 import qualified Data.Vector.Storable as VS
+import qualified Data.Vector.Storable.Mutable as MVS
 import qualified Data.Vector as V
 
 data GameConstant = GCMiscellaneous Int | GCColors | GCShapes | GCWidth | GCHeight | GCOrientations deriving (Eq, Ord, Read, Show)
@@ -210,21 +220,39 @@ lenStridesFor = scanr (*) 1
 stridesFor :: [Int] -> [Int]
 stridesFor = tail . lenStridesFor
 
-indexFor :: HasCallStack => [Int] -> Int -> [Int]
-indexFor (s:ss) i = q : indexFor ss r where (q, r) = i `quotRem` s
-indexFor [] 0 = []
-indexFor [] n = error $ "Index was not a multiple of the smallest stride; leftover bit was " ++ show n
+indicesFor :: HasCallStack => [Int] -> Int -> [Int]
+indicesFor (s:ss) i = q : indicesFor ss r where (q, r) = i `quotRem` s
+indicesFor [] 0 = []
+indicesFor [] n = error $ "Index was not a multiple of the smallest stride; leftover bit was " ++ show n
+
+indexFor :: HasCallStack => [Int] -> [Int] -> Int
+indexFor (s:ss) (i:is) = s*i + indexFor ss is
+indexFor [] [] = 0
+indexFor ss [] = error $ "More strides than indices in indicesFor; leftover bit was " ++ show ss
+indexFor [] is = error $ "More indices than strides in indicesFor; leftover bit was " ++ show is
 
 generate :: Storable a => [Int] -> ([Int] -> a) -> StridedVector a
 generate bs f = StridedVector
 	{ strides = ss
 	, bounds = bs
-	, contents = VS.generate len (f . indexFor ss)
+	, contents = VS.generate len (f . indicesFor ss)
 	} where
 	len:ss = lenStridesFor bs
 
 generateM :: (Storable a, Monad m) => [Int] -> ([Int] -> m a) -> m (StridedVector a)
-generateM bs f = StridedVector ss bs <$> VS.generateM len (f . indexFor ss) where
+generateM bs f = StridedVector ss bs <$> VS.generateM len (f . indicesFor ss) where
+	len:ss = lenStridesFor bs
+
+-- | Indices not listed in the second argument will be initialized to all-zeros.
+fromList :: Storable a => [Int] -> [([Int], a)] -> StridedVector a
+fromList bs writes = StridedVector
+	{ strides = ss
+	, bounds = bs
+	, contents = VS.create do
+		vec <- MVS.new len
+		for_ writes \(is, a) -> MVS.write vec (indexFor ss is) a
+		pure vec
+	} where
 	len:ss = lenStridesFor bs
 
 the :: (HasCallStack, Storable a) => StridedVector a -> a
@@ -243,6 +271,11 @@ sv ! i = error $ "Indexing error while computing StridedVector { strides = " ++ 
 
 data Endpoint
 	= EFullTensor [GameConstant] (StridedVector CFloat)
+	-- Currently, the ZeroDefault instances rely on the mask field being lazy.
+	-- If this field becomes strict, revisit those -- probably we will need to
+	-- invert the call structure, so that the ZeroDefault instance is basic,
+	-- and the masked versions of the maps call it. You might want to audit the
+	-- codebase for other calls to unmask, too.
 	| EMaskedTensor [GameConstant] (StridedVector CFloat) (StridedVector CChar)
 	| EVector GameConstant [Endpoint]
 	| EDictionary [(String, Endpoint)]
@@ -397,9 +430,18 @@ instance ToEndpoint CFloat where
 instance FromEndpoint CFloat where
 	endpointIndex (EFullTensor _ v) i = the (v ! i)
 
-instance ToEndpoint Float where toEndpoint = toEndpoint . fmap (realToFrac @_ @CFloat)
-instance FromEndpoint Float where endpointIndex e i = realToFrac @CFloat (endpointIndex e i)
+newtype RealToFracEndpoint a = RealEndpoint { getRealEndpoint :: a }
+	deriving newtype (Eq, Ord, Fractional, Num, Real)
+instance Real a => ToEndpoint (RealToFracEndpoint a) where
+	toEndpoint = toEndpoint . fmap (realToFrac @_ @CFloat)
+instance Fractional a => FromEndpoint (RealToFracEndpoint a) where
+	endpointIndex e i = realToFrac @CFloat (endpointIndex e i)
 
+deriving via RealToFracEndpoint Float instance ToEndpoint Float
+deriving via RealToFracEndpoint Float instance FromEndpoint Float
+deriving via RealToFracEndpoint CUChar instance ToEndpoint CUChar
+
+-- | Assumes that all boards have the same size
 instance ToEndpoint Board where
 	toEndpoint boards = EDictionary $ tail [undefined
 		, ("shape", full shape)
@@ -411,15 +453,15 @@ instance ToEndpoint Board where
 			-- it is important to use toIndex rather than fromIndex here,
 			-- because the Shape instance collapses multiple shapes to the same
 			-- index
-			\[i, v, x, y] -> if Just v == (toIndex <$> f (unsafeGet (boards V.! i) (Position x y)))
-				then 1 else 0
+			\[i, v, x, y] -> eqAsFloat (Just v)
+				(toIndex <$> f (unsafeGet (boards V.! i) (Position x y)))
 			where gcs = [indexCountGC @a, gcw, gch]
 		(gcw, gch) = case boards V.!? 0 of
 			Nothing -> (GCWidth, GCHeight)
 			Just b -> (GCWidth `orMiscellaneous` width b, GCHeight `orMiscellaneous` height b)
 
-infixr 3 :=:
-infix 2 :&:
+infix 3 :=:
+infixr 2 :&:
 -- | Together with 'toEndpointRecord', this makes defining 'ToEndpoint' instances for
 -- record types relatively easy. For example, for
 --
@@ -480,3 +522,95 @@ instance OneHot PillContent where
 		} where
 		(n', r) = n `quotRem` indexCount @Color
 		(o , l) = n' `quotRem` indexCount @Color
+
+eqAsFloat :: Eq a => a -> a -> CFloat
+eqAsFloat x y = if x == y then 1 else 0
+
+-- | Handy for building an argument to 'generate'; takes an actual value and
+-- the one-hot index we're currently generating the value for.
+oneHotValue :: (Eq a, OneHot a) => a -> Int -> CFloat
+oneHotValue = eqAsFloat . toIndex
+
+-- | A newtype to hang some Endpoint instances off of. See also 'SingletonSet',
+-- which is essentially the same, but supports types that would prefer to be
+-- represented as a collection of indices rather than a single index.
+newtype OneHotScalar a = OneHotScalar { getOneHotScalar :: a }
+	deriving (Eq, Ord, Read, Show)
+
+instance (Eq a, OneHot a) => ToEndpoint (OneHotScalar a) where
+	toEndpoint vs = EFullTensor [indexCountGC @a]
+		$ generate [V.length vs, indexCount @a] \[n, i] -> oneHotValue (getOneHotScalar (vs V.! n)) i
+
+class Eq a => ToEndpointKey a where
+	indexCounts :: [GameConstant]
+	toIndices :: a -> [Int]
+
+	default indexCounts :: OneHot a => [GameConstant]
+	indexCounts = [indexCountGC @a]
+
+	default toIndices :: OneHot a => a -> [Int]
+	toIndices = (:[]) . toIndex
+
+instance ToEndpointKey Orientation
+instance ToEndpointKey Color
+instance ToEndpointKey Shape
+
+instance ToEndpointKey PillContent where
+	indexCounts = [indexCountGC @Orientation, indexCountGC @Color, indexCountGC @Color]
+	toIndices pc = [toIndex (orientation pc), toIndex (bottomLeftColor pc), toIndex (otherColor pc)]
+
+-- | BEWARE! This instance assumes that positions are in-bounds for a standard 8x16 board.
+instance ToEndpointKey Position where
+	indexCounts = [GCWidth, GCHeight]
+	toIndices pos = [x pos, y pos]
+
+-- | BEWARE! This instance assumes that pills are being placed on a standard 8x16 board.
+instance ToEndpointKey Pill where
+	indexCounts = indexCounts @PillContent ++ indexCounts @Position
+	toIndices pill = toIndices (content pill) ++ toIndices (bottomLeftPosition pill)
+
+class MapLike m where mapToList :: m k v -> [(k, v)]
+instance MapLike HashMap where mapToList = HM.toList
+instance MapLike Map where mapToList = M.toList
+
+-- | Some map-like types represent partial mappings, but some represent total
+-- mappings with some default. If your mapping does not have a reasonable
+-- default, you can use this newtype to get an appropriately-masked
+-- 'ToEndpoint' instance.
+newtype NoDefault m k v = NoDefault { getNoDefault :: m k v }
+
+instance (MapLike m, ToEndpointKey k, Real v) => ToEndpoint (NoDefault m k v) where
+	toEndpoint ms = EMaskedTensor gcs
+		(fromList is (assocs realToFrac))
+		(fromList is (assocs (const 1)))
+		where
+		gcs = indexCounts @k
+		is = V.length ms : map evalGameConstant gcs
+
+		assocs :: (v -> a) -> [([Int], a)]
+		assocs f = V.ifoldr (\i (NoDefault m) writes -> [(i:toIndices k, f v) | (k, v) <- mapToList m] ++ writes) [] ms
+
+-- | Some map-like types really represent partial mappings, but some represent
+-- total mappings with some default. If your mapping has a default of zero, you
+-- can use this newtype to get an appropriate unmasked 'ToEndpoint' instance.
+newtype ZeroDefault m k v = ZeroDefault { getZeroDefault :: m k v }
+
+instance (MapLike m, ToEndpointKey k, Real v) => ToEndpoint (ZeroDefault m k v) where
+	toEndpoint ms = unmask (toEndpoint (coerce ms :: V.Vector (NoDefault m k v)))
+
+deriving via NoDefault HashMap k v instance (ToEndpointKey k, Real v) => ToEndpoint (HashMap k v)
+deriving via NoDefault Map     k v instance (ToEndpointKey k, Real v) => ToEndpoint (Map     k v)
+
+-- | If you have a set-like type, you can use this newtype to get a
+-- 'ToEndpoint' instance that has a full tensor with ones at indices
+-- corresponding to members of the set and zeros elsewhere.
+newtype ContainerEndpoint f a = ContainerEndpoint { getContainerEndpoint :: f a }
+
+instance (Foldable f, ToEndpointKey a) => ToEndpoint (ContainerEndpoint f a) where
+	toEndpoint sets = EFullTensor gcs $ fromList
+		(V.length sets : map evalGameConstant gcs)
+		(V.ifoldr (\i (ContainerEndpoint set) writes -> foldr (\v writes' -> (i:toIndices v, 1):writes') writes set) [] sets)
+		where
+		gcs = indexCounts @a
+
+deriving via ContainerEndpoint HashSet a instance ToEndpointKey a => ToEndpoint (HashSet a)

@@ -398,6 +398,15 @@ data Prediction = Prediction
 	, pFallWeight :: CUChar
 	} deriving (Eq, Ord, Read, Show, Generic, ToJSON, FromJSON)
 
+instance ToEndpoint Prediction where
+	toEndpoint = toEndpointRecord
+		$   "virus kills" :=: ZeroDefault . pVirusKillWeight
+		:&: "pill placements" :=: ZeroDefault . pPlacementWeight
+		:&: "clear locations" :=: ZeroDefault . pClearLocationWeight
+		:&: "clearing pills" :=: ZeroDefault . pClearPillWeight
+		:&: "final occupation" :=: pOccupied
+		:&: "fall weight" :=: pFallWeight
+
 deriving via Word8 instance   ToJSON CUChar
 deriving via Word8 instance FromJSON CUChar
 deriving via Float instance   ToJSON CFloat
@@ -430,8 +439,13 @@ data HSTensor = HSTensor
 instance ToEndpoint HSTensor where
 	toEndpoint = toEndpointRecord
 		$   "board" :=: hstBoard
+		:&: "prediction" :=: hstPrediction
+		:&: "frames" :=: (!!0) . hstScalars
+		:&: "original virus count" :=: (!!1) . hstScalars
+		:&: "lookahead (left)" :=: OneHotScalar . fst . hstLookahead
+		:&: "lookahead (right)" :=: OneHotScalar . snd . hstLookahead
+		:&: "priors" :=: hstPriors
 		:&: "valuation" :=: hstValuation
-		-- TODO: and other fields lol
 
 data SaveTensorsSummary = SaveTensorsSummary
 	{ stsTensorsSaved :: Integer
