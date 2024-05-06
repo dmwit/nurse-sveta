@@ -753,6 +753,9 @@ data Stable a = Stable
 	, sPayload_ :: a
 	} deriving (Eq, Ord, Read, Show)
 
+-- This is minBound+1, not minBound, so that Tracker can have a simple state
+-- that semantically means it hasn't seen the initial value, while still using
+-- (<) for cheap new-ness detection.
 newStable :: a -> Stable a
 newStable = Stable (minBound+1)
 
