@@ -87,13 +87,13 @@ instance FromJSON Move where
 data GameState = GameState
 	{ board :: IOBoard
 	, virusesKilled, pillsUsed, framesPassed :: IORef Int
-	, lookbehind :: IORef (Color, Color)
+	, lookbehind :: IORef Lookahead
 	, originalVirusCount :: Int
 	, originalSensitive :: Bool
 	, speed :: CoarseSpeed
 	}
 
-uninitializedLookbehind :: IO (IORef (Color, Color))
+uninitializedLookbehind :: IO (IORef Lookahead)
 uninitializedLookbehind = newIORef (error "asked what pill was last launched before any pill was launched")
 
 type DMParameters = Parameters IO Float Statistics Move GameState
@@ -237,7 +237,7 @@ cloneBoard = mfreeze >=> thaw
 
 dmPlay :: GameState -> Move -> IO ()
 dmPlay gs = \case
-	RNG l r -> writeIORef (lookbehind gs) (l, r)
+	RNG l r -> writeIORef (lookbehind gs) (Lookahead l r)
 	Placement path pill -> mplace (board gs) pill >>= \case
 		Nothing -> pure ()
 		Just counts ->  do
@@ -274,7 +274,7 @@ dmPreprocess config eval gen gs t
 					, children = HM.empty
 					, cachedEvaluation = Nothing
 					, unexplored = HM.fromListWithKey deduplicationError
-						[ (Placement path (mpPill placement l r), mempty)
+						[ (Placement path (mpPill placement (Lookahead l r)), mempty)
 						| (placement, path) <- if l == r then symmetricMoves else moves
 						]
 					}
@@ -311,12 +311,12 @@ type DetailedEvaluation = (Float, HashMap PillContent (Vector (Vector Float)))
 -- indexed by (x, y) position of the bottom left.
 dumbEvaluation :: GameState -> IO DetailedEvaluation
 dumbEvaluation = \s -> do
-	(l, r) <- readIORef (lookbehind s)
+	lk <- readIORef (lookbehind s)
 	points <- evaluateFinalState s
 	pure (points, HM.fromList
-		[ (PillContent orient bl o, vec)
+		[ (pillContentFromLookahead orient (f lk), vec)
 		| orient <- [Horizontal, Vertical]
-		, (bl, o) <- [(l, r), (r, l)]
+		, f <- [id, mirror]
 		])
 	-- when horizontal, this has one extra x position. but who cares?
 	where vec = V.replicate 8 (V.replicate 16 1)

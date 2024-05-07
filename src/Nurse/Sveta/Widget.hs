@@ -162,14 +162,14 @@ instance (MonadIO m, a ~ m ()) => Overload.IsLabel "queueDraw" (DrawingGrid -> a
 
 data PlayerStateModel = PSM
 	{ psmBoard :: Board
-	, psmLookahead :: Maybe (Color, Color)
+	, psmLookahead :: Maybe Lookahead
 	, psmOverlay :: [(Pill, Double)] -- ^ the 'Double's are opacities, 1 for fully visible, 0 for fully transparent
 	} deriving (Eq, Ord, Read, Show)
 
 psmBoardL :: PlayerStateModel -> (Board, Board -> PlayerStateModel)
 psmBoardL psm = (psmBoard psm, \b -> psm { psmBoard = b })
 
-psmLookaheadL :: PlayerStateModel -> (Maybe (Color, Color), Maybe (Color, Color) -> PlayerStateModel)
+psmLookaheadL :: PlayerStateModel -> (Maybe Lookahead, Maybe Lookahead -> PlayerStateModel)
 psmLookaheadL psm = (psmLookahead psm, \l -> psm { psmLookahead = l })
 
 psmOverlayL :: PlayerStateModel -> ([(Pill, Double)], [(Pill, Double)] -> PlayerStateModel)

@@ -241,7 +241,7 @@ generationThread eval genRef sc = do
 		t' <- unsafeDescend params (RNG l r) s t
 		let gs = GameStep (RNG l r) mempty mempty
 		boardSnapshot <- mfreeze (board s)
-		atomically $ modifyTVar genRef (onRootPosition (sSet (PSM boardSnapshot (Just (l, r)) [])))
+		atomically $ modifyTVar genRef (onRootPosition (sSet (PSM boardSnapshot (Just (Lookahead l r)) [])))
 		moveSpeed <- newSearchSpeed
 		searchLoop g config params s0 (gs:history) s threadSpeed gameSpeed moveSpeed t' (iterations config)
 
@@ -1108,7 +1108,7 @@ logVisualization log rng sc net dir category historySize = do
 		    [wd, hd] = fromIntegral <$> [w, h]
 		    wb = width  (hstBoard hst)
 		    hb = height (hstBoard hst)
-		    initialPC = uncurry launchContent (hstLookahead hst)
+		    initialPC = launchContent (hstLookahead hst)
 		    rotatedPCs = iterate (`rotateContent` Clockwise) initialPC
 		    pred = hstPrediction hst
 		    allPCs = [PillContent or bl o | or <- [minBound..maxBound], bl <- [minBound..maxBound], o <- [minBound..maxBound]]

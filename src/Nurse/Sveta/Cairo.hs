@@ -26,7 +26,8 @@ module Nurse.Sveta.Cairo (
 	HeatmapOptions(..), heatmapOptions01, heatmapOptions0Max, heatmapOptionsDyn, heatmapOptionsDyn', heatmapOptionsRange,
 	bwGradient, saturatingGradient, bSaturatingGradient,
 	-- * Re-exports
-	Board, Cell(..), Color(..), Orientation(..), PillContent(..), Position(..), Render, Shape(..),
+	Board, Cell(..), Color(..), Lookahead(..), Orientation(..), PillContent(..), Position(..), Render, Shape(..),
+	lookaheadFromPillContent, pillContentFromLookahead,
 	) where
 
 import Control.Applicative
@@ -62,17 +63,17 @@ bottleSizeRecommendation b = (width b + 2, height b + 4)
 bottle :: Board -> Render ()
 bottle b = bottleOutline (width b) (height b) >> bottleContent b
 
-bottleWithLookahead :: Board -> (Color, Color) -> Render ()
-bottleWithLookahead b (l, r) = do
+bottleWithLookahead :: Board -> Lookahead -> Render ()
+bottleWithLookahead b lk = do
 	bottleOutline_ w h xMid
 	bottleContent b
-	lookahead_ w h xMid l r
+	lookahead_ w h xMid lk
 	where
 	w = fromIntegral (width b)
 	h = fromIntegral (height b)
 	xMid = xMidFromWidth (width b)
 
-bottleMaybeLookahead :: Board -> Maybe (Color, Color) -> Render ()
+bottleMaybeLookahead :: Board -> Maybe Lookahead -> Render ()
 bottleMaybeLookahead = liftA2 maybe bottle bottleWithLookahead
 
 -- | width, height
@@ -109,11 +110,11 @@ bottleContent = getAp . ofoldMapWithKey
 	(\(Position x y) -> Ap . cell (fromIntegral x) (fromIntegral y))
 
 -- | width, height, left, right
-lookahead :: Int -> Int -> Color -> Color -> Render ()
+lookahead :: Int -> Int -> Lookahead -> Render ()
 lookahead w h = lookahead_ (fromIntegral w) (fromIntegral h) (xMidFromWidth w)
 
-lookahead_ :: Double -> Double -> Double -> Color -> Color -> Render ()
-lookahead_ w h xMid l r = lookaheadContent_ w h xMid (PillContent Horizontal l r)
+lookahead_ :: Double -> Double -> Double -> Lookahead -> Render ()
+lookahead_ w h xMid lk = lookaheadContent_ w h xMid (pillContentFromLookahead Horizontal lk)
 
 -- | width, height, content
 lookaheadContent :: Int -> Int -> PillContent -> Render ()

@@ -102,7 +102,7 @@ drawGraphs gsRef r path is = do
 		graphs <- for hms \hm -> do
 			dg <- newDrawingGrid (hsFullWidth stats) (hsFullHeight stats)
 			dgSetRenderer dg if hsBoard stats
-				then boardHeatmapWith (hsOptions stats) (hBoard hm) (hLookahead hm) (hHeat hm)
+				then boardHeatmapWith (hsOptions stats) (hBoard hm) (hPillContent hm) (hHeat hm)
 				else labeledHeatmapWith (hsOptions stats) (hsMapWidth stats) (hsMapHeight stats) (hHeat hm)
 			dgWidget dg
 		hgvSetModel (gsGraphContainer gs) HGM
@@ -324,7 +324,7 @@ bVector nm = \case
 
 data Background = Background
 	{ bgBoard :: Board
-	, bgLookahead :: (Color, Color)
+	, bgLookahead :: Lookahead
 	} deriving (Eq, Ord, Read, Show)
 
 hstBackground :: HSTensor -> Background
@@ -332,9 +332,6 @@ hstBackground hst = Background
 	{ bgBoard = hstBoard hst
 	, bgLookahead = hstLookahead hst
 	}
-
-bgLookaheadPillContent :: Background -> PillContent
-bgLookaheadPillContent = uncurry (PillContent Horizontal) . bgLookahead
 
 data BatchSelection = NotYetSelected | Pending Int | Selected deriving (Eq, Ord, Read, Show)
 data Residue = Residue
@@ -373,7 +370,7 @@ normalizeBatchSelection r = case (batchSelection r, representative r) of
 		(_, Just bg) -> V.singleton bg
 		_ -> V.singleton Background
 			{ bgBoard = def
-			, bgLookahead = (minBound, minBound)
+			, bgLookahead = Lookahead minBound minBound
 			}
 
 useAxis :: Axis -> Residue -> Residue
@@ -498,8 +495,8 @@ hHeat hm =
 hBoard :: Heatmap -> Board
 hBoard = bgBoard . hBackground
 
-hLookahead :: Heatmap -> PillContent
-hLookahead = bgLookaheadPillContent . hBackground
+hPillContent :: Heatmap -> PillContent
+hPillContent = pillContentFromLookahead Horizontal . bgLookahead . hBackground
 
 data FileSelector = FileSelector
 	{ fsTop :: Box
@@ -585,4 +582,4 @@ fsOnLoad fs = writeIORef (fsCallback fs)
 defaultResidue :: Residue
 defaultResidue = newResidue
 	(EFullTensor [] (generate [1] \_ -> 0))
-	(V.singleton Background { bgBoard = def, bgLookahead = (minBound, minBound) })
+	(V.singleton Background { bgBoard = def, bgLookahead = Lookahead minBound minBound })

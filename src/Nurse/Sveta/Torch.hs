@@ -143,8 +143,8 @@ nextNetDetailedLoss net_ i o = do
 		withUnwrapped (c_shape, c_o') \(ptr_shape, ptr_o') ->
 			cxx_next_detailed_loss ptr_shape ptr_o ptr_o' >>= gcEndpoint >>= hsEndpoint
 
-renderLookahead :: Ptr CChar -> (Color, Color) -> IO ()
-renderLookahead lookahead (l, r) = do
+renderLookahead :: Ptr CChar -> Lookahead -> IO ()
+renderLookahead lookahead (Lookahead l r) = do
 	pokeElemOff lookahead (toIndex l                    ) 1
 	pokeElemOff lookahead (toIndex r + indexCount @Color) 1
 
@@ -201,9 +201,9 @@ render igs = do
 -- matter, because rewrite rules throw them away.
 parseForEvaluation :: Int -> GameState -> ForeignPtr CFloat -> ForeignPtr CFloat -> IO DetailedEvaluation
 parseForEvaluation i gs priors_ valuation_ = withUnwrapped (priors_, valuation_) $ \(priors, valuation) -> do
-	(l, r) <- readIORef (lookbehind gs)
+	lk <- readIORef (lookbehind gs)
 	v <- peekElemOff valuation i
-	p <- forZipWithM [0..rotations-1] (iterate (`rotateContent` Clockwise) (PillContent startingOrientation l r)) $ \numRots pc -> do
+	p <- forZipWithM [0..rotations-1] (iterate (`rotateContent` Clockwise) (launchContent lk)) $ \numRots pc -> do
 		let iNumRots = iPriors + shiftL numRots logCellCount
 		v <- V.generateM boardWidth $ \x -> let ix = iNumRots + shiftL x logBoardHeight in
 			V.generateM boardHeight $ \y -> let iy = ix + y in
@@ -431,7 +431,7 @@ data HSTensor = HSTensor
 	{ hstBoard :: Board
 	, hstPrediction :: Prediction
 	, hstScalars :: [Float]
-	, hstLookahead :: (Color, Color)
+	, hstLookahead :: Lookahead
 	, hstPriors :: HashMap Pill Float
 	, hstValuation :: Float
 	} deriving (Eq, Ord, Read, Show, Generic, ToJSON, FromJSON)
@@ -442,8 +442,8 @@ instance ToEndpoint HSTensor where
 		:&: "prediction" :=: hstPrediction
 		:&: "frames" :=: (!!0) . hstScalars
 		:&: "original virus count" :=: (!!1) . hstScalars
-		:&: "lookahead (left)" :=: OneHotScalar . fst . hstLookahead
-		:&: "lookahead (right)" :=: OneHotScalar . snd . hstLookahead
+		:&: "lookahead (left)" :=: OneHotScalar . leftColor . hstLookahead
+		:&: "lookahead (right)" :=: OneHotScalar . rightColor . hstLookahead
 		:&: "priors" :=: hstPriors
 		:&: "valuation" :=: hstValuation
 
@@ -468,6 +468,12 @@ instance Permutable Color where
 		CPRY  -> \case Blue -> Blue  ; Red -> Yellow; Yellow -> Red
 		CPBRY -> \case Blue -> Red   ; Red -> Yellow; Yellow -> Blue
 		CPBYR -> \case Blue -> Yellow; Red -> Blue  ; Yellow -> Red
+
+instance Permutable Lookahead where
+	permuteColors cp lk = Lookahead
+		{  leftColor = permuteColors cp ( leftColor lk)
+		, rightColor = permuteColors cp (rightColor lk)
+		}
 
 instance Permutable PillContent where
 	permuteColors cp pc = pc

@@ -21,7 +21,7 @@ main = do
 		psv <- newPlayerStateView (PSM board Nothing [])
 		psvWidget psv >>= \w -> set w [#heightRequest := 500]
 		places <- new ListBox [#activateOnSingleClick := True]
-		for_ (sort . HM.toList . unsafeApproxReachable board $ launchPill Blue Red) $ \(pill, move) -> do
+		for_ (sort . HM.toList . unsafeApproxReachable board $ launchPill (Lookahead Blue Red)) $ \(pill, move) -> do
 			btn <- new Button $ tail [undefined
 				, #label := T.pack (ppPill pill)
 				, On #clicked (setOverlay psv move)
@@ -50,7 +50,7 @@ board = randomBoard 48 6
 setOverlay :: PlayerStateView -> BoxMove -> IO ()
 setOverlay psv move = psvModify_ psv $ \psm -> psm { psmOverlay = overlay } where
 	overlay = [(pill1, 0.3), (pill2, 0.3), (pill3, 0.3), (pill4, 1)]
-	pill0 = launchPill Blue Red
+	pill0 = launchPill (Lookahead Blue Red)
 	pill1 = fromMaybe pill0 (rotate board pill0 (initialRotation move))
 	pill2 = pill1 { bottomLeftPosition = pos1 }
 	pill3 = pill2 { bottomLeftPosition = pos2 }
