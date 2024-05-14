@@ -73,6 +73,8 @@ main = do
 				    	]
 				True <$ resetSelection gsRef ssRef (newResidue combinedEndpoint (teBackground <$> tes))
 
+		fsOnLoad nnw \fp -> fail "Neural net loading not yet implemented"
+
 		w <- new Window $ tail [undefined
 			, #title := "Nurse Sveta endpoint browser"
 			, #application := app
