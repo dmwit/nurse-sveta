@@ -29,6 +29,7 @@ main :: IO ()
 main = do
 	torchPlusGtkFix
 	app <- new Application []
+	netRef <- nextNetSample True >>= newIORef
 
 	on app #activate $ do
 		top <- new Box [#orientation := OrientationVertical]
@@ -61,8 +62,16 @@ main = do
 		fsOnLoad gmr \fp -> rawDecodeFileLoop fp >>= \case
 			Nothing -> pure False
 			Just gm -> do
-				(hsts, _) <- nextSaveTensors gm
-				True <$ resetSelection gsRef ssRef (newResidue (toEndpoint hsts) (hstBackground <$> hsts))
+				net <- readIORef netRef
+				tes <- nextTrainingExamples gm
+				let ni = toEndpoint (teInput <$> tes)
+				no <- nextNetEvaluation' net ni
+				let combinedEndpoint = EDictionary $ tail [undefined
+				    	, ("input", ni)
+				    	, ("output", no)
+				    	, ("ground truth", toEndpoint (teTruth <$> tes))
+				    	]
+				True <$ resetSelection gsRef ssRef (newResidue combinedEndpoint (teBackground <$> tes))
 
 		w <- new Window $ tail [undefined
 			, #title := "Nurse Sveta endpoint browser"
@@ -327,10 +336,10 @@ data Background = Background
 	, bgLookahead :: Lookahead
 	} deriving (Eq, Ord, Read, Show)
 
-hstBackground :: HSTensor -> Background
-hstBackground hst = Background
-	{ bgBoard = hstBoard hst
-	, bgLookahead = hstLookahead hst
+teBackground :: NextTrainingExample -> Background
+teBackground te = Background
+	{ bgBoard = niBoard (teInput te)
+	, bgLookahead = gtLookahead (teTruth te)
 	}
 
 data BatchSelection = NotYetSelected | Pending Int | Selected deriving (Eq, Ord, Read, Show)

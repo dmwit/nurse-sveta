@@ -34,6 +34,7 @@ common shared
     default-extensions:   BlockArguments
                         , DefaultSignatures
                         , DeriveAnyClass
+                        , DeriveFunctor
                         , DeriveGeneric
                         , DerivingStrategies
                         , DerivingVia
@@ -45,6 +46,7 @@ common shared
                         , MultiWayIf
                         , OverloadedLabels
                         , OverloadedStrings
+                        , QuantifiedConstraints
                         , RankNTypes
                         , ScopedTypeVariables
                         , StandaloneDeriving

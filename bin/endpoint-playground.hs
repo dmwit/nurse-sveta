@@ -19,18 +19,18 @@ main = do
 
 	for_ [minBound..maxBound] \ty -> do
 		putStrLn $ "\nOutput leaf type: " ++ show ty
-		net <- nextNetSample True
+		net <- nextNetSample' True
 			(STensor Positive [GCWidth, GCHeight])
 			(STensor ty [GCWidth, GCHeight])
 		let i = EFullTensor [GCWidth, GCHeight] (generate [2,8,16] \[n, i, c] -> fromIntegral n*0.2 + fromIntegral i*0.03 + fromIntegral c*0.005)
-		o <- nextNetEvaluation net i
+		o <- nextNetEvaluation' net i
 		putStr "Input: "
 		print i
 		putStr "\nOutput: "
 		print o
 		-- TODO: test maskedtensor ground truths
 		putStr "\nSelf-input loss: "
-		nextNetDetailedLoss net i i >>= print
+		nextNetDetailedLoss' net i i >>= print
 
 testAll :: (Eq a, Show a) => (a -> IO b) -> (b -> IO a) -> (b -> IO ()) -> [a] -> IO ()
 testAll c hs dump as = testDump c dump as >> testRoundtrip c hs as

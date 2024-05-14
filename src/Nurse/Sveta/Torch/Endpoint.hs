@@ -6,12 +6,19 @@ module Nurse.Sveta.Torch.Endpoint (
 	cEndpoint, hsEndpoint,
 	unmask, batchSize, batchSize', outermostGameConstant,
 	dumpEndpoint,
-	-- ** Marshalling
-	ToEndpoint(..), FromEndpoint(..), fromEndpoint,
+	-- * Marshalling
+	-- ** ToEndpoint
+	ToEndpoint(..),
 	ToEndpointRecordDescription(..), toEndpointRecord,
-	OneHot(..), ToEndpointKey(..), MapLike(..),
+	OneHot(..), MapLike(..),
 	eqAsFloat, oneHotValue,
 	OneHotScalar(..), ZeroDefault(..), NoDefault(..), ContainerEndpoint(..),
+	-- ** FromEndpoint
+	FromEndpoint(..), fromEndpoint,
+	FromEndpointRecordDescription(..), endpointIndexRecord, field,
+	-- ** Shared
+	Structured(..),
+	EndpointKey(..),
 	-- * Strided vectors
 	StridedVector,
 	generate, generateM, fromList,
@@ -36,8 +43,10 @@ import Control.Exception
 import Control.Monad
 import Data.Coerce
 import Data.Foldable
+import Data.Hashable
 import Data.HashMap.Strict (HashMap)
 import Data.HashSet (HashSet)
+import Data.Kind
 import Data.Map.Strict (Map)
 import Data.Maybe
 import Data.Traversable
@@ -269,6 +278,12 @@ StridedVector { strides = s:ss, bounds = b:bs, contents = c } ! i | 0 <= i && i 
 	}
 sv ! i = error $ "Indexing error while computing StridedVector { strides = " ++ show (strides sv) ++ ", bounds = " ++ show (bounds sv) ++ ", contents = <elided> } ! " ++ show i
 
+ifoldMap :: (Monoid m, Storable a) => ([Int] -> a -> m) -> StridedVector a -> m
+ifoldMap f StridedVector { strides = ss0, bounds = bs0, contents = c } = go ss0 bs0 [] 0 where
+	go [] [] is j = f (reverse is) (c VS.! j)
+	go (s:ss) (b:bs) is j = mconcat [go ss bs (i:is) (j+i*s) | i <- [0..b]]
+	go _ _ _ _ = error $ "Internal error in ifoldMap: strides and bounds did not have the same length"
+
 data Endpoint
 	= EFullTensor [GameConstant] (StridedVector CFloat)
 	-- Currently, the ZeroDefault instances rely on the mask field being lazy.
@@ -414,6 +429,8 @@ hsEndpoint_ c_e = do
 dumpEndpoint :: CEndpoint -> IO ()
 dumpEndpoint e = hFlush stdout >> withUnwrapped e c_dump_endpoint
 
+class Structured a where structure :: Structure
+
 class ToEndpoint a where
 	-- TODO: would a free functor over Vector (i.e. (Vector top, top -> a)) be more efficient?
 	toEndpoint :: V.Vector a -> Endpoint
@@ -430,7 +447,7 @@ instance ToEndpoint CFloat where
 instance FromEndpoint CFloat where
 	endpointIndex (EFullTensor _ v) i = the (v ! i)
 
-newtype RealToFracEndpoint a = RealEndpoint { getRealEndpoint :: a }
+newtype RealToFracEndpoint a = RealToFracEndpoint { getRealToFracEndpoint :: a }
 	deriving newtype (Eq, Ord, Fractional, Num, Real)
 instance Real a => ToEndpoint (RealToFracEndpoint a) where
 	toEndpoint = toEndpoint . fmap (realToFrac @_ @CFloat)
@@ -440,6 +457,13 @@ instance Fractional a => FromEndpoint (RealToFracEndpoint a) where
 deriving via RealToFracEndpoint Float instance ToEndpoint Float
 deriving via RealToFracEndpoint Float instance FromEndpoint Float
 deriving via RealToFracEndpoint CUChar instance ToEndpoint CUChar
+
+-- | Assumes 8x16 boards
+instance Structured Board where
+	structure = SDictionary $ tail [undefined
+		, ("shape", STensor Unit [GCShapes, GCWidth, GCHeight])
+		, ("color", STensor Unit [GCColors, GCWidth, GCHeight])
+		]
 
 -- | Assumes that all boards have the same size
 instance ToEndpoint Board where
@@ -541,9 +565,13 @@ instance (Eq a, OneHot a) => ToEndpoint (OneHotScalar a) where
 	toEndpoint vs = EFullTensor [indexCountGC @a]
 		$ generate [V.length vs, indexCount @a] \[n, i] -> oneHotValue (getOneHotScalar (vs V.! n)) i
 
-class Eq a => ToEndpointKey a where
+-- | @toIndices . fromIndices = id@ is a law, but @fromIndices . toIndices =
+-- id@ is not (e.g. see the 'Shape' instance, where 'North', 'South', and
+-- 'Disconnected' all have the same index).
+class Eq a => EndpointKey a where
 	indexCounts :: [GameConstant]
 	toIndices :: a -> [Int]
+	fromIndices :: HasCallStack => [Int] -> a
 
 	default indexCounts :: OneHot a => [GameConstant]
 	indexCounts = [indexCountGC @a]
@@ -551,27 +579,60 @@ class Eq a => ToEndpointKey a where
 	default toIndices :: OneHot a => a -> [Int]
 	toIndices = (:[]) . toIndex
 
-instance ToEndpointKey Orientation
-instance ToEndpointKey Color
-instance ToEndpointKey Shape
+	default fromIndices :: (HasCallStack, OneHot a) => [Int] -> a
+	fromIndices [i] = fromIndex i
+	fromIndices is = error $ "Expected one index to decode, but saw " ++ show (length is) ++ ", namely, " ++ show is
 
-instance ToEndpointKey PillContent where
+instance EndpointKey Orientation
+instance EndpointKey Color
+instance EndpointKey Shape
+
+instance EndpointKey Lookahead where
+	indexCounts = [indexCountGC @Color, indexCountGC @Color]
+	toIndices lk = [toIndex (f lk) | f <- [leftColor, rightColor]]
+	fromIndices [l, r] = Lookahead
+		{ leftColor = fromIndex l
+		, rightColor = fromIndex r
+		}
+
+instance EndpointKey PillContent where
 	indexCounts = [indexCountGC @Orientation, indexCountGC @Color, indexCountGC @Color]
 	toIndices pc = [toIndex (orientation pc), toIndex (bottomLeftColor pc), toIndex (otherColor pc)]
+	fromIndices [o, bl, oc] = PillContent
+		{ orientation = fromIndex o
+		, bottomLeftColor = fromIndex bl
+		, otherColor = fromIndex oc
+		}
 
 -- | BEWARE! This instance assumes that positions are in-bounds for a standard 8x16 board.
-instance ToEndpointKey Position where
+instance EndpointKey Position where
 	indexCounts = [GCWidth, GCHeight]
 	toIndices pos = [x pos, y pos]
+	fromIndices [ix, iy] = Position { x = ix, y = iy }
 
 -- | BEWARE! This instance assumes that pills are being placed on a standard 8x16 board.
-instance ToEndpointKey Pill where
+instance EndpointKey Pill where
 	indexCounts = indexCounts @PillContent ++ indexCounts @Position
 	toIndices pill = toIndices (content pill) ++ toIndices (bottomLeftPosition pill)
+	fromIndices (splitAt (length (indexCounts @PillContent)) -> (pc, pos)) = Pill
+		{ content = fromIndices pc
+		, bottomLeftPosition = fromIndices pos
+		}
 
-class MapLike m where mapToList :: m k v -> [(k, v)]
-instance MapLike HashMap where mapToList = HM.toList
-instance MapLike Map where mapToList = M.toList
+class (forall k v. KeyLike m k => Monoid (m k v)) => MapLike m where
+	type KeyLike m :: Type -> Constraint
+	mapToList :: m k v -> [(k, v)]
+	mapSingleton :: KeyLike m k => k -> v -> m k v
+
+instance MapLike HashMap where
+	type KeyLike HashMap = Hashable
+	mapToList = HM.toList
+	mapSingleton = HM.singleton
+
+instance MapLike Map where
+	type KeyLike Map = Ord
+	mapToList = M.toList
+	mapSingleton = M.singleton
 
 -- | Some map-like types represent partial mappings, but some represent total
 -- mappings with some default. If your mapping does not have a reasonable
@@ -579,7 +640,7 @@ instance MapLike Map where mapToList = M.toList
 -- 'ToEndpoint' instance.
 newtype NoDefault m k v = NoDefault { getNoDefault :: m k v }
 
-instance (MapLike m, ToEndpointKey k, Real v) => ToEndpoint (NoDefault m k v) where
+instance (MapLike m, EndpointKey k, Real v) => ToEndpoint (NoDefault m k v) where
 	toEndpoint ms = EMaskedTensor gcs
 		(fromList is (assocs realToFrac))
 		(fromList is (assocs (const 1)))
@@ -595,22 +656,52 @@ instance (MapLike m, ToEndpointKey k, Real v) => ToEndpoint (NoDefault m k v) wh
 -- can use this newtype to get an appropriate unmasked 'ToEndpoint' instance.
 newtype ZeroDefault m k v = ZeroDefault { getZeroDefault :: m k v }
 
-instance (MapLike m, ToEndpointKey k, Real v) => ToEndpoint (ZeroDefault m k v) where
+instance (MapLike m, EndpointKey k, Real v) => ToEndpoint (ZeroDefault m k v) where
 	toEndpoint ms = unmask (toEndpoint (coerce ms :: V.Vector (NoDefault m k v)))
 
-deriving via NoDefault HashMap k v instance (ToEndpointKey k, Real v) => ToEndpoint (HashMap k v)
-deriving via NoDefault Map     k v instance (ToEndpointKey k, Real v) => ToEndpoint (Map     k v)
+deriving via NoDefault HashMap k v instance (EndpointKey k, Real v) => ToEndpoint (HashMap k v)
+deriving via NoDefault Map     k v instance (EndpointKey k, Real v) => ToEndpoint (Map     k v)
 
 -- | If you have a set-like type, you can use this newtype to get a
 -- 'ToEndpoint' instance that has a full tensor with ones at indices
 -- corresponding to members of the set and zeros elsewhere.
 newtype ContainerEndpoint f a = ContainerEndpoint { getContainerEndpoint :: f a }
 
-instance (Foldable f, ToEndpointKey a) => ToEndpoint (ContainerEndpoint f a) where
+instance (Foldable f, EndpointKey a) => ToEndpoint (ContainerEndpoint f a) where
 	toEndpoint sets = EFullTensor gcs $ fromList
 		(V.length sets : map evalGameConstant gcs)
 		(V.ifoldr (\i (ContainerEndpoint set) writes -> foldr (\v writes' -> (i:toIndices v, 1):writes') writes set) [] sets)
 		where
 		gcs = indexCounts @a
 
-deriving via ContainerEndpoint HashSet a instance ToEndpointKey a => ToEndpoint (HashSet a)
+deriving via ContainerEndpoint HashSet a instance EndpointKey a => ToEndpoint (HashSet a)
+
+-- TODO: could support EVector maybe?
+endpointIndexMapLike :: (HasCallStack, MapLike m, KeyLike m k, EndpointKey k, Fractional v) => Endpoint -> Int -> m k v
+endpointIndexMapLike (EFullTensor _ t) i = ifoldMap (\is v -> mapSingleton (fromIndices is) (realToFrac v)) (t ! i)
+
+instance (EndpointKey k, Fractional v, Hashable k) => FromEndpoint (HashMap k v) where endpointIndex = endpointIndexMapLike
+instance (EndpointKey k, Fractional v, Ord      k) => FromEndpoint (    Map k v) where endpointIndex = endpointIndexMapLike
+
+newtype FromEndpointRecordDescription a = FromEndpointRecordDescription
+	{ getFromEndpointRecordDescription :: HasCallStack => HashMap String Endpoint -> Int -> a }
+	deriving (Functor)
+
+instance Applicative FromEndpointRecordDescription where
+	pure v = FromEndpointRecordDescription \_ _ -> v
+	FromEndpointRecordDescription f <*> FromEndpointRecordDescription v
+		= FromEndpointRecordDescription \es i -> f es i (v es i)
+
+instance Monad FromEndpointRecordDescription where
+	FromEndpointRecordDescription v >>= f = FromEndpointRecordDescription \es i ->
+		getFromEndpointRecordDescription (f (v es i)) es i
+
+field :: (HasCallStack, FromEndpoint a) => String -> FromEndpointRecordDescription a
+field s = FromEndpointRecordDescription \es -> case HM.lookup s es of
+	Just e -> endpointIndex e
+	Nothing -> error $ "missing field " ++ show s ++ " while trying to decode endpoint; fields available include " ++ show (HM.keys es)
+
+endpointIndexRecord :: HasCallStack => FromEndpointRecordDescription a -> Endpoint -> Int -> a
+endpointIndexRecord (FromEndpointRecordDescription f) = \case
+	EDictionary dict -> f (HM.fromList dict)
+	e -> error $ "attempted to decode a non-dictionary endpoint as if it were record-like\nfull endpoint: " ++ show e

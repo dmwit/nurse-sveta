@@ -361,6 +361,8 @@ class DecoderImpl : public torch::nn::Module {
 
 		torch::nn::Linear linear;
 		Conv2dReLUInit convolution;
+		std::map<std::string, Decoder> dict;
+		std::vector<Decoder> vec;
 		sp_structure shape;
 };
 TORCH_MODULE(Decoder);
@@ -422,11 +424,22 @@ DecoderImpl::DecoderImpl(sp_structure s, std::string name)
 			}
 			break;
 		case tag_vector:
-			std::cerr << "Vector decoding setup is not yet implemented." << std::endl;
-			throw TODO;
+			for(int i = 0; i < eval_game_constant(s->dims[0]); i++) {
+				auto child_name = name + "." + std::to_string(i);
+				auto child = Decoder(s->vec, child_name);
+				vec.push_back(child);
+				register_module(child_name, child);
+			}
+			break;
 		case tag_dictionary:
-			std::cerr << "Dictionary decoding setup is not yet implemented." << std::endl;
-			throw TODO;
+			for(auto pair: s->dict) {
+				// TODO: escape pair.first, I guess
+				auto child_name = name + ":" + pair.first;
+				auto child = Decoder(pair.second, child_name);
+				dict.emplace(pair.first, child);
+				register_module(child_name, child);
+			}
+			break;
 		default:
 			std::cerr << "Invalid tag " << s->tag << " in DecoderImpl()." << std::endl;
 			throw 0;
@@ -434,9 +447,10 @@ DecoderImpl::DecoderImpl(sp_structure s, std::string name)
 }
 
 torch::Tensor EncoderImpl::forward(sp_endpoint e) {
+	const int n = e->size;
 	switch(e->tag) {
 		case tag_tensor: {
-				int64_t n = e->values.size(0), sz_per_batch = eval_game_constants(e->dims);
+				int64_t sz_per_batch = eval_game_constants(e->dims);
 				if(is_board(e->dims)) {
 					return convolution->forward(e->values.reshape({n, sz_per_batch/CELLS, BOARD_WIDTH, BOARD_HEIGHT}));
 				} else {
@@ -446,12 +460,18 @@ torch::Tensor EncoderImpl::forward(sp_endpoint e) {
 						.expand({n, FILTERS, BOARD_WIDTH, BOARD_HEIGHT});
 				}
 			}
-		case tag_vector:
-			std::cerr << "Vector encoding is not yet implemented." << std::endl;
-			throw TODO;
-		case tag_dictionary:
-			std::cerr << "Dictionary encoding is not yet implemented." << std::endl;
-			throw TODO;
+		case tag_vector: {
+			torch::Tensor sum = torch::zeros({n, FILTERS, BOARD_WIDTH, BOARD_HEIGHT}, GPU_FLOAT);
+			for(int i = 0; i < vec.size(); ++i)
+				sum += vec[i]->forward(e->vec[i]);
+			return sum;
+			}
+		case tag_dictionary: {
+			torch::Tensor sum = torch::zeros({n, FILTERS, BOARD_WIDTH, BOARD_HEIGHT}, GPU_FLOAT);
+			for(auto [nm, child]: dict)
+				sum += child->forward(e->dict[nm]);
+			return sum;
+			}
 		default:
 			std::cerr << "Invalid tag " << e->tag << " in EncoderImpl::forward()." << std::endl;
 			throw 0;
@@ -471,9 +491,9 @@ sp_endpoint DecoderImpl::forward(torch::Tensor t) {
 				: linear->forward(t.reshape({e->size, BODY_SIZE}));
 			e->values = e->values.reshape(tensor_dimensions(e->size, shape->dims));
 			switch(shape->ty) {
-				case type_probability: // fall through
+				case type_probability: [[fallthrough]];
 				case type_unit: e->values = e->values.sigmoid(); break;
-				case type_positive: // fall through
+				case type_positive: [[fallthrough]];
 				case type_categorical: e->values = e->values.exp(); break;
 				default:
 					std::cerr << "Invalid leaf type " << shape->ty << " in DecoderImpl::forward()." << std::endl;
@@ -481,11 +501,13 @@ sp_endpoint DecoderImpl::forward(torch::Tensor t) {
 				}
 			break;
 		case tag_vector:
-			std::cerr << "Vector decoding is not yet implemented." << std::endl;
-			throw TODO;
+			for(int i = 0; i < vec.size(); i++)
+				e->vec.push_back(vec[i]->forward(t));
+			break;
 		case tag_dictionary:
-			std::cerr << "Dictionary decoding is not yet implemented." << std::endl;
-			throw TODO;
+			for(auto [nm, child]: dict)
+				e->dict[nm] = child->forward(t);
+			break;
 		default:
 			std::cerr << "Invalid tag " << shape->tag << " in DecoderImpl::forward()." << std::endl;
 			throw 0;

@@ -1,6 +1,10 @@
 module Nurse.Sveta.Torch (
-	NextNet, nextNetSample, nextNetEvaluation, nextNetDetailedLoss,
-	nextSaveTensors,
+	NextNet,
+	nextNetSample, nextNetEvaluation, nextNetDetailedLoss,
+	NextTrainingExample(..), -- TODO: move GameDetails here
+	nextTrainingExamples,
+	NextNetInput(..), NextNetOutput(..), NextGroundTruth(..),
+	nextNetSample', nextNetEvaluation', nextNetDetailedLoss',
 
 	Net, netSample, netEvaluation, netTrain, netDetailedLoss, netIntrospect,
 	netSave, netLoadForInference, netLoadForTraining,
@@ -110,39 +114,6 @@ netDetailedLoss net_ batch_ scaling_ = withUnwrapped (net_, batch_) $ \(net, bat
 			cxx_detailed_loss net out batch scaling
 			zipWith (\ty w -> (ty, realToFrac w)) [minBound..] <$> peekArray lossTypes out
 
-foreign import ccall "next_sample_net" cxx_next_sample_net :: Bool -> Ptr CStructure -> Ptr CStructure -> IO (Ptr NextNet)
-foreign import ccall "&next_discard_net" cxx_next_discard_net :: FinalizerPtr NextNet
-foreign import ccall "next_net_get_decoder_shape" cxx_next_net_get_decoder_shape :: Ptr NextNet -> IO (Ptr CStructure)
-foreign import ccall "next_evaluate_net" cxx_next_evaluate_net :: Ptr NextNet -> Ptr CEndpoint -> IO (Ptr CEndpoint)
-foreign import ccall "next_detailed_loss" cxx_next_detailed_loss :: Ptr CStructure -> Ptr CEndpoint -> Ptr CEndpoint -> IO (Ptr CEndpoint)
-
-newtype NextNet = NextNet (ForeignPtr NextNet) deriving newtype CWrapper
-
-gcNextNet :: Ptr NextNet -> IO NextNet
-gcNextNet ptr = NextNet <$> newForeignPtr cxx_next_discard_net ptr
-
-nextNetSample :: Bool -> Structure -> Structure -> IO NextNet
-nextNetSample training i o = do
-	c_i <- cStructure i
-	c_o <- cStructure o
-	withUnwrapped (c_i, c_o) \(ptr_i, ptr_o) -> cxx_next_sample_net training ptr_i ptr_o >>= gcNextNet
-
-nextNetEvaluation :: NextNet -> Endpoint -> IO Endpoint
-nextNetEvaluation net_ i = do
-	c_i <- cEndpoint i
-	withUnwrapped (net_, c_i) \(net, ptr_i) ->
-		cxx_next_evaluate_net net ptr_i >>= gcEndpoint >>= hsEndpoint
-
-nextNetDetailedLoss :: NextNet -> Endpoint -> Endpoint -> IO Endpoint
-nextNetDetailedLoss net_ i o = do
-	c_i <- cEndpoint i
-	c_o <- cEndpoint o
-	withUnwrapped (net_, (c_i, c_o)) \(net, (ptr_i, ptr_o)) -> do
-		c_shape <- cxx_next_net_get_decoder_shape net >>= gcStructure
-		c_o' <- cxx_next_evaluate_net net ptr_i >>= gcEndpoint
-		withUnwrapped (c_shape, c_o') \(ptr_shape, ptr_o') ->
-			cxx_next_detailed_loss ptr_shape ptr_o ptr_o' >>= gcEndpoint >>= hsEndpoint
-
 renderLookahead :: Ptr CChar -> Lookahead -> IO ()
 renderLookahead lookahead (Lookahead l r) = do
 	pokeElemOff lookahead (toIndex l                    ) 1
@@ -180,9 +151,11 @@ renderScalars :: Ptr CFloat -> GameState -> IO [Float]
 renderScalars scalars gs = do
 	frames_ <- readIORef (framesPassed gs)
 	let [frames, viruses] = fromIntegral <$> [frames_, originalVirusCount gs]
-	    safeLog = log . max (exp (-1))
 	pokeArray scalars [frames, safeLog frames, sqrt frames, viruses, safeLog viruses, 1/sqrt viruses]
 	pure [realToFrac frames, realToFrac viruses]
+
+safeLog :: CFloat -> CFloat
+safeLog = log . max (exp (-1))
 
 render :: Traversable t => t (Int, GameState) -> IO (Ptr CChar, Ptr CChar, Ptr CFloat)
 render igs = do
@@ -507,51 +480,6 @@ instance Permutable Prediction where
 
 type GameDetails = ((Board, Bool, CoarseSpeed), [GameStep])
 
--- TODO: when switching from nextSaveTensors to saveTensors:
--- * move the Vector HSTensor into the summary
--- * rename away from "save" to "make" or something like that
--- * split the scalars into fields for frames and virus count, each of the
---   appropriate Haskell-native type (convert to C types only in the ToEndpoint
---   definition)
-nextSaveTensors :: GameDetails -> IO (Vector HSTensor, SaveTensorsSummary)
-nextSaveTensors (b0, steps) = do
-	currentState <- initialState b0
-	-- summarize mutates its argument, so make a fresh clone to pass to it
-	preview <- initialState b0 >>= \gs -> summarize gs (gsMove <$> steps)
-	let valuation = realToFrac (pFinalValuation preview) :: CFloat
-	    numPlacements = length [() | GameStep { gsMove = Placement{} } <- steps]
-
-	let loop (gs:gss) = case gsMove gs of
-	    	-- subtlety: dmPlay records the lookbehind
-	    	RNG{} -> dmPlay currentState (gsMove gs) >> loop gss
-	    	Placement{} -> do
-	    		pred <- prediction preview <$> readIORef (pillsUsed currentState)
-	    		frames <- readIORef (framesPassed currentState)
-	    		let hsScalars = fromIntegral <$> [frames, originalVirusCount currentState]
-	    		board <- mfreeze (board currentState)
-	    		lookbehind <- readIORef (lookbehind currentState)
-
-	    		-- TODO: why is the root's visit count always one bigger than the sum of the children's visit counts?
-	    		let scaling = recip . max 1 . visitCount $ gsRoot gs
-	    		    priors = HM.fromList [(pill, scaling * visitCount stats) | (Placement _ pill, stats) <- HM.toList (gsChildren gs)]
-	    		    hst = HSTensor
-	    		    	{ hstBoard = board
-	    		    	, hstPrediction = pred
-	    		    	, hstScalars = hsScalars
-	    		    	, hstLookahead = lookbehind
-	    		    	, hstPriors = priors
-	    		    	, hstValuation = pFinalValuation preview
-	    		    	}
-	    		(hst, gss) <$ dmPlay currentState (gsMove gs)
-
-	hsts <- V.unfoldrExactNM numPlacements loop steps
-	pure (hsts, SaveTensorsSummary
-		{ stsTensorsSaved = toInteger (V.length hsts)
-		, stsVirusesOriginal = originalVirusCount currentState
-		, stsVirusesKilled = M.size (pVirusKills preview)
-		, stsFrames = pTotalFrames preview
-		})
-
 -- | Arguments: directory to save tensors in; directory to save JSON files in;
 -- an index; color permutations to use; and the game record. Tensors will be
 -- saved in files named @<i>.nst@, @<i+1>.nst@, etc., up to @<i+di-1>.nst@,
@@ -738,3 +666,152 @@ mallocForeignPtrArrays :: Storable a => [Int] -> IO [ForeignPtr a]
 mallocForeignPtrArrays lengths = do
 	base <- mallocForeignPtrArray (sum lengths)
 	pure . init $ scanl plusForeignPtr' base lengths
+
+foreign import ccall "next_sample_net" cxx_next_sample_net :: Bool -> Ptr CStructure -> Ptr CStructure -> IO (Ptr NextNet)
+foreign import ccall "&next_discard_net" cxx_next_discard_net :: FinalizerPtr NextNet
+foreign import ccall "next_net_get_decoder_shape" cxx_next_net_get_decoder_shape :: Ptr NextNet -> IO (Ptr CStructure)
+foreign import ccall "next_evaluate_net" cxx_next_evaluate_net :: Ptr NextNet -> Ptr CEndpoint -> IO (Ptr CEndpoint)
+foreign import ccall "next_detailed_loss" cxx_next_detailed_loss :: Ptr CStructure -> Ptr CEndpoint -> Ptr CEndpoint -> IO (Ptr CEndpoint)
+
+newtype NextNet = NextNet (ForeignPtr NextNet) deriving newtype CWrapper
+
+gcNextNet :: Ptr NextNet -> IO NextNet
+gcNextNet ptr = NextNet <$> newForeignPtr cxx_next_discard_net ptr
+
+nextNetSample' :: Bool -> Structure -> Structure -> IO NextNet
+nextNetSample' training i o = do
+	c_i <- cStructure i
+	c_o <- cStructure o
+	withUnwrapped (c_i, c_o) \(ptr_i, ptr_o) -> cxx_next_sample_net training ptr_i ptr_o >>= gcNextNet
+
+nextNetEvaluation' :: NextNet -> Endpoint -> IO Endpoint
+nextNetEvaluation' net_ i = do
+	c_i <- cEndpoint i
+	withUnwrapped (net_, c_i) \(net, ptr_i) ->
+		cxx_next_evaluate_net net ptr_i >>= gcEndpoint >>= hsEndpoint
+
+nextNetDetailedLoss' :: NextNet -> Endpoint -> Endpoint -> IO Endpoint
+nextNetDetailedLoss' net_ i o = do
+	c_i <- cEndpoint i
+	c_o <- cEndpoint o
+	withUnwrapped (net_, (c_i, c_o)) \(net, (ptr_i, ptr_o)) -> do
+		c_shape <- cxx_next_net_get_decoder_shape net >>= gcStructure
+		c_o' <- cxx_next_evaluate_net net ptr_i >>= gcEndpoint
+		withUnwrapped (c_shape, c_o') \(ptr_shape, ptr_o') ->
+			cxx_next_detailed_loss ptr_shape ptr_o ptr_o' >>= gcEndpoint >>= hsEndpoint
+
+nextNetSample :: Bool -> IO NextNet
+nextNetSample training = nextNetSample' training (structure @NextNetInput) (structure @NextNetOutput)
+
+nextNetEvaluation :: NextNet -> Vector NextNetInput -> IO (Vector NextNetOutput)
+nextNetEvaluation net is = fromEndpoint <$> nextNetEvaluation' net (toEndpoint is)
+
+-- TODO: what Haskell type is this returning?? gotta think about this API a bit more
+nextNetDetailedLoss :: NextNet -> Vector NextTrainingExample -> IO Endpoint
+nextNetDetailedLoss net tes = nextNetDetailedLoss' net (toEndpoint (teInput <$> tes)) (toEndpoint (teTruth <$> tes))
+
+data NextNetInput = NextNetInput
+	{ niBoard :: Board
+	, niFrames :: Int
+	, niOriginalVirusCount :: Int
+	} deriving (Eq, Ord, Read, Show)
+
+instance Structured NextNetInput where
+	structure = SDictionary $ tail [undefined
+		, ("board", structure @Board)
+		, ("frames", STensor Positive [])
+		-- Positive isn't really right for log(frames), since it can be as low
+		-- as -1, but reporting a leaf type for net *inputs* is a bit odd
+		-- anyway and the leaf type will be essentially ignored
+		, ("log(frames)", STensor Positive [])
+		, ("sqrt(frames)", STensor Positive [])
+		, ("original virus count", STensor Positive [])
+		, ("log(original virus count)", STensor Positive [])
+		, ("1/sqrt(original virus count)", STensor Positive [])
+		]
+
+instance ToEndpoint NextNetInput where
+	toEndpoint = toEndpointRecord
+		$   "board" :=: niBoard
+		:&: "frames" :=: frames
+		:&: "log(frames)" :=: safeLog . frames
+		:&: "sqrt(frames)" :=: sqrt . frames
+		:&: "original virus count" :=: viruses
+		:&: "log(original virus count)" :=: safeLog . viruses
+		:&: "1/sqrt(original virus count)" :=: recip . sqrt . viruses
+		where
+		frames, viruses :: NextNetInput -> CFloat
+		frames = fromIntegral . niFrames
+		viruses = fromIntegral . niOriginalVirusCount
+
+data NextGroundTruth = NextGroundTruth
+	{ gtPriors :: HashMap Pill Float
+	, gtLookahead :: Lookahead
+	, gtValuation :: Float
+	} deriving (Eq, Ord, Read, Show)
+
+instance ToEndpoint NextGroundTruth where
+	toEndpoint = toEndpointRecord
+		$   "priors" :=: NoDefault . gtPriors
+		:&: "valuation" :=: \gt -> NoDefault (HM.singleton (gtLookahead gt) (gtValuation gt))
+
+data NextNetOutput = NextNetOutput
+	{ noPriors :: HashMap Pill Float
+	, noValuation :: HashMap Lookahead Float
+	-- TODO: poke through the stuff in Prediction and see what we should migrate into here
+	} deriving (Eq, Ord, Read, Show)
+
+instance Structured NextNetOutput where
+	structure = SDictionary $ tail [undefined
+		, ("priors", STensor Categorical (indexCounts @Pill))
+		, ("valuation", STensor Unit (indexCounts @Lookahead))
+		]
+
+instance FromEndpoint NextNetOutput where
+	endpointIndex = endpointIndexRecord $ pure NextNetOutput
+		<*> field "priors"
+		<*> field "valuation"
+
+data NextTrainingExample = NextTrainingExample
+	{ teInput :: NextNetInput
+	, teTruth :: NextGroundTruth
+	} deriving (Eq, Ord, Read, Show)
+
+instance ToEndpoint NextTrainingExample where
+	toEndpoint = toEndpointRecord
+		$   "input" :=: teInput
+		:&: "ground truth" :=: teTruth
+
+nextTrainingExamples :: GameDetails -> IO (Vector NextTrainingExample)
+nextTrainingExamples (b0, steps) = do
+	currentState <- initialState b0
+	-- summarize mutates its argument, so make a fresh clone to pass to it
+	-- TODO: either use more of preview or compute less of preview
+	preview <- initialState b0 >>= \gs -> summarize gs (gsMove <$> steps)
+	let numPlacements = length [() | GameStep { gsMove = Placement{} } <- steps]
+	    loop (gs:gss) = case gsMove gs of
+	    	-- subtlety: dmPlay records the lookbehind
+	    	RNG{} -> dmPlay currentState (gsMove gs) >> loop gss
+	    	Placement{} -> do
+	    		frames <- readIORef (framesPassed currentState)
+	    		board <- mfreeze (board currentState)
+	    		lookbehind <- readIORef (lookbehind currentState)
+
+	    		-- TODO: why is the root's visit count always one bigger than the sum of the children's visit counts?
+	    		let scaling = recip . max 1 . visitCount $ gsRoot gs
+	    		    priors = HM.fromList [(pill, scaling * visitCount stats) | (Placement _ pill, stats) <- HM.toList (gsChildren gs)]
+	    		    te = NextTrainingExample
+	    		    	{ teInput = NextNetInput
+	    		    		{ niBoard = board
+	    		    		, niFrames = frames
+	    		    		, niOriginalVirusCount = originalVirusCount currentState
+	    		    		}
+	    		    	, teTruth = NextGroundTruth
+	    		    		{ gtPriors = priors
+	    		    		, gtLookahead = lookbehind
+	    		    		, gtValuation = pFinalValuation preview
+	    		    		}
+	    		    	}
+	    		(te, gss) <$ dmPlay currentState (gsMove gs)
+
+	V.unfoldrExactNM numPlacements loop steps
