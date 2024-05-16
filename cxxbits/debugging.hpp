@@ -31,7 +31,13 @@ class DebugScope {
 		DebugScope(std::string nm, int vrb = DEFAULT_VERBOSITY);
 		~DebugScope();
 
-		template<typename T> std::ostream &operator<<(const T &t);
+		template<typename T> std::ostream &operator<<(const T &t) {
+#ifdef DEBUG
+			if(verbosity >= INFO)
+				return std::cerr << "\t" << name << ": " << t;
+#endif
+			return devnull;
+		}
 
 	private:
 #ifdef DEBUG

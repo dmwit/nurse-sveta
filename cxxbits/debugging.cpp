@@ -47,11 +47,3 @@ DebugScope::~DebugScope() {
 	if(verbosity >= CALLS) std::cerr << "exiting  " << name << std::endl;
 #endif
 }
-
-template<typename T> std::ostream &DebugScope::operator<<(const T &t) {
-#ifdef DEBUG
-	if(verbosity >= INFO)
-		return std::cerr << "\t" << name << ": " << t;
-#endif
-	return devnull;
-}
