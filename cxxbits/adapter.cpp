@@ -24,6 +24,10 @@ const int64_t BODY_SIZE = FILTERS * CELLS;
 const float INITIAL_LEARNING_RATE = 1e-3;
 const float EPSILON = 1e-7;
 
+const int TODO = 0;
+
+template<typename T> sp_endpoint introspect_generic_module(T m);
+
 struct NetInput {
 	// boards: [n, 7, 8, 16]
 	// lookaheads: [n, 6]
@@ -293,6 +297,12 @@ class Conv2dReLUInitImpl : public torch::nn::Module {
 			return conv->forward(in);
 		}
 
+		// TODO: better dimensions for board-sized convolutions
+		sp_endpoint introspect() {
+			DebugScope dbg("Conv2dReLUInitImpl::introspect");
+			return introspect_generic_module(conv);
+		}
+
 		torch::nn::Conv2d conv;
 };
 TORCH_MODULE(Conv2dReLUInit);
@@ -333,6 +343,27 @@ class ResidualImpl : public torch::nn::Module {
 				in))))));
 		}
 
+		sp_endpoint introspect() {
+			DebugScope dbg("ResidualImpl::introspect");
+			sp_endpoint top(new _endpoint), zero(new _endpoint), one(new _endpoint);
+
+			top->tag = tag_vector;
+			zero->tag = tag_dictionary;
+			one->tag = tag_dictionary;
+			top->size = zero->size = one->size = 1;
+			top->dims.push_back(~2);
+
+			zero->add_child("norm", introspect_generic_module(norm0));
+			one ->add_child("norm", introspect_generic_module(norm1));
+			zero->add_child("convolution", conv0->introspect());
+			one ->add_child("convolution", conv1->introspect());
+
+			top->vec.push_back(zero);
+			top->vec.push_back(one);
+
+			return top;
+		}
+
 	Conv2dReLUInit conv0, conv1;
 	torch::nn::BatchNorm2d norm0, norm1;
 	torch::nn::LeakyReLU lrelu;
@@ -344,8 +375,10 @@ class EncoderImpl : public torch::nn::Module {
 	public:
 		EncoderImpl(sp_structure s, std::string name = "Encoder");
 		torch::Tensor forward(sp_endpoint e);
+		sp_endpoint introspect();
 
 	private:
+		sp_structure shape;
 		torch::nn::Linear linear;
 		Conv2dReLUInit convolution;
 		std::map<std::string, Encoder> dict;
@@ -358,12 +391,14 @@ class DecoderImpl : public torch::nn::Module {
 	public:
 		DecoderImpl(sp_structure s, std::string name = "Decoder");
 		sp_endpoint forward(torch::Tensor t);
+		sp_endpoint introspect();
+		sp_structure shape;
 
+	private:
 		torch::nn::Linear linear;
 		Conv2dReLUInit convolution;
 		std::map<std::string, Decoder> dict;
 		std::vector<Decoder> vec;
-		sp_structure shape;
 };
 TORCH_MODULE(Decoder);
 
@@ -373,8 +408,9 @@ bool is_board(std::vector<game_constant> dims) {
 }
 
 EncoderImpl::EncoderImpl(sp_structure s, std::string name)
-	: linear(nullptr), convolution(nullptr)
+	: linear(nullptr), convolution(nullptr), shape(s)
 {
+	DebugScope dbg("EncoderImpl()", DEFAULT_CONSTRUCTOR_VERBOSITY);
 	switch(s->tag) {
 		case tag_tensor:
 			if(is_board(s->dims)) {
@@ -408,11 +444,10 @@ EncoderImpl::EncoderImpl(sp_structure s, std::string name)
 	}
 }
 
-const int TODO = 0;
-
 DecoderImpl::DecoderImpl(sp_structure s, std::string name)
 	: linear(nullptr), convolution(nullptr), shape(s)
 {
+	DebugScope dbg("DecoderImpl()", DEFAULT_CONSTRUCTOR_VERBOSITY);
 	switch(s->tag) {
 		case tag_tensor:
 			if(is_board(s->dims)) {
@@ -447,6 +482,7 @@ DecoderImpl::DecoderImpl(sp_structure s, std::string name)
 }
 
 torch::Tensor EncoderImpl::forward(sp_endpoint e) {
+	DebugScope dbg("EncoderImpl::forward");
 	const int n = e->size;
 	switch(e->tag) {
 		case tag_tensor: {
@@ -479,6 +515,8 @@ torch::Tensor EncoderImpl::forward(sp_endpoint e) {
 }
 
 sp_endpoint DecoderImpl::forward(torch::Tensor t) {
+	DebugScope dbg("DecoderImpl::forward");
+
 	auto e = new _endpoint();
 	e->size = t.size(0);
 	e->tag = shape->tag;
@@ -516,6 +554,109 @@ sp_endpoint DecoderImpl::forward(torch::Tensor t) {
 	return sp_endpoint(e);
 }
 
+sp_endpoint tensor_endpoint(torch::Tensor t) {
+	DebugScope dbg("tensor_endpoint");
+	sp_endpoint e(new _endpoint);
+	e->tag = tag_tensor;
+	e->size = t.size(0);
+	for(int i = 1; i < t.dim(); ++i) e->dims.push_back(~t.size(i));
+	e->values = t;
+	return e;
+}
+
+sp_endpoint introspect_tensors(const std::vector<torch::Tensor> &v) {
+	DebugScope dbg("introspect_tensors(v)");
+	switch(v.size()) {
+		case 0: return sp_endpoint();
+		case 1: return tensor_endpoint(v[0].unsqueeze(0));
+		default:
+			bool all_same_size = true;
+			for(int i = 1; all_same_size && i < v.size(); ++i)
+				all_same_size = all_same_size && v[0].is_same_size(v[i]);
+
+			if(all_same_size) {
+				std::vector<torch::Tensor> unsquoze;
+				for(auto t: v) unsquoze.push_back(t.unsqueeze(0));
+				return tensor_endpoint(at::cat(unsquoze, 0).unsqueeze(0));
+			} else {
+				sp_endpoint e(new _endpoint);
+				e->tag = tag_dictionary;
+				e->size = 1;
+				for(int i = 0; i < v.size(); i++)
+					e->add_child(std::to_string(i), tensor_endpoint(v[i].unsqueeze(0)));
+				return e;
+			}
+	}
+}
+
+template<typename T>
+sp_endpoint introspect_generic_module(T m) {
+	DebugScope dbg("introspect_generic_module");
+
+	sp_endpoint params = introspect_tensors(m->parameters(true)), buffers = introspect_tensors(m->buffers(true));
+	if(params == nullptr && buffers == nullptr) {
+		std::cerr << "Attempted to introspect a module with no buffers or parameters." << std::endl;
+		throw 0;
+	}
+	if(params == nullptr) return buffers;
+	if(buffers == nullptr) return params;
+
+	sp_endpoint out(new _endpoint);
+	out->size = 1;
+	out->tag = tag_dictionary;
+	out->add_child("parameters", params);
+	out->add_child("buffers", buffers);
+	return out;
+}
+
+sp_endpoint EncoderImpl::introspect() {
+	DebugScope dbg("EncoderImpl::introspect");
+	sp_endpoint e(new _endpoint);
+	e->tag = shape->tag;
+	e->size = 1;
+
+	switch(shape->tag) {
+		case tag_tensor:
+			// TODO: return better game constants describing these shapes
+			if(is_board(shape->dims)) return convolution->introspect();
+			else return introspect_generic_module(linear);
+		case tag_vector:
+			e->dims = shape->dims;
+			for(auto child: vec) e->vec.push_back(child->introspect());
+			return e;
+		case tag_dictionary:
+			for(auto pair: dict)
+				e->add_child(pair.first, pair.second->introspect());
+			return e;
+		default:
+			std::cerr << "Invalid tag " << shape->tag << " in EncoderImpl::introspect()." << std::endl;
+			throw 0;
+	}
+}
+
+sp_endpoint DecoderImpl::introspect() {
+	DebugScope dbg("DecoderImpl::introspect");
+	sp_endpoint e(new _endpoint);
+	e->tag = shape->tag;
+	e->size = 1;
+
+	switch(shape->tag) {
+		case tag_tensor:
+			if(is_board(shape->dims)) return convolution->introspect();
+			// TODO: better dimensions
+			else return introspect_generic_module(linear);
+		case tag_vector:
+			for(auto child: vec) e->vec.push_back(child->introspect());
+			return e;
+		case tag_dictionary:
+			for(auto pair: dict) e->add_child(pair.first, pair.second->introspect());
+			return e;
+		default:
+			std::cerr << "Invalid tag " << shape->tag << " in DecoderImpl::introspect()." << std::endl;
+			throw 0;
+	}
+}
+
 class NextNetImpl : public torch::nn::Module {
 	public:
 		NextNetImpl(sp_structure in, sp_structure out)
@@ -523,6 +664,8 @@ class NextNetImpl : public torch::nn::Module {
 			, enc(in)
 			, dec(out)
 		{
+			DebugScope dbg("NextNetImpl()", DEFAULT_CONSTRUCTOR_VERBOSITY);
+
 			register_module("encoder", enc);
 			for(int64_t i = 0; i < RESIDUAL_BLOCKS; i++) {
 				residuals.push_back(Residual(FILTERS, LEAKAGE));
@@ -535,9 +678,32 @@ class NextNetImpl : public torch::nn::Module {
 		}
 
 		sp_endpoint forward(sp_endpoint in) {
+			DebugScope dbg("NextNetImpl::forward");
 			torch::Tensor t = enc->forward(in);
 			for(int i = 0; i < RESIDUAL_BLOCKS; i++) t = residuals[i]->forward(t);
 			return dec->forward(t);
+		}
+
+		sp_endpoint introspect() {
+			DebugScope dbg("NextNetImpl::introspect");
+
+			auto res = sp_endpoint(new _endpoint);
+			res->tag = tag_vector;
+			res->size = 1;
+			res->dims.push_back(~residuals.size());
+			res->vec.reserve(residuals.size());
+			for(auto residual: residuals) {
+				res->vec.push_back(residual->introspect());
+			}
+
+			auto top = sp_endpoint(new _endpoint);
+			top->tag = tag_dictionary;
+			top->size = 1;
+			top->add_child("encoder", enc->introspect());
+			top->add_child("residuals", res);
+			top->add_child("decoder", dec->introspect());
+
+			return top;
 		}
 
 		Encoder enc;
@@ -547,6 +713,8 @@ class NextNetImpl : public torch::nn::Module {
 TORCH_MODULE(NextNet);
 
 sp_endpoint next_detailed_loss(sp_structure shape, sp_endpoint ground_truth, sp_endpoint net_output) {
+	DebugScope dbg("next_detailed_loss(shape, ground_truth, net_output)");
+
 	if(shape->tag != ground_truth->tag || shape->tag != net_output->tag) {
 		std::cerr << "Mismatched tags in detailed_loss" << std::endl;
 		std::cerr << "Shape tag: " << shape->tag << std::endl;
@@ -746,6 +914,7 @@ extern "C" {
 	structure *next_net_get_decoder_shape(NextNet *net);
 	endpoint *next_evaluate_net(NextNet *net, endpoint *in);
 	endpoint *next_detailed_loss(structure *shape, endpoint *ground_truth, endpoint *net_output);
+	endpoint *next_introspect_net(NextNet *net);
 }
 
 NextNet *next_sample_net(bool training, structure *in, structure *out) {
@@ -772,6 +941,10 @@ endpoint *next_evaluate_net(NextNet *net, endpoint *in) {
 
 endpoint *next_detailed_loss(structure *shape, endpoint *ground_truth, endpoint *net_output) {
 	return new endpoint(next_detailed_loss(shape->ref, ground_truth->ref, net_output->ref));
+}
+
+endpoint *next_introspect_net(NextNet *net) {
+	return new endpoint((*net)->introspect());
 }
 
 void tensorcpy(float *out, const torch::Tensor &in) {

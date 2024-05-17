@@ -2,6 +2,7 @@ import Control.Monad
 import Control.Monad.Fix
 import Data.Default
 import Data.Foldable
+import Data.Functor
 import Data.GI.Base.Signals
 import Data.IORef
 import Data.List
@@ -29,7 +30,8 @@ main :: IO ()
 main = do
 	torchPlusGtkFix
 	app <- new Application []
-	netRef <- nextNetSample True >>= newIORef
+	netRef <- newIORef . Just =<< nextNetSample True
+	inpRef <- newIORef Nothing
 
 	on app #activate $ do
 		top <- new Box [#orientation := OrientationVertical]
@@ -57,22 +59,15 @@ main = do
 			, gsGraphContainer = grf
 			, gsPreviousDrawArguments = Nothing
 			}
-		selectorWidget gsRef ssRef
+		let updateView = setupEndpointView netRef inpRef gsRef ssRef
+		updateView
 
+		fsOnUnload gmr (writeIORef inpRef Nothing >> updateView)
 		fsOnLoad gmr \fp -> rawDecodeFileLoop fp >>= \case
 			Nothing -> pure False
-			Just gm -> do
-				net <- readIORef netRef
-				tes <- nextTrainingExamples gm
-				let ni = toEndpoint (teInput <$> tes)
-				no <- nextNetEvaluation' net ni
-				let combinedEndpoint = EDictionary $ tail [undefined
-				    	, ("input", ni)
-				    	, ("output", no)
-				    	, ("ground truth", toEndpoint (teTruth <$> tes))
-				    	]
-				True <$ resetSelection gsRef ssRef (newResidue combinedEndpoint (teBackground <$> tes))
+			Just gm -> True <$ (writeIORef inpRef (Just gm) >> updateView)
 
+		fsOnUnload nnw (writeIORef netRef Nothing >> updateView)
 		fsOnLoad nnw \fp -> fail "Neural net loading not yet implemented"
 
 		w <- new Window $ tail [undefined
@@ -86,6 +81,27 @@ main = do
 		#show w
 	args <- getArgs
 	() <$ #run app (Just args)
+
+setupEndpointView :: IORef (Maybe NextNet) -> IORef (Maybe GameDetails) -> IORef GraphsState -> IORef SelectionState -> IO ()
+setupEndpointView netRef inpRef gsRef ssRef = do
+	mnet <- readIORef netRef
+	minp <- readIORef inpRef
+	res <- case (mnet, minp) of
+		(Nothing, Nothing) -> pure defaultResidue
+		(Just net, Nothing) -> liftM2 newResidue (nextNetIntrospect net) (pure V.empty)
+		(Nothing, Just inp) -> nextTrainingExamples inp <&> \tes ->
+			newResidue (toEndpoint tes) (teBackground <$> tes)
+		(Just net, Just inp) -> do
+				tes <- nextTrainingExamples inp
+				let ni = toEndpoint (teInput <$> tes)
+				no <- nextNetEvaluation' net ni
+				let combinedEndpoint = EDictionary $ tail [undefined
+				    	, ("input", ni)
+				    	, ("output", no)
+				    	, ("ground truth", toEndpoint (teTruth <$> tes))
+				    	]
+				pure (newResidue combinedEndpoint (teBackground <$> tes))
+	resetSelection gsRef ssRef res
 
 data GraphsState = GraphsState
 	{ gsSliders :: [Scale]
@@ -512,7 +528,8 @@ hPillContent = pillContentFromLookahead Horizontal . bgLookahead . hBackground
 data FileSelector = FileSelector
 	{ fsTop :: Box
 	, fsDialog :: FileChooserNative
-	, fsCallback :: IORef (FilePath -> IO Bool)
+	, fsLoadCallback :: IORef (FilePath -> IO Bool)
+	, fsUnloadCallback :: IORef (IO ())
 	}
 
 -- TODO: handle odd characters in filenames
@@ -535,28 +552,32 @@ newFileSelector description dir glob = do
 	box <- new Box [#orientation := OrientationHorizontal]
 	txt <- new Entry [#placeholderText := description, #widthRequest := 600]
 	buf <- get txt #buffer
-	btn <- new Button [#iconName := "document-new"]
+	btn <- new Button [#iconName := "document-open"]
+	clr <- new Button [#iconName := "edit-clear"]
 	dlg <- new FileChooserNative $ tail [undefined
 		, #title := description
 		, #modal := True
 		, #filter := defaultFilter
 		]
-	act <- newIORef (\_ -> pure False)
+	loadRef <- newIORef (\_ -> pure False)
+	unloadRef <- newIORef (pure ())
 
 	#addFilter dlg defaultFilter
 	#addFilter dlg noFilter
 
 	#append box txt
 	#append box btn
+	#append box clr
 
 	let callback nm = do
-	    	f <- readIORef act
+	    	f <- readIORef loadRef
 	    	success <- f nm
 	    	(if success then #removeCssClass else #addCssClass) txt "error"
 
 	on btn #clicked do
 		#setCurrentFolder dlg (Just gDir)
 		#show dlg
+	on clr #clicked (join (readIORef unloadRef))
 	on dlg #response \v -> case toEnum (fromIntegral v) of
 		ResponseTypeAccept -> #getFile dlg >>= \case
 			Just file -> #getPath file >>= \case
@@ -578,7 +599,8 @@ newFileSelector description dir glob = do
 	pure FileSelector
 		{ fsTop = box
 		, fsDialog = dlg
-		, fsCallback = act
+		, fsLoadCallback = loadRef
+		, fsUnloadCallback = unloadRef
 		}
 
 fsWidget :: FileSelector -> IO Widget
@@ -588,7 +610,10 @@ fsSetParent :: FileSelector -> Window -> IO ()
 fsSetParent fs w = set (fsDialog fs) [#transientFor := w]
 
 fsOnLoad :: FileSelector -> (FilePath -> IO Bool) -> IO ()
-fsOnLoad fs = writeIORef (fsCallback fs)
+fsOnLoad fs = writeIORef (fsLoadCallback fs)
+
+fsOnUnload :: FileSelector -> IO () -> IO ()
+fsOnUnload fs = writeIORef (fsUnloadCallback fs)
 
 defaultResidue :: Residue
 defaultResidue = newResidue
