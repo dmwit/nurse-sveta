@@ -227,7 +227,7 @@ bool _endpoint::assert_size(int other_size) {
 
 structure_tag endpoint_get_tag(endpoint *e) { return e->ref->tag; }
 
-void endpoint_read_tensor(int *ret_batch_size, int *ret_dim_count, game_constant **ret_lens, float **ret_values, endpoint *_e) {
+void endpoint_read_tensor(int *ret_batch_size, int *ret_dim_count, game_constant **ret_lens, float **ret_values, char **ret_mask, endpoint *_e) {
 	auto e = _e->ref;
 	if(e->tag != tag_tensor) {
 		cerr << "Reading tensor contents is only allowed for tensor endpoints." << endl;
@@ -244,6 +244,14 @@ void endpoint_read_tensor(int *ret_batch_size, int *ret_dim_count, game_constant
 	*ret_values = new float[len];
 	auto contiguous = e->values.to(torch::kCPU).contiguous();
 	copy(contiguous.data_ptr<float>(), contiguous.data_ptr<float>() + len, *ret_values);
+
+	if(e->mask.defined()) {
+		*ret_mask = new char[len];
+		contiguous = e->mask.to(torch::kCPU).contiguous();
+		copy(contiguous.data_ptr<unsigned char>(), contiguous.data_ptr<unsigned char>() + len, *ret_mask);
+	} else {
+		*ret_mask = nullptr;
+	}
 }
 
 void endpoint_read_vector(game_constant *ret_len, endpoint ***ret_children, endpoint *_e) {
@@ -286,6 +294,7 @@ void endpoint_read_dictionary(int *ret_count, char ***ret_names, endpoint ***ret
 
 void free_endpoint_read_tensor_constants(game_constant *lens) { delete lens; }
 void free_endpoint_read_tensor_values(float *values) { delete values; }
+void free_endpoint_read_tensor_mask(char *mask) { delete mask; }
 void free_endpoint_read_vector(game_constant c, endpoint **children) {
 	const int len = eval_game_constant(c);
 	for(int i = 0; i < len; i++) delete children[i];

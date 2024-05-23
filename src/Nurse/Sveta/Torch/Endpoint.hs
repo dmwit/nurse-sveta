@@ -328,7 +328,7 @@ foreign import ccall "new_endpoint_vector" c_new_endpoint_vector :: CGameConstan
 foreign import ccall "new_endpoint_dictionary" c_new_endpoint_dictionary :: IO (Ptr CEndpoint)
 foreign import ccall "endpoint_add_child" c_endpoint_add_child :: Ptr CEndpoint -> Ptr CChar -> Ptr CEndpoint -> IO ()
 foreign import ccall "endpoint_get_tag" c_endpoint_get_tag :: Ptr CEndpoint -> IO CStructureTag
-foreign import ccall "endpoint_read_tensor" c_endpoint_read_tensor :: Ptr CInt -> Ptr CInt -> Ptr (Ptr CGameConstant) -> Ptr (Ptr CFloat) -> Ptr CEndpoint -> IO ()
+foreign import ccall "endpoint_read_tensor" c_endpoint_read_tensor :: Ptr CInt -> Ptr CInt -> Ptr (Ptr CGameConstant) -> Ptr (Ptr CFloat) -> Ptr (Ptr CChar) -> Ptr CEndpoint -> IO ()
 foreign import ccall "endpoint_read_vector" c_endpoint_read_vector :: Ptr CGameConstant -> Ptr (Ptr (Ptr CEndpoint)) -> Ptr CEndpoint -> IO ()
 foreign import ccall "endpoint_read_dictionary" c_endpoint_read_dictionary :: Ptr CInt -> Ptr (Ptr CString) -> Ptr (Ptr (Ptr CEndpoint)) -> Ptr CEndpoint -> IO ()
 foreign import ccall "dump_endpoint" c_dump_endpoint :: Ptr CEndpoint -> IO ()
@@ -336,6 +336,7 @@ foreign import ccall "free_endpoint_read_tensor_constants" c_free_endpoint_read_
 foreign import ccall "free_endpoint_read_vector" c_free_endpoint_read_vector :: CGameConstant -> Ptr (Ptr CEndpoint) -> IO ()
 foreign import ccall "free_endpoint_read_dictionary" c_free_endpoint_read_dictionary :: CInt -> Ptr CString -> Ptr (Ptr CEndpoint) -> IO ()
 foreign import ccall "&free_endpoint_read_tensor_values" c_free_endpoint_read_tensor_values :: FinalizerPtr CFloat
+foreign import ccall "&free_endpoint_read_tensor_mask" c_free_endpoint_read_tensor_mask :: FinalizerPtr CChar
 foreign import ccall "&free_endpoint" c_free_endpoint :: FinalizerPtr CEndpoint
 
 gcEndpoint :: Ptr CEndpoint -> IO CEndpoint
@@ -382,8 +383,9 @@ hsEndpoint_ c_e = do
 	   	alloca \pBatchSize ->
 	   	alloca \pDimCount ->
 	   	alloca \ppLens ->
-	   	alloca \ppValues -> do
-	   	c_endpoint_read_tensor pBatchSize pDimCount ppLens ppValues c_e
+	   	alloca \ppValues ->
+	   	alloca \ppMask -> do
+	   	c_endpoint_read_tensor pBatchSize pDimCount ppLens ppValues ppMask c_e
 	   	batchSize <- fromIntegral <$> peek pBatchSize
 	   	dimCount <- fromIntegral <$> peek pDimCount
 	   	pLens <- peek ppLens
@@ -392,12 +394,18 @@ hsEndpoint_ c_e = do
 	   	    lenValues:ss = lenStridesFor bs
 	   	c_free_endpoint_read_tensor_constants pLens
 	   	pValues <- peek ppValues
+	   	pMask <- peek ppMask
 	   	fpValues <- newForeignPtr c_free_endpoint_read_tensor_values pValues
-	   	pure $ EFullTensor lens StridedVector
-	   		{ bounds = bs
-	   		, strides = ss
-	   		, contents = VS.unsafeFromForeignPtr0 fpValues lenValues
-	   		}
+	   	fpMask <- newForeignPtr c_free_endpoint_read_tensor_mask pMask
+	   	let svValues = StridedVector
+	   	    	{ bounds = bs
+	   	    	, strides = ss
+	   	    	, contents = VS.unsafeFromForeignPtr0 fpValues lenValues
+	   	    	}
+	   	pure $ if pMask == nullPtr
+	   		then EFullTensor lens svValues
+	   		else EMaskedTensor lens svValues svValues
+	   			{ contents = VS.unsafeFromForeignPtr0 fpMask lenValues }
 	   | tag == c_tag_vector ->
 	   	alloca \pLen ->
 	   	alloca \ppChildren -> do

@@ -61,13 +61,14 @@ void endpoint_add_child(endpoint *parent, char *name, endpoint *child);
 
 structure_tag endpoint_get_tag(endpoint *e);
 // Indices vary in the same way as for new_endpoint_tensor.
-void endpoint_read_tensor(int *ret_batch_size, int *ret_dim_count, game_constant **ret_lens, float **ret_values, endpoint *e);
+void endpoint_read_tensor(int *ret_batch_size, int *ret_dim_count, game_constant **ret_lens, float **ret_values, char **ret_mask, endpoint *e);
 void endpoint_read_vector(game_constant *ret_len, endpoint ***ret_children, endpoint *e);
 void endpoint_read_dictionary(int *ret_count, char ***ret_names, endpoint ***ret_children, endpoint *parent);
 
 void dump_endpoint(endpoint *e);
 void free_endpoint_read_tensor_constants(game_constant *lens);
 void free_endpoint_read_tensor_values(float *values);
+void free_endpoint_read_tensor_mask(char *values);
 void free_endpoint_read_vector(game_constant c, endpoint **children);
 void free_endpoint_read_dictionary(int count, char **names, endpoint **children);
 void free_endpoint(endpoint *e);
