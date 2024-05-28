@@ -1,6 +1,6 @@
 module Nurse.Sveta.Torch (
 	NextNet,
-	nextNetSample, nextNetEvaluation, nextNetIntrospect,
+	nextNetSample, nextNetEvaluation, nextNetWeights,
 	NextTrainingExample(..), -- TODO: move GameDetails here
 	nextTrainingExamples,
 	NextNetInput(..), NextNetOutput(..), NextGroundTruth(..),
@@ -670,7 +670,7 @@ mallocForeignPtrArrays lengths = do
 foreign import ccall "next_sample_net" cxx_next_sample_net :: Bool -> Ptr CStructure -> Ptr CStructure -> IO (Ptr NextNet)
 foreign import ccall "&next_discard_net" cxx_next_discard_net :: FinalizerPtr NextNet
 foreign import ccall "next_evaluate_net" cxx_next_evaluate_net :: Ptr NextNet -> Ptr CEndpoint -> IO (Ptr CEndpoint)
-foreign import ccall "next_introspect_net" cxx_next_introspect_net :: Ptr NextNet -> IO (Ptr CEndpoint)
+foreign import ccall "next_net_weights" cxx_next_net_weights :: Ptr NextNet -> IO (Ptr CEndpoint)
 
 newtype NextNet = NextNet (ForeignPtr NextNet) deriving newtype CWrapper
 
@@ -695,8 +695,8 @@ nextNetSample training = nextNetSample' training (structure @NextNetInput) (stru
 nextNetEvaluation :: NextNet -> Vector NextNetInput -> IO (Vector NextNetOutput)
 nextNetEvaluation net is = fromEndpoint <$> nextNetEvaluation' net (toEndpoint is)
 
-nextNetIntrospect :: NextNet -> IO Endpoint
-nextNetIntrospect net_ = withUnwrapped net_ (cxx_next_introspect_net >=> gcEndpoint >=> hsEndpoint)
+nextNetWeights :: NextNet -> IO Endpoint
+nextNetWeights net_ = withUnwrapped net_ (cxx_next_net_weights >=> gcEndpoint >=> hsEndpoint)
 
 data NextNetInput = NextNetInput
 	{ niBoard :: Board

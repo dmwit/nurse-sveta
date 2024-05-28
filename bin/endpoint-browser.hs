@@ -88,7 +88,7 @@ setupEndpointView netRef inpRef gsRef ssRef = do
 	minp <- readIORef inpRef
 	res <- case (mnet, minp) of
 		(Nothing, Nothing) -> pure defaultResidue
-		(Just net, Nothing) -> liftM2 newResidue (nextNetIntrospect net) (pure V.empty)
+		(Just net, Nothing) -> liftM2 newResidue (nextNetWeights net) (pure V.empty)
 		(Nothing, Just inp) -> nextTrainingExamples inp <&> \tes ->
 			newResidue (toEndpoint tes) (teBackground <$> tes)
 		(Just net, Just inp) -> do
