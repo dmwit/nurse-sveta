@@ -24,7 +24,9 @@ const int64_t BODY_SIZE = FILTERS * CELLS;
 const float INITIAL_LEARNING_RATE = 1e-3;
 const float EPSILON = 1e-7;
 
-const int TODO = 0;
+// TODO: turn off for speed when we're fairly confident things are working right
+constexpr bool CHECK_MASK_VALIDITY = true;
+constexpr bool CHECK_NO_CLAMPING = true;
 
 template<typename T> sp_endpoint introspect_generic_module(T m);
 
@@ -712,94 +714,60 @@ class NextNetImpl : public torch::nn::Module {
 };
 TORCH_MODULE(NextNet);
 
-sp_endpoint next_detailed_loss(sp_structure shape, sp_endpoint ground_truth, sp_endpoint net_output) {
-	DebugScope dbg("next_detailed_loss(shape, ground_truth, net_output)");
+torch::Tensor next_leaf_loss(leaf_type loss_ty, const torch::Tensor &ground_truth, const torch::Tensor *const mask, const torch::Tensor &net_output) {
+	DebugScope dbg("next_leaf_loss");
 
-	if(shape->tag != ground_truth->tag || shape->tag != net_output->tag) {
-		std::cerr << "Mismatched tags in detailed_loss" << std::endl;
-		std::cerr << "Shape tag: " << shape->tag << std::endl;
-		std::cerr << "Ground truth tag: " << ground_truth->tag << std::endl;
-		std::cerr << "Net output tag: " << net_output->tag << std::endl;
-		std::cerr << "Full shape: " << *shape << std::endl;
+	if(ground_truth.sizes() != net_output.sizes() || (mask != nullptr && ground_truth.sizes() != mask->sizes())) {
+		std::cerr << "Mismatched tensor shapes in next_leaf_loss" << std::endl;
+		std::cerr << "Ground truth: " << TensorSketch(ground_truth) << std::endl;
+		std::cerr << "Net output: " << TensorSketch(net_output) << std::endl;
+		if(mask != nullptr) std::cerr << "Mask: " << TensorSketch(*mask) << std::endl;
 		throw 0;
 	}
 
-	if(ground_truth->size != net_output->size) {
-		std::cerr << "Mismatched batch sizes in detailed_loss" << std::endl;
-		std::cerr << "Ground truth batch size: " << ground_truth->size << std::endl;
-		std::cerr << "Net output batch size: " << net_output->size << std::endl;
+	if(CHECK_MASK_VALIDITY && mask != nullptr && !ground_truth.equal(ground_truth * *mask)) {
+		std::cerr << "Invalid mask found in next_leaf_loss: some masked values were nonzero." << std::endl;
+		std::cerr << "Values: " << ground_truth << std::endl;
+		std::cerr << "Mask: " << *mask << std::endl;
 		throw 0;
 	}
 
-	auto loss = new _endpoint();
-	loss->size = 1;
-	loss->tag = shape->tag;
+	switch(loss_ty) {
+		case type_unit: [[fallthrough]];
+		case type_positive:
+			return mask == nullptr ?
+				(ground_truth - net_output).square() :
+				(ground_truth - net_output * *mask).square();
+		case type_categorical: {
+			std::vector<int64_t> sum_dimensions; sum_dimensions.reserve(ground_truth.dim() - 1);
+			for(int i = 1; i < ground_truth.dim(); ++i) sum_dimensions.push_back(i);
+			torch::Tensor normalization =
+				mask == nullptr ?
+				net_output.sum(sum_dimensions, true) :
+				(net_output * *mask).sum(sum_dimensions, true);
 
-	switch(shape->tag) {
-		case tag_tensor:
-			if(shape->dims != ground_truth->dims || shape->dims != net_output->dims) {
-				std::cerr << "Mismatched dimensions in detailed_loss" << std::endl;
-				dump_game_constants(std::cerr << "Shape dimensions: ", shape->dims) << std::endl;
-				dump_game_constants(std::cerr << "Ground truth dimensions: ", ground_truth->dims) << std::endl;
-				dump_game_constants(std::cerr << "Net output dimensions: ", net_output->dims) << std::endl;
-				throw 0;
+			// ground_truth can have zeros (e.g. everywhere the mask is zero), which
+			// leads to -inf's after the log, which leads to nan's in the gradients. We
+			// bring zeros up to EPSILON to avoid this. I also tried clamping after the
+			// log, but the nan's show up even after multiplying by the mask to screen
+			// off the effect of the incoming zeros.
+			//
+			// ground_truth is zero everywhere mask is, so we don't need to mask again.
+			// TODO: should this be t*log(t/o) or o*log(o/t)?
+			return ground_truth * (ground_truth.clamp_min(EPSILON) * normalization / net_output).log();
 			}
-
-			if(eval_game_constants(shape->dims) <= 0) {
-				loss->values = torch::zeros({1}, torch::kCUDA);
-			} else {
-				auto masked_net_output = net_output->values;
-				if(ground_truth->mask.defined()) {
-					if(!ground_truth->values.equal(ground_truth->values * ground_truth->mask)) {
-						std::cerr << "Invalid mask found in detailed_loss: some masked values were nonzero." << std::endl;
-						std::cerr << "Values: " << ground_truth->values << std::endl;
-						std::cerr << "Mask: " << ground_truth->mask << std::endl;
-						throw 0;
-					}
-					masked_net_output *= ground_truth->mask;
-				}
-
-				switch(shape->ty) {
-					case type_unit: // fall through
-					case type_positive:
-						loss->values = (ground_truth->values - masked_net_output).square().sum();
-						break;
-					case type_categorical: {
-							std::vector<int64_t> sum_dimensions;
-							for(int i = 0; i < shape->dims.size(); i++) sum_dimensions.push_back(i+1);
-							masked_net_output = masked_net_output / masked_net_output.sum(sum_dimensions, true);
-						}
-						// ground_truth can have zeros (e.g. everywhere the mask is zero), which leads to -inf's after the log,
-						// which leads to nan's in the gradients. We bring zeros up to EPSILON to avoid this. I also tried
-						// clamping after the log, but the nan's show up even after multiplying by the mask to screen off the
-						// effect of the incoming zeros.
-						loss->values = (ground_truth->values * (ground_truth->values / masked_net_output).clamp_min(EPSILON).log()).sum();
-						break;
-					case type_probability:
-						masked_net_output = masked_net_output.clamp(EPSILON, 1-EPSILON);
-						loss->values = (ground_truth->values * masked_net_output.log() + (1 - ground_truth->values) * (1 - masked_net_output).log()).sum().neg();
-						break;
-					default:
-						std::cerr << "Invalid type " << shape->ty << " in detailed_loss." << std::endl;
-						throw 0;
-				}
-
-				loss->values = (loss->values / (float)ground_truth->size).reshape({1});
+		case type_probability: {
+			torch::Tensor clamped_output = net_output.clamp(EPSILON, 1-EPSILON);
+			if(CHECK_NO_CLAMPING && !clamped_output.equal(net_output))
+				std::cerr << "WARNING: net output a probability so confident that it was clamped" << std::endl;
+			torch::Tensor first_cross_entropy_term = ((ground_truth - 1) * (1 - clamped_output).log());
+			if(mask != nullptr) first_cross_entropy_term *= *mask;
+			return first_cross_entropy_term - ground_truth * clamped_output.log();
 			}
-
-			break;
-		case tag_vector:
-			std::cerr << "Vector loss not yet implemented." << std::endl;
-			throw TODO;
-		case tag_dictionary:
-			std::cerr << "Dictionary loss not yet implemented." << std::endl;
-			throw TODO;
 		default:
-			std::cerr << "Invalid tag " << shape->tag << " in detailed_loss." << std::endl;
+			std::cerr << "Invalid loss type " << loss_ty << " in next_leaf_loss." << std::endl;
 			throw 0;
 	}
-
-	return sp_endpoint(loss);
 }
 
 class NetImpl : public torch::nn::Module {
@@ -911,9 +879,7 @@ torch::Tensor detailed_loss(Net &net, const Batch &batch, float *loss_scaling_ar
 extern "C" {
 	NextNet *next_sample_net(bool training, structure *in, structure *out);
 	void next_discard_net(NextNet *net);
-	structure *next_net_get_decoder_shape(NextNet *net);
 	endpoint *next_evaluate_net(NextNet *net, endpoint *in);
-	endpoint *next_detailed_loss(structure *shape, endpoint *ground_truth, endpoint *net_output);
 	endpoint *next_introspect_net(NextNet *net);
 }
 
@@ -926,21 +892,10 @@ NextNet *next_sample_net(bool training, structure *in, structure *out) {
 
 void next_discard_net(NextNet *net) { delete net; }
 
-// TODO: perhaps we should delete this from the API and just call it internally
-// in detailed_loss (which would therefore take a net and a net input rather
-// than a shape and a net output)
-structure *next_net_get_decoder_shape(NextNet *net) {
-	return new structure((*net)->dec->shape);
-}
-
 endpoint *next_evaluate_net(NextNet *net, endpoint *in) {
 	// TODO: think very very hard about where exactly we want gradient control and training control in the API
 	torch::NoGradGuard g;
 	return new endpoint((*net)->forward(in->ref));
-}
-
-endpoint *next_detailed_loss(structure *shape, endpoint *ground_truth, endpoint *net_output) {
-	return new endpoint(next_detailed_loss(shape->ref, ground_truth->ref, net_output->ref));
 }
 
 endpoint *next_introspect_net(NextNet *net) {

@@ -1,10 +1,10 @@
 module Nurse.Sveta.Torch (
 	NextNet,
-	nextNetSample, nextNetEvaluation, nextNetIntrospect, nextNetDetailedLoss,
+	nextNetSample, nextNetEvaluation, nextNetIntrospect,
 	NextTrainingExample(..), -- TODO: move GameDetails here
 	nextTrainingExamples,
 	NextNetInput(..), NextNetOutput(..), NextGroundTruth(..),
-	nextNetSample', nextNetEvaluation', nextNetDetailedLoss',
+	nextNetSample', nextNetEvaluation',
 
 	Net, netSample, netEvaluation, netTrain, netDetailedLoss, netIntrospect,
 	netSave, netLoadForInference, netLoadForTraining,
@@ -669,9 +669,7 @@ mallocForeignPtrArrays lengths = do
 
 foreign import ccall "next_sample_net" cxx_next_sample_net :: Bool -> Ptr CStructure -> Ptr CStructure -> IO (Ptr NextNet)
 foreign import ccall "&next_discard_net" cxx_next_discard_net :: FinalizerPtr NextNet
-foreign import ccall "next_net_get_decoder_shape" cxx_next_net_get_decoder_shape :: Ptr NextNet -> IO (Ptr CStructure)
 foreign import ccall "next_evaluate_net" cxx_next_evaluate_net :: Ptr NextNet -> Ptr CEndpoint -> IO (Ptr CEndpoint)
-foreign import ccall "next_detailed_loss" cxx_next_detailed_loss :: Ptr CStructure -> Ptr CEndpoint -> Ptr CEndpoint -> IO (Ptr CEndpoint)
 foreign import ccall "next_introspect_net" cxx_next_introspect_net :: Ptr NextNet -> IO (Ptr CEndpoint)
 
 newtype NextNet = NextNet (ForeignPtr NextNet) deriving newtype CWrapper
@@ -691,25 +689,11 @@ nextNetEvaluation' net_ i = do
 	withUnwrapped (net_, c_i) \(net, ptr_i) ->
 		cxx_next_evaluate_net net ptr_i >>= gcEndpoint >>= hsEndpoint
 
-nextNetDetailedLoss' :: NextNet -> Endpoint -> Endpoint -> IO Endpoint
-nextNetDetailedLoss' net_ i o = do
-	c_i <- cEndpoint i
-	c_o <- cEndpoint o
-	withUnwrapped (net_, (c_i, c_o)) \(net, (ptr_i, ptr_o)) -> do
-		c_shape <- cxx_next_net_get_decoder_shape net >>= gcStructure
-		c_o' <- cxx_next_evaluate_net net ptr_i >>= gcEndpoint
-		withUnwrapped (c_shape, c_o') \(ptr_shape, ptr_o') ->
-			cxx_next_detailed_loss ptr_shape ptr_o ptr_o' >>= gcEndpoint >>= hsEndpoint
-
 nextNetSample :: Bool -> IO NextNet
 nextNetSample training = nextNetSample' training (structure @NextNetInput) (structure @NextNetOutput)
 
 nextNetEvaluation :: NextNet -> Vector NextNetInput -> IO (Vector NextNetOutput)
 nextNetEvaluation net is = fromEndpoint <$> nextNetEvaluation' net (toEndpoint is)
-
--- TODO: what Haskell type is this returning?? gotta think about this API a bit more
-nextNetDetailedLoss :: NextNet -> Vector NextTrainingExample -> IO Endpoint
-nextNetDetailedLoss net tes = nextNetDetailedLoss' net (toEndpoint (teInput <$> tes)) (toEndpoint (teTruth <$> tes))
 
 nextNetIntrospect :: NextNet -> IO Endpoint
 nextNetIntrospect net_ = withUnwrapped net_ (cxx_next_introspect_net >=> gcEndpoint >=> hsEndpoint)
