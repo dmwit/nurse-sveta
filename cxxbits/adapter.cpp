@@ -347,23 +347,15 @@ class ResidualImpl : public torch::nn::Module {
 
 		sp_endpoint introspect() {
 			DebugScope dbg("ResidualImpl::introspect");
-			sp_endpoint top(new _endpoint), zero(new _endpoint), one(new _endpoint);
-
-			top->tag = tag_vector;
-			zero->tag = tag_dictionary;
-			one->tag = tag_dictionary;
-			top->size = zero->size = one->size = 1;
-			top->dims.push_back(~2);
-
-			zero->add_child("norm", introspect_generic_module(norm0));
-			one ->add_child("norm", introspect_generic_module(norm1));
-			zero->add_child("convolution", conv0->introspect());
-			one ->add_child("convolution", conv1->introspect());
-
-			top->vec.push_back(zero);
-			top->vec.push_back(one);
-
-			return top;
+			sp_endpoint out(new _endpoint);
+			// conv0 and conv1 are different enough that this can't be a two-element vector of dictionaries
+			out->tag = tag_dictionary;
+			out->size = 1;
+			out->add_child("norm0", introspect_generic_module(norm0));
+			out->add_child("norm1", introspect_generic_module(norm1));
+			out->add_child("conv0", conv0->introspect());
+			out->add_child("conv1", conv1->introspect());
+			return out;
 		}
 
 	Conv2dReLUInit conv0, conv1;
