@@ -321,6 +321,41 @@ outermostGameConstant = \case
 	EVector gc _ -> Just gc
 	_ -> Nothing
 
+data EndpointShape = ShFull [GameConstant] | ShMasked [GameConstant] | ShVector GameConstant EndpointShape | ShDictionary [(String, EndpointShape)]
+	deriving (Eq, Ord, Read, Show)
+
+sanityCheck :: Endpoint -> Either String (Int, EndpointShape)
+sanityCheck = \case
+	EFullTensor gcs vals -> case bounds vals of
+		len:rest | rest == evalGameConstants gcs -> Right (len, ShFull gcs)
+		         | otherwise -> Left $ "StridedVector dimensions don't match tensor dimensions (" ++ show (bounds vals) ++ " vs. " ++ show gcs ++ ")"
+		[] -> Left "StridedVector has no batch dimension"
+	EMaskedTensor gcs vals mask
+		| bounds vals /= bounds mask -> Left $ "Value dimensions don't match mask dimensions (" ++ show (bounds vals) ++ " vs. " ++ show (bounds mask) ++ ")"
+		| otherwise -> case bounds vals of
+			len:rest | rest == evalGameConstants gcs -> Right (len, ShMasked gcs)
+			         | otherwise -> Left $ "StridedVector dimensions don't match tensor dimensions (" ++ show (bounds vals) ++ " vs. " ++ show gcs ++ ")"
+			[] -> Left "StridedVector has no batch dimension"
+	EVector gc es | evalGameConstant gc /= length es -> Left $ "Vector dimension doesn't match content length (" ++ show gc ++ " vs. " ++ show (length es) ++ ")"
+	              | otherwise -> case namedTraverse sanityCheck (zip [0..] es) of
+	              	Right (lenty@(len, ty):lentys) | all (lenty==) lentys -> Right (len, ShVector gc ty)
+	              	                               | otherwise -> Left $ "Heterogeneous vector: " ++ show (lenty:lentys)
+	              	Right [] -> Left $ "Indeterminate batch size due to empty vector"
+	              	Left (i, err) -> Left $ "[" ++ show i ++ "]=>" ++ err
+	EDictionary dict -> case namedTraverse sanityCheck dict of
+		Right lentys@((len, _):_) | all ((len==).fst) lentys -> Right (len, ShDictionary (zipWith (\(nm, _) (_, ty) -> (nm, ty)) dict lentys))
+		                          | otherwise -> Left $ "Mixed batch sizes in dictionary: " ++ show (zipWith (\(nm, _) (len, _) -> (nm, len)) dict lentys)
+		Right [] -> Left $ "Indeterminate batch size due to empty dictionary"
+		Left (nm, err) -> Left $ "{" ++ nm ++ "}=>" ++ err
+
+namedTraverse :: (a -> Either e b) -> [(nm, a)] -> Either (nm, e) [b]
+namedTraverse f = go where
+	go = \case
+		[] -> pure []
+		(nm, a):as -> case f a of
+			Left e -> Left (nm, e)
+			Right b -> (b:) <$> go as
+
 newtype CEndpoint = CEndpoint (ForeignPtr CEndpoint) deriving newtype CWrapper
 
 foreign import ccall "new_endpoint_tensor" c_new_endpoint_tensor :: CInt -> CInt -> Ptr CGameConstant -> Ptr CFloat -> Ptr CChar -> IO (Ptr CEndpoint)
