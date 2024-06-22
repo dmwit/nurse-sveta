@@ -116,9 +116,10 @@ absPrepareDirectory :: FilePath -> Directory -> IO FilePath
 absPrepareDirectory root dir = subdir <$ createDirectoryIfMissing True subdir where
 	subdir = absDirectoryName root dir
 
-latestFilename, metadataFilename, runtimeFilename :: FilePath
+latestFilename, metadataFilename, runtimeFilename, namesFilename :: FilePath
 latestFilename = "latest.json"
 metadataFilename = "meta.json"
+namesFilename = "files.json"
 runtimeFilename = "runtime"
 
 rawEncodeFileLoop :: ToJSON a => FilePath -> a -> IO ()

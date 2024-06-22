@@ -4,7 +4,10 @@ import Control.Concurrent
 import Control.Exception
 import Control.Monad
 import Data.Functor
+import Data.Vector (Vector)
 import Nurse.Sveta.STM
+
+import qualified Data.Vector as V
 
 data BoundedFIFO a = BoundedFIFO
 	{ bound :: Int
@@ -36,29 +39,37 @@ newtype Procedure a b = Procedure { comms :: BoundedFIFO (a, TMVar b) }
 newProcedure :: Int -> IO (Procedure a b)
 newProcedure n = Procedure <$> emptyBoundedFIFO n
 
+-- Once upon a time, all these Vectors were forall t. Traversable t's, to
+-- ensure that nothing hinky could happen with the servicer producing fewer (or
+-- more) results than requests. Sadly, ToEndpoint really needs its contents to
+-- be in Vectors because it's going to be doing indexing. The real world
+-- strikes again.
+
 -- | Pop all the pending calls, and service them all at once, then return. You
 -- might want to combine with, for example, 'forkIO' and 'forever'.
-serviceCalls :: Procedure a b -> (forall t. Traversable t => t a -> IO (t b, c)) -> IO c
+serviceCalls :: Procedure a b -> (Vector a -> IO (Vector b, c)) -> IO c
 serviceCalls proc f = join (atomically (serviceCallsSTM proc f))
 
 -- | A convenience wrapper around 'serviceCalls' that doesn't compute anything
 -- about the inputs.
-serviceCalls_ :: Procedure a b -> (forall t. Traversable t => t a -> IO (t b)) -> IO ()
+serviceCalls_ :: Procedure a b -> (Vector a -> IO (Vector b)) -> IO ()
 serviceCalls_ proc f = serviceCalls proc (\as -> f as <&> \bs -> (bs, ()))
 
 -- | Pop all the pending calls and return an IO action that will service them
 -- all and reply. Usually you want 'serviceCalls' instead, but since this
 -- blocks waiting for at least one request, occasionally you want to be able to
 -- use 'orElse' to short circuit this.
-serviceCallsSTM :: Procedure a b -> (forall t. Traversable t => t a -> IO (t b, c)) -> STM (IO c)
+serviceCallsSTM :: Procedure a b -> (Vector a -> IO (Vector b, c)) -> STM (IO c)
 serviceCallsSTM (Procedure bf) f = process <$> popAll bf where
 	process reqs = do
-		(bs, c) <- f (map fst reqs)
-		c <$ zipWithM_ ((atomically .) . writeTMVar) (map snd reqs) bs
+		(bs, c) <- f as
+		c <$ V.zipWithM_ ((atomically .) . writeTMVar) resps bs
+		where
+		(as, resps) = V.unzip (V.fromList reqs)
 
 -- | A convenience wrapper around 'serviceCallsSTM' that doesn't compute
 -- anything about the inputs.
-serviceCallsSTM_ :: Procedure a b -> (forall t. Traversable t => t a -> IO (t b)) -> STM (IO ())
+serviceCallsSTM_ :: Procedure a b -> (Vector a -> IO (Vector b)) -> STM (IO ())
 serviceCallsSTM_ proc f = serviceCallsSTM proc (\as -> f as <&> \bs -> (bs, ()))
 
 -- | Send a request for processing. This will block until the request is

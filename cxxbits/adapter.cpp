@@ -706,37 +706,37 @@ class NextNetImpl : public torch::nn::Module {
 };
 TORCH_MODULE(NextNet);
 
-torch::Tensor next_leaf_loss(leaf_type loss_ty, const torch::Tensor &ground_truth, const torch::Tensor *const mask, const torch::Tensor &net_output) {
+torch::Tensor next_leaf_loss(leaf_type loss_ty, const torch::Tensor &net_output, const torch::Tensor &ground_truth, const torch::Tensor &mask) {
 	DebugScope dbg("next_leaf_loss");
 
-	if(ground_truth.sizes() != net_output.sizes() || (mask != nullptr && ground_truth.sizes() != mask->sizes())) {
+	if(ground_truth.sizes() != net_output.sizes() || (mask.defined() && ground_truth.sizes() != mask.sizes())) {
 		std::cerr << "Mismatched tensor shapes in next_leaf_loss" << std::endl;
 		std::cerr << "Ground truth: " << TensorSketch(ground_truth) << std::endl;
 		std::cerr << "Net output: " << TensorSketch(net_output) << std::endl;
-		if(mask != nullptr) std::cerr << "Mask: " << TensorSketch(*mask) << std::endl;
+		if(mask.defined()) std::cerr << "Mask: " << TensorSketch(mask) << std::endl;
 		throw 0;
 	}
 
-	if(CHECK_MASK_VALIDITY && mask != nullptr && !ground_truth.equal(ground_truth * *mask)) {
+	if(CHECK_MASK_VALIDITY && mask.defined() && !ground_truth.equal(ground_truth * mask)) {
 		std::cerr << "Invalid mask found in next_leaf_loss: some masked values were nonzero." << std::endl;
 		std::cerr << "Values: " << ground_truth << std::endl;
-		std::cerr << "Mask: " << *mask << std::endl;
+		std::cerr << "Mask: " << mask << std::endl;
 		throw 0;
 	}
 
 	switch(loss_ty) {
 		case type_unit: [[fallthrough]];
 		case type_positive:
-			return mask == nullptr ?
+			return mask.defined() ?
 				(ground_truth - net_output).square() :
-				(ground_truth - net_output * *mask).square();
+				(ground_truth - net_output * mask).square();
 		case type_categorical: {
 			std::vector<int64_t> sum_dimensions; sum_dimensions.reserve(ground_truth.dim() - 1);
 			for(int i = 1; i < ground_truth.dim(); ++i) sum_dimensions.push_back(i);
 			torch::Tensor normalization =
-				mask == nullptr ?
+				mask.defined() ?
 				net_output.sum(sum_dimensions, true) :
-				(net_output * *mask).sum(sum_dimensions, true);
+				(net_output * mask).sum(sum_dimensions, true);
 
 			// ground_truth can have zeros (e.g. everywhere the mask is zero), which
 			// leads to -inf's after the log, which leads to nan's in the gradients. We
@@ -753,13 +753,142 @@ torch::Tensor next_leaf_loss(leaf_type loss_ty, const torch::Tensor &ground_trut
 			if(CHECK_NO_CLAMPING && !clamped_output.equal(net_output))
 				std::cerr << "WARNING: net output a probability so confident that it was clamped" << std::endl;
 			torch::Tensor first_cross_entropy_term = ((ground_truth - 1) * (1 - clamped_output).log());
-			if(mask != nullptr) first_cross_entropy_term *= *mask;
+			if(mask.defined()) first_cross_entropy_term *= mask;
 			return first_cross_entropy_term - ground_truth * clamped_output.log();
 			}
 		default:
 			std::cerr << "Invalid loss type " << loss_ty << " in next_leaf_loss." << std::endl;
 			throw 0;
 	}
+}
+
+torch::Tensor next_loss(sp_structure shape, sp_endpoint net_output, sp_endpoint ground_truth) {
+	if(shape->tag != net_output->tag || shape->tag != ground_truth->tag) {
+		std::cerr << "Tag mismatch in next_loss." << std::endl;
+		std::cerr << "shape:        " << shape       ->tag << std::endl;
+		std::cerr << "net output:   " << net_output  ->tag << std::endl;
+		std::cerr << "ground truth: " << ground_truth->tag << std::endl;
+		throw 0;
+	}
+
+	torch::Tensor loss = torch::zeros({}, GPU_FLOAT);
+	switch(shape->tag) {
+		case tag_vector:
+			for(int i = 0; i < ground_truth->vec.size(); ++i)
+				loss += next_loss(shape->vec, net_output->vec[i], ground_truth->vec[i]);
+			break;
+		case tag_dictionary:
+			for(auto kv: shape->dict)
+				loss += next_loss(kv.second, net_output->dict[kv.first], ground_truth->dict[kv.first]);
+			break;
+		case tag_tensor:
+			loss = next_leaf_loss(shape->ty, net_output->values, ground_truth->values, ground_truth->mask).sum() / ground_truth->values.size(0);
+			break;
+		default:
+			std::cerr << "Invalid structure tag " << shape->tag << " in next_loss." << std::endl;
+			throw 0;
+	}
+	return loss;
+}
+
+// This is a fused version of:
+//     endpoint_sum(next_loss_components(shape, scaling, net_output, ground_truth))
+// Perhaps it would be better to break it up into those two, at the cost of a
+// few extra memory allocations/deallocations, just to separate concerns and
+// reduce code duplication?
+torch::Tensor next_loss(sp_structure shape, sp_endpoint scaling, sp_endpoint net_output, sp_endpoint ground_truth) {
+	if(scaling->tag == tag_tensor) {
+		if(scaling->mask.defined()) {
+			std::cerr << "Masking the loss doesn't really make sense, just set the scaling for that component to 0 instead." << std::endl;
+			throw 0;
+		}
+		if(scaling->values.dim() != 1) {
+			std::cerr << "Scaling tensor output losses differently by position is not (yet) implemented." << std::endl;
+			throw 0;
+		}
+		return scaling->values * next_loss(shape, net_output, ground_truth);
+	}
+
+	if(shape->tag != scaling->tag || shape->tag != net_output->tag || shape->tag != ground_truth->tag) {
+		std::cerr << "Tag mismatch in next_loss." << std::endl;
+		std::cerr << "shape:        " << shape       ->tag << std::endl;
+		std::cerr << "scaling:      " << scaling     ->tag << std::endl;
+		std::cerr << "net output:   " << net_output  ->tag << std::endl;
+		std::cerr << "ground truth: " << ground_truth->tag << std::endl;
+		throw 0;
+	}
+
+	torch::Tensor loss = torch::zeros({}, GPU_FLOAT);
+	switch(shape->tag) {
+		case tag_vector:
+			for(int i = 0; i < ground_truth->vec.size(); ++i)
+				loss += next_loss(shape->vec, scaling->vec[i], net_output->vec[i], ground_truth->vec[i]);
+			break;
+		case tag_dictionary:
+			for(auto kv: shape->dict)
+				loss += next_loss(kv.second, scaling->dict[kv.first], net_output->dict[kv.first], ground_truth->dict[kv.first]);
+			break;
+		default:
+			std::cerr << "Invalid structure tag " << shape->tag << " in next_loss." << std::endl;
+			throw 0;
+	}
+	return loss;
+}
+
+sp_endpoint next_loss_components(sp_structure shape, sp_endpoint scaling, sp_endpoint net_output, sp_endpoint ground_truth) {
+	if((shape->tag != scaling->tag && scaling->tag != tag_tensor) || shape->tag != net_output->tag || shape->tag != ground_truth->tag) {
+		std::cerr << "Tag mismatch in next_loss_components." << std::endl;
+		std::cerr << "shape:        " << shape       ->tag << std::endl;
+		std::cerr << "scaling:      " << scaling     ->tag << std::endl;
+		std::cerr << "net output:   " << net_output  ->tag << std::endl;
+		std::cerr << "ground truth: " << ground_truth->tag << std::endl;
+		throw 0;
+	}
+
+	sp_endpoint out(new _endpoint);
+	out->tag = scaling->tag;
+	out->size = 1;
+
+	switch(scaling->tag) {
+		case tag_tensor:
+			if(scaling->mask.defined()) {
+				std::cerr << "Masking the loss doesn't really make sense, just set the scaling for that component to 0 instead." << std::endl;
+				throw 0;
+			}
+			if(scaling->values.dim() != 1) {
+				std::cerr << "Scaling tensor output losses differently by position is not (yet) implemented." << std::endl;
+				throw 0;
+			}
+			out->values = scaling->values * next_loss(shape, net_output, ground_truth);
+			break;
+		case tag_vector:
+			out->vec.reserve(ground_truth->vec.size());
+			for(int i = 0; i < ground_truth->vec.size(); ++i)
+				out->vec.push_back(next_loss_components(shape->vec, scaling->vec[i], net_output->vec[i], ground_truth->vec[i]));
+			break;
+		case tag_dictionary:
+			for(auto kv: shape->dict)
+				out->dict[kv.first] = next_loss_components(kv.second, scaling->dict[kv.first], net_output->dict[kv.first], ground_truth->dict[kv.first]);
+			break;
+		default:
+			std::cerr << "Invalid structure tag " << shape->tag << " in next_loss_components." << std::endl;
+			throw 0;
+	}
+
+	return out;
+}
+
+float next_train_net(NextNet &net, torch::optim::SGD &optim, sp_endpoint scaling, sp_endpoint training_example) {
+	if(training_example->tag != tag_dictionary) {
+		std::cerr << "next_train_net expects a dictionary with keys \"input\" and \"ground truth\", but got an endpoint with tag " << training_example->tag << std::endl;
+		throw 0;
+	}
+
+	optim.zero_grad();
+	torch::Tensor loss = next_loss(net->dec->shape, scaling, net->forward(training_example->dict["input"]), training_example->dict["ground truth"]);
+	loss.backward();
+	optim.step();
+	return loss.item<float>();
 }
 
 class NetImpl : public torch::nn::Module {
@@ -869,28 +998,88 @@ torch::Tensor detailed_loss(Net &net, const Batch &batch, float *loss_scaling_ar
 }
 
 extern "C" {
-	NextNet *next_sample_net(bool training, structure *in, structure *out);
+	void next_sample_net(structure *in, structure *out, NextNet **net_out, torch::optim::SGD **optim_out);
+	void next_load_net(char *path, structure *in, structure *out, NextNet **net_out, torch::optim::SGD **optim_out);
 	void next_discard_net(NextNet *net);
+	void next_save_net(NextNet *net, torch::optim::SGD *optim, char *path);
 	endpoint *next_evaluate_net(NextNet *net, endpoint *in);
+	endpoint *next_loss_components(NextNet *net, endpoint *scaling, endpoint *net_output, endpoint *ground_truth);
+	float next_train_net(NextNet *net, torch::optim::SGD *optim, endpoint *scaling, endpoint *training_example);
 	endpoint *next_net_weights(NextNet *net);
 }
 
-NextNet *next_sample_net(bool training, structure *in, structure *out) {
-	NextNet *net = new NextNet(in->ref, out->ref);
-	// TODO: does this do everything we want? turn off autograd e.g.?
-	(*net)->train(training);
-	return net;
+void next_sample_net(structure *in, structure *out, NextNet **net_out, torch::optim::SGD **optim_out) {
+	DebugScope dbg("next_sample_net", DEFAULT_CONSTRUCTOR_VERBOSITY);
+	*net_out = new NextNet(in->ref, out->ref);
+	NextNet &net = **net_out;
+	if(!net->is_training()) {
+		std::cerr << "The impossible happened: a freshly created net was not in training mode." << std::endl;
+		throw 0;
+	}
+	// TODO: allow setting SGD parameters like momentum, learning rate, etc.
+	*optim_out = new torch::optim::SGD(net->parameters(), INITIAL_LEARNING_RATE);
+}
+
+void next_load_net(char *path, structure *in, structure *out, NextNet **net_out, torch::optim::SGD **optim_out) {
+	DebugScope dbg("next_load_net", DEFAULT_SERIALIZATION_VERBOSITY);
+	torch::serialize::InputArchive archive;
+	archive.load_from(path);
+
+	*net_out = new NextNet(in->ref, out->ref);
+	NextNet &net = **net_out;
+	net->load(archive);
+	if(optim_out == nullptr) {
+		net->train(false);
+	} else {
+		if(!net->is_training())
+			std::cerr << "WARNING: loaded a net that wasn't in training mode" << std::endl;
+		// TODO: load SGD parameters, they aren't saved with the SGD state FFS
+		*optim_out = new torch::optim::SGD(net->parameters(), INITIAL_LEARNING_RATE);
+		(*optim_out)->load(archive);
+	}
 }
 
 void next_discard_net(NextNet *net) { delete net; }
 
+// TODO: perhaps it would be nice to save the encoder and decoder shapes we've
+// recorded, then either load them or validate them against the user-supplied
+// shapes when loading or something
+void next_save_net(NextNet *net, torch::optim::SGD *optim, char *path) {
+	DebugScope dbg("next_save_net", DEFAULT_SERIALIZATION_VERBOSITY);
+	torch::serialize::OutputArchive archive;
+	(**net).save(archive);
+	optim->save(archive);
+	archive.save_to(path);
+}
+
 endpoint *next_evaluate_net(NextNet *net, endpoint *in) {
-	// TODO: think very very hard about where exactly we want gradient control and training control in the API
+	DebugScope dbg("next_evaluate_net");
 	torch::NoGradGuard g;
+	if((*net)->is_training())
+		std::cerr << "WARNING: evaluating a net while in training mode" << std::endl;
 	return new endpoint((*net)->forward(in->ref));
 }
 
+endpoint *next_loss_components(NextNet *net_, endpoint *scaling, endpoint *net_output, endpoint *ground_truth) {
+	DebugScope dbg("next_loss_components");
+	torch::NoGradGuard g;
+	NextNet &net = *net_;
+	bool was_training = net->is_training();
+	net->train(false);
+	sp_endpoint out = next_loss_components(net->dec->shape, scaling->ref, net_output->ref, ground_truth->ref);
+	net->train(was_training);
+	return new endpoint(out);
+}
+
+float next_train_net(NextNet *net, torch::optim::SGD *optim, endpoint *scaling, endpoint *training_example) {
+	DebugScope dbg("next_train_net");
+	if(!(*net)->is_training())
+		std::cerr << "WARNING: training a net while in evaluation mode" << std::endl;
+	return next_train_net(*net, *optim, scaling->ref, training_example->ref);
+}
+
 endpoint *next_net_weights(NextNet *net) {
+	DebugScope dbg("next_net_weights");
 	return new endpoint((*net)->weights());
 }
 

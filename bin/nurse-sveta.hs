@@ -17,12 +17,15 @@ import Data.IORef
 import Data.List
 import Data.Maybe
 import Data.Monoid
+import Data.Sequence (Seq)
 import Data.Time (UTCTime)
 import Data.Traversable
 import Data.Universe
 import Data.Universe.Instances.Reverse
+import Data.Vector (Vector)
 import Dr.Mario.Model
 import GI.Gtk as G
+import Immutable.Shuffle
 import Numeric
 import Nurse.Sveta.Cairo
 import Nurse.Sveta.Files
@@ -47,6 +50,7 @@ import qualified Data.HashMap.Strict as HM
 import qualified Data.HashSet as HS
 import qualified Data.IntMap as IM
 import qualified Data.Map as M
+import qualified Data.Sequence as S
 import qualified Data.Text as T
 import qualified Data.Text.Internal.Encoding.Utf8 as T
 import qualified Data.Time as Time
@@ -183,7 +187,7 @@ acceptConfiguration gts = gts { currentConfiguration = sTrySet (requestedConfigu
 -- │       │╰─────╯││
 -- │       ╰───────╯│
 -- ╰────────────────╯
-generationThreadView :: Procedure GameState DetailedEvaluation -> IO ThreadView
+generationThreadView :: Procedure NextNetInput NextNetOutput -> IO ThreadView
 generationThreadView eval = do
 	genRef <- newTVarIO (newGenerationThreadState newSearchConfiguration)
 
@@ -222,7 +226,7 @@ renderSpeeds spd sss = do
 	where
 	updateLabel n t = gridUpdateLabelAt spd n 0 t (numericLabel t)
 
-generationThread :: Procedure GameState DetailedEvaluation -> TVar GenerationThreadState -> StatusCheck -> IO ()
+generationThread :: Procedure NextNetInput NextNetOutput -> TVar GenerationThreadState -> StatusCheck -> IO ()
 generationThread eval genRef sc = do
 	g <- createSystemRandom
 	threadSpeed <- newSearchSpeed
@@ -309,7 +313,7 @@ data InferenceThreadState = InferenceThreadState
 	, itsThreadPositions :: SearchSpeed
 	, itsNetBatches :: SearchSpeed
 	, itsNetPositions :: SearchSpeed
-	, itsNet :: Stable (Maybe (Integer, Net))
+	, itsNet :: Stable (Maybe (Integer, NextNet))
 	, itsUseNet :: Bool
 	}
 
@@ -320,7 +324,7 @@ itsNewNet its = \case
 		Nothing -> True
 		Just (n', _) -> n /= n'
 
-inferenceThreadView :: Procedure GameState DetailedEvaluation -> TVar (Maybe Integer) -> IO ThreadView
+inferenceThreadView :: Procedure NextNetInput NextNetOutput -> TVar (Maybe Integer) -> IO ThreadView
 inferenceThreadView eval netUpdate = do
 	top <- new Box [#orientation := OrientationVertical]
 	lbl <- descriptionLabel "<initializing net>"
@@ -377,7 +381,7 @@ data InferenceThreadStep
 	| ITSProgress (IO Int)
 	| ITSDie
 
-inferenceThread :: Procedure GameState DetailedEvaluation -> TVar (Maybe Integer) -> TVar InferenceThreadState -> StatusCheck -> IO ()
+inferenceThread :: Procedure NextNetInput NextNetOutput -> TVar (Maybe Integer) -> TVar InferenceThreadState -> StatusCheck -> IO ()
 inferenceThread eval netUpdate itsRef sc = forever $ do
 	step <- atomically $ do
 		its <- readTVar itsRef
@@ -385,7 +389,7 @@ inferenceThread eval netUpdate itsRef sc = forever $ do
 			, ITSDie <$ scSTM sc
 			, ITSLoadNet <$> (readTVar netUpdate >>= ensure (itsNewNet its))
 			, case (itsUseNet its, sPayload (itsNet its)) of
-				(True, Just (_, net)) -> liftEvaluation (netEvaluation net)
+				(True, Just (_, net)) -> liftEvaluation (nextNetEvaluation net)
 				(True, _) -> retry
 				_ -> liftEvaluation (traverse dumbEvaluation)
 			]
@@ -410,20 +414,20 @@ inferenceThread eval netUpdate itsRef sc = forever $ do
 				writeTVar itsRef its' { itsNet = sSet net (itsNet its) }
 		ITSDie -> scIO_ sc
 	where
-	liftEvaluation :: (forall t. Traversable t => (t GameState -> IO (t DetailedEvaluation))) -> STM InferenceThreadStep
-	liftEvaluation f = ITSProgress <$> serviceCallsSTM eval (fmap (\answers -> (answers, length answers)) . f)
+	liftEvaluation :: (V.Vector NextNetInput -> IO (V.Vector NextNetOutput)) -> STM InferenceThreadStep
+	liftEvaluation f = ITSProgress <$> serviceCallsSTM eval (fmap (\answers -> (answers, V.length answers)) . f)
 
-inferenceThreadLoadLatestNet :: IO (Maybe (Integer, Net))
+inferenceThreadLoadLatestNet :: IO (Maybe (Integer, NextNet))
 inferenceThreadLoadLatestNet = do
 	n <- relDecodeFileLoop Weights latestFilename
 	traverse inferenceThreadLoadNet n
 
 -- TODO: better error handling
-inferenceThreadLoadNet :: Integer -> IO (Integer, Net)
+inferenceThreadLoadNet :: Integer -> IO (Integer, NextNet)
 inferenceThreadLoadNet tensor = do
 	dir <- nsDataDir
 	-- [N]urse [S]veta [n]et
-	net <- netLoadForInference (absFileName dir Weights (show tensor <.> "nsn"))
+	net <- nextNetLoadForInference (absFileName dir Weights (show tensor <.> "nsn"))
 	pure (tensor, net)
 
 data LevelMetric = LevelMetric
@@ -558,20 +562,20 @@ cmInsert fp startingViruses virusesKilled frames CategoryMetadata { cmBest = b, 
 
 data BureaucracyGlobalState = BureaucracyGlobalState
 	{ bgsLastGame :: Maybe FilePath
-	, bgsNextTensor :: HashMap T.Text Integer
+	, bgsGameNames :: HashMap T.Text (Seq T.Text)
 	, bgsMetadata :: HashMap T.Text CategoryMetadata
 	} deriving (Eq, Ord, Read, Show)
 
 newBureaucracyGlobalState :: BureaucracyGlobalState
 newBureaucracyGlobalState = BureaucracyGlobalState
 	{ bgsLastGame = Nothing
-	, bgsNextTensor = HM.empty
+	, bgsGameNames = HM.empty
 	, bgsMetadata = HM.empty
 	}
 
 data BureaucracyThreadState = BureaucracyThreadState
 	{ btsGamesProcessed :: HashMap T.Text Integer
-	, btsTensorsProcessed :: HashMap T.Text Integer
+	, btsPillsProcessed :: HashMap T.Text Integer
 	, btsRequestedSplit :: ValidationSplit
 	, btsCurrentSplit :: ValidationSplit
 	, btsLatestGlobal :: BureaucracyGlobalState
@@ -580,7 +584,7 @@ data BureaucracyThreadState = BureaucracyThreadState
 newBureaucracyThreadState :: ValidationSplit -> BureaucracyThreadState
 newBureaucracyThreadState vs = BureaucracyThreadState
 	{ btsGamesProcessed = HM.empty
-	, btsTensorsProcessed = HM.empty
+	, btsPillsProcessed = HM.empty
 	, btsRequestedSplit = vs
 	, btsCurrentSplit = vs
 	, btsLatestGlobal = newBureaucracyGlobalState
@@ -605,7 +609,7 @@ initialValidationSplit = [("train", 9), ("test", 1)]
 -- ││╰─────╯││
 -- ││╭╴tgp╶╮││
 -- ││╰─────╯││
--- ││╭╴ttp╶╮││
+-- ││╭╴tpp╶╮││
 -- ││╰─────╯││
 -- │╰───────╯│
 -- ╰─────────╯
@@ -619,9 +623,9 @@ bureaucracyThreadView log lock = do
 	vsv <- newValidationSplitView vs $ atomically . modifyTVar burRef . sOnSubterm btsRequestedSplitL . sTrySet
 	glg <- descriptionLabel "<initializing>\n"
 	int <- new Grid []
-	glt <- newSumView int 0 "tensors available to other threads"
+	glt <- newSumView int 0 "games available to other threads"
 	tgp <- newSumView int 1 "games processed by this thread"
-	ttp <- newSumView int 2 "tensors processed by this thread"
+	tpp <- newSumView int 2 "pills processed by this thread"
 
 	vsvWidget vsv >>= #append top
 	#append top glg
@@ -635,9 +639,9 @@ bureaucracyThreadView log lock = do
 	    			Nothing -> "no games processed yet\n"
 	    			Just fp -> "latest game known to be processed was\n" <> T.pack fp
 	    			]
-	    		updateSumView glt (bgsNextTensor (btsLatestGlobal bts))
+	    		updateSumView glt (toInteger . S.length <$> bgsGameNames (btsLatestGlobal bts))
 	    		updateSumView tgp (btsGamesProcessed bts)
-	    		updateSumView ttp (btsTensorsProcessed bts)
+	    		updateSumView tpp (btsPillsProcessed bts)
 	tvNew top refresh (bureaucracyThread log lock burRef)
 
 bureaucracyThread :: Procedure LogMessage () -> MVar BureaucracyGlobalState -> TVar (Stable BureaucracyThreadState) -> StatusCheck -> IO a
@@ -649,15 +653,15 @@ bureaucracyThread log lock status sc = do
 			pending <- catch (listDirectory (absDirectoryName dir GamesPending)) $ \e ->
 				if isDoesNotExistError e || isAlreadyInUseError e then pure [] else throw e
 			btsUpdate status $ \bts -> bts { btsLatestGlobal = bgs }
-			traverse_ (gameFileToTensorFiles log status dir) (sort pending)
+			traverse_ (processGameFile log status dir) (sort pending)
 			btsLatestGlobal . sPayload <$> readTVarIO status
 		btsUpdate status $ \bts -> bts { btsCurrentSplit = btsRequestedSplit bts }
 		-- TODO: comms from other threads to tell us when to try again
 		threadDelay 1000000
 		scIO_ sc
 
-gameFileToTensorFiles :: Procedure LogMessage () -> TVar (Stable BureaucracyThreadState) -> FilePath -> FilePath -> IO ()
-gameFileToTensorFiles log status dir fp = recallGame dir fp >>= \case
+processGameFile :: Procedure LogMessage () -> TVar (Stable BureaucracyThreadState) -> FilePath -> FilePath -> IO ()
+processGameFile log status dir fp = recallGame dir fp >>= \case
 	GDStillWriting -> pure ()
 	GDParseError -> do
 		relocate dir fp GamesPending GamesParseError
@@ -666,16 +670,16 @@ gameFileToTensorFiles log status dir fp = recallGame dir fp >>= \case
 				{ bgsLastGame = Just fp
 				}
 			}
-	GDSuccess history -> do
+	GDSuccess (seed, steps) -> do
 		bts <- sPayload <$> readTVarIO status
 		categoryT <- vsSample (btsCurrentSplit bts)
 		let categoryS = T.unpack categoryT
 		    category = dirEncode categoryS
 		    bgs = btsLatestGlobal bts
-		firstTensor <- asum [empty
-			, maybe empty pure $ HM.lookup categoryT (bgsNextTensor bgs)
-			, maybe empty (pure . succ) =<< absDecodeFileLoop dir (Tensors category) latestFilename
-			, pure 0
+		gameNames_ <- asum [empty
+			, maybe empty pure $ HM.lookup categoryT (bgsGameNames bgs)
+			, maybe empty pure =<< absDecodeFileLoop dir (Tensors category) namesFilename
+			, pure S.empty
 			]
 		meta_ <- asum [empty
 			, maybe empty pure $ HM.lookup categoryT (bgsMetadata bgs)
@@ -683,14 +687,24 @@ gameFileToTensorFiles log status dir fp = recallGame dir fp >>= \case
 			, pure newCategoryMetadata
 			]
 
-		tpath <- absPrepareDirectory dir (Tensors category)
-		jspath <- absPrepareDirectory dir (Positions category)
-		sts <- saveTensors tpath jspath firstTensor [minBound..maxBound] history
-		let meta = cmInsert fp (stsVirusesOriginal sts) (stsVirusesKilled sts) (stsFrames sts) meta_
+		gs <- initialState seed
+		traverse_ (dmPlay gs . gsMove) steps
+		kills <- readIORef (virusesKilled gs)
+		pills <- readIORef (pillsUsed gs)
+		frames <- readIORef (framesPassed gs)
+		let viruses = originalVirusCount gs
+		    meta = cmInsert fp viruses kills frames meta_
+		    -- TODO: make 10000 configurable
+		    gameNames = S.take 10000 (gameNames_ S.:|> T.pack fp)
+		    processedDir = absDirectoryName dir (GamesProcessed category)
+		    tmpNames = processedDir </> ('.':namesFilename)
 
 		relocate dir fp GamesPending (GamesProcessed category)
-		absEncodeFileLoop dir (Tensors category) latestFilename (firstTensor + stsTensorsSaved sts - 1)
-		absEncodeFileLoop dir (GamesProcessed category) metadataFilename meta
+		rawEncodeFileLoop (processedDir </> metadataFilename) meta
+		-- other threads may be reading this file as we write it, so we need to
+		-- be a bit careful about atomicity
+		rawEncodeFileLoop tmpNames gameNames
+		renameFile tmpNames (processedDir </> namesFilename)
 
 		let logKinds = zip ["viruses", "frames/won", "frames/lost" :: String]
 		                   [cmVirusesKilled, cmFramesToWin, cmFramesToLoss]
@@ -702,11 +716,11 @@ gameFileToTensorFiles log status dir fp = recallGame dir fp >>= \case
 		    fps = 60.0988
 
 		traverse_ (schedule log)
-			[ Metric (printf "%s/%s/%02d" k a (stsVirusesOriginal sts)) (lmFloat lm)
+			[ Metric (printf "%s/%s/%02d" k a viruses) (lmFloat lm)
 			| categoryT == "train"
 			, (k, fk) <- logKinds
 			, (a, fa) <- logAggregations
-			, Just lm <- [IM.lookup (stsVirusesOriginal sts) (fk (fa meta))]
+			, Just lm <- [IM.lookup viruses (fk (fa meta))]
 			]
 		traverse_ (schedule log)
 			[ Metric (printf "%s/%s/sum" k a) (sum (lmFloat <$> im))
@@ -724,20 +738,20 @@ gameFileToTensorFiles log status dir fp = recallGame dir fp >>= \case
 		traverse_ (schedule log)
 			[ Metric ("clear rate/" ++ k) (fromIntegral f / (fps * fromIntegral v))
 			| (k, f, v) <- zip3
-				[printf "%02d" (stsVirusesOriginal sts), "avg/" ++ categoryS]
-				[stsFrames        sts, sum (lmMetric <$> cmFrames        (cmLatest meta))]
-				[stsVirusesKilled sts, sum (lmMetric <$> cmVirusesKilled (cmLatest meta))]
+				[printf "%02d" viruses, "avg/" ++ categoryS]
+				[frames, sum (lmMetric <$> cmFrames        (cmLatest meta))]
+				[kills , sum (lmMetric <$> cmVirusesKilled (cmLatest meta))]
 			, v /= 0
 			]
 
 		btsUpdate status $ \bts -> bts
 			{ btsLatestGlobal = BureaucracyGlobalState
 				{ bgsLastGame = Just fp
-				, bgsNextTensor = HM.insert categoryT (firstTensor + stsTensorsSaved sts) (bgsNextTensor (btsLatestGlobal bts))
+				, bgsGameNames = HM.insert categoryT gameNames (bgsGameNames (btsLatestGlobal bts))
 				, bgsMetadata = HM.insert categoryT meta (bgsMetadata (btsLatestGlobal bts))
 				}
 			, btsGamesProcessed = HM.insertWith (+) categoryT 1 (btsGamesProcessed bts)
-			, btsTensorsProcessed = HM.insertWith (+) categoryT (stsTensorsSaved sts) (btsTensorsProcessed bts)
+			, btsPillsProcessed = HM.insertWith (+) categoryT (toInteger pills) (btsPillsProcessed bts)
 			}
 
 data GameDecodingResult
@@ -752,8 +766,8 @@ recallGame dir fp = handle (\e -> if isAlreadyInUseError e then pure GDStillWrit
 		Nothing -> GDParseError
 		Just history -> GDSuccess history
 
-readLatestTensor :: FilePath -> FilePath -> IO (Maybe Integer)
-readLatestTensor root category = absDecodeFileLoop root (Tensors category) latestFilename
+readGameNames :: FilePath -> FilePath -> IO (Maybe (Seq T.Text))
+readGameNames root category = absDecodeFileLoop root (Tensors category) namesFilename
 
 newSumView :: Grid -> Int32 -> T.Text -> IO Grid
 newSumView parent i description = do
@@ -785,13 +799,9 @@ data TrainingConfiguration = TrainingConfiguration
 	{ tcDutyCycle :: Stable Double
 	, tcHoursPerSave :: Double
 	, tcHoursPerDetailReport :: Double
-	, tcHoursPerVisualization :: Double
 	, tcBatchSizeTrain :: Int
 	, tcBatchSizeTest :: Int
-	, tcHistoryTrain :: Integer
-	, tcHistoryTest :: Integer
-	, tcHistoryVisualization :: Integer
-	, tcLossScaling :: LossType -> Float
+	, tcLossScaling :: NextLossScaling
 	} deriving (Eq, Ord, Read, Show)
 
 newTrainingConfiguration :: TrainingConfiguration
@@ -799,24 +809,15 @@ newTrainingConfiguration = TrainingConfiguration
 	{ tcDutyCycle = newStable 0.01
 	, tcHoursPerSave = 1
 	, tcHoursPerDetailReport = 0.1
-	, tcHoursPerVisualization = 24
 	, tcBatchSizeTrain = 2000 -- TODO: optimize this choice (empirically, maxing out GPU memory is not the fastest choice)
 	, tcBatchSizeTest = 100
-	, tcHistoryTrain = 500000
-	, tcHistoryTest = 50000
-	, tcHistoryVisualization = 1000
 	-- these are set to normalize the priors and valuation to about 1, and the
 	-- rest to about 0.5, based on the final test loss from a long training run
 	-- TODO: make this configurable
-	, tcLossScaling = \case
-		LossPriors -> 1
-		LossValuation -> 4
-		LossFallTime -> 2/3
-		LossOccupied -> 1/35
-		LossVirusKills -> 3/2
-		LossWishlist -> 1/9
-		LossClearLocation -> 1/4
-		LossClearPill -> 5/4
+	, tcLossScaling = NextLossScaling
+		{ lsPriors = 1
+		, lsValuation = 4
+		}
 	}
 
 data TrainingThreadState = TrainingThreadState
@@ -862,17 +863,9 @@ ttsAccept tts = tts { ttsCurrentConfiguration = sTrySet (ttsRequestedConfigurati
 -- ││╰─────╯│       │
 -- ││╭╴hpd╶╮│       │
 -- ││╰─────╯│       │
--- ││╭╴hpv╶╮│       │
--- ││╰─────╯│       │
 -- ││╭╴bsr╶╮│       │
 -- ││╰─────╯│       │
 -- ││╭╴bse╶╮│       │
--- ││╰─────╯│       │
--- ││╭╴thr╶╮│       │
--- ││╰─────╯│       │
--- ││╭╴the╶╮│       │
--- ││╰─────╯│       │
--- ││╭╴thv╶╮│       │
 -- ││╰─────╯│       │
 -- │╰───────╯       │
 -- ╰────────────────╯
@@ -912,12 +905,8 @@ trainingThreadView log netUpdate = do
 	dut <- newCfg (sPayload . tcDutyCycle) "duty cycle" InputPurposeNumber $ \tc dutyCycle -> 0 <= dutyCycle && dutyCycle <= 1 ? tc { tcDutyCycle = sTrySet dutyCycle (tcDutyCycle tc) }
 	hps <- newPosCfg tcHoursPerSave          "hours per save"            $ \tc n -> tc { tcHoursPerSave          = n }
 	hpd <- newPosCfg tcHoursPerDetailReport  "hours per detailed report" $ \tc n -> tc { tcHoursPerDetailReport  = n }
-	hpv <- newPosCfg tcHoursPerVisualization "hours per visualization"   $ \tc n -> tc { tcHoursPerVisualization = n }
 	bsr <- newPosCfg tcBatchSizeTrain        "training batch size"       $ \tc n -> tc { tcBatchSizeTrain        = n }
 	bse <- newPosCfg tcBatchSizeTest         "test batch size"           $ \tc n -> tc { tcBatchSizeTest         = n }
-	thr <- newPosCfg tcHistoryTrain          "training history"          $ \tc n -> tc { tcHistoryTrain          = n }
-	the <- newPosCfg tcHistoryTest           "test history"              $ \tc n -> tc { tcHistoryTest           = n }
-	thv <- newPosCfg tcHistoryVisualization  "visualization history"     $ \tc n -> tc { tcHistoryVisualization  = n }
 
 	#append top ogb
 	#append ogb ogd
@@ -933,12 +922,8 @@ trainingThreadView log netUpdate = do
 	crvAttach dut cfg 0
 	crvAttach hps cfg 1
 	crvAttach hpd cfg 2
-	crvAttach hpv cfg 3
-	crvAttach bsr cfg 4
-	crvAttach bse cfg 5
-	crvAttach thr cfg 6
-	crvAttach the cfg 7
-	crvAttach thv cfg 8
+	crvAttach bsr cfg 3
+	crvAttach bse cfg 4
 
 	tLastSaved <- newTracker
 	tCurrent <- newTracker
@@ -958,12 +943,8 @@ trainingThreadView log netUpdate = do
 	    		crvSet dut dc
 	    		crvSet hps (tcHoursPerSave          cfg)
 	    		crvSet hpd (tcHoursPerDetailReport  cfg)
-	    		crvSet hpv (tcHoursPerVisualization cfg)
 	    		crvSet bsr (tcBatchSizeTrain        cfg)
 	    		crvSet bse (tcBatchSizeTest         cfg)
-	    		crvSet thr (tcHistoryTrain          cfg)
-	    		crvSet the (tcHistoryTest           cfg)
-	    		crvSet thv (tcHistoryVisualization  cfg)
 	    	renderSpeeds spd [("batches (%)", ttsGenerationHundredths tts), ("thread", ttsTensors tts), ("at " <> tshow dc, ttsDutyCycle tts)]
 
 	tvNew top refresh (trainingThread log netUpdate ref)
@@ -974,7 +955,7 @@ trainingThreadView log netUpdate = do
 -- TODO: might be nice to show current generation and iterations to next save
 trainingThread :: Procedure LogMessage () -> TVar (Maybe Integer) -> TVar TrainingThreadState -> StatusCheck -> IO ()
 trainingThread log netUpdate ref sc = do
-	(ten0, net, sgd) <- trainingThreadLoadLatestNet
+	(ten0, (net, sgd)) <- trainingThreadLoadLatestNet
 	rng <- createSystemRandom
 	dir <- nsDataDir
 
@@ -995,25 +976,22 @@ trainingThread log netUpdate ref sc = do
 	    	-- System panel
 	    	schedule log (Metric "System/Backprop Tensor Count" (fromInteger ten))
 	    	every (tcHoursPerSave cfg) saveT (saveWeights ten)
-	    	batch <- loadBatch rng sc dir "train" (tcHistoryTrain cfg) (tcBatchSizeTrain cfg)
+	    	batch <- loadBatch rng sc dir "train" (tcBatchSizeTrain cfg)
 	    	before <- Time.getCurrentTime
-	    	loss <- netTrain net sgd batch (tcLossScaling cfg)
+	    	loss <- nextNetTrain net sgd (tcLossScaling cfg) batch
 	    	after <- Time.getCurrentTime
 	    	schedule log (Metric "loss/train/sum" loss)
 
 	    	every (tcHoursPerDetailReport cfg) detailT $ do
-	    		testBatch <- loadBatch rng sc dir "test" (tcHistoryTest cfg) (tcBatchSizeTest cfg)
-	    		trainComponents <- netDetailedLoss net batch (tcLossScaling cfg)
-	    		testComponents <- netDetailedLoss net testBatch (tcLossScaling cfg)
+	    		testBatch <- loadBatch rng sc dir "test" (tcBatchSizeTest cfg)
+	    		trainComponents <- nextNetLossComponents net (tcLossScaling cfg) batch
+	    		testComponents <- nextNetLossComponents net (tcLossScaling cfg) testBatch
 	    		schedule log $ Metric "loss/test/sum" (sum . map snd $ testComponents)
 	    		traverse_ (schedule log)
-	    			[ Metric ("loss/" <> category <> "/" <> describeLossType ty) loss
+	    			[ Metric (intercalate "/" ("loss":category:ty)) loss
 	    			| (category, components) <- [("train", trainComponents), ("test", testComponents)]
 	    			, (ty, loss) <- components
 	    			]
-	    	every (tcHoursPerVisualization cfg) visualizationT $ do
-	    		logVisualization log rng sc net dir "train" (tcHistoryVisualization cfg)
-	    		logVisualization log rng sc net dir "test" (tcHistoryVisualization cfg)
 
 	    	let ten' = ten+toInteger (tcBatchSizeTrain cfg)
 	    	atomically . modifyTVar ref $ \tts -> tts
@@ -1029,7 +1007,7 @@ trainingThread log netUpdate ref sc = do
 	    	timeoutID <- forkIO $ case sPayload (tcDutyCycle cfg) of
 	    		0 -> pure ()
 	    		d -> let t = realToFrac (Time.diffUTCTime after before) in do
-	    			threadDelay (round (1000000*t*(1-d)/d)) 
+	    			threadDelay (round (1000000*t*(1-d)/d))
 	    			atomically (writeTVar timeoutRef True)
 
 	    	-- die if it's been requested; otherwise wait until the end of the
@@ -1048,7 +1026,7 @@ trainingThread log netUpdate ref sc = do
 
 	    saveWeights ten = do
 	    		path <- absPrepareFile dir Weights (show ten <.> "nsn")
-	    		netSave net sgd path
+	    		nextNetSave net sgd path
 	    		absEncodeFileLoop dir Weights latestFilename ten
 	    		atomically . writeTVar netUpdate $ Just ten
 	    		atomically . modifyTVar ref $ \tts -> tts { ttsLastSaved = sSet (Just ten) (ttsLastSaved tts) }
@@ -1065,164 +1043,36 @@ trainingThread log netUpdate ref sc = do
 			act
 			writeIORef tref now
 
-trainingThreadLoadLatestNet :: IO (Integer, Net, Optimizer)
+trainingThreadLoadLatestNet :: IO (Integer, (NextNet, Optimizer))
 trainingThreadLoadLatestNet = do
 	dir <- nsDataDir
 	mn <- absDecodeFileLoop dir Weights latestFilename
 	case mn of
 		Nothing -> do
-			net <- netSample True
-			sgd <- newOptimizer net
-			pure (0, net, sgd)
+			netOptim <- nextNetSample
+			pure (0, netOptim)
 		Just n -> do
-			(net, sgd) <- netLoadForTraining (absFileName dir Weights (show n <.> "nsn"))
-			pure (n, net, sgd)
+			netOptim <- nextNetLoadForTraining (absFileName dir Weights (show n <.> "nsn"))
+			pure (n, netOptim)
 
-chooseTensors :: GenIO -> StatusCheck -> FilePath -> String -> Integer -> Int -> IO [Integer]
-chooseTensors rng sc dir category historySize batchSize = do
-	let go = readLatestTensor dir category >>= \case
-	    	Nothing -> scIO_ sc >> threadDelay 1000000 >> go
-	    	Just n -> pure n
-	latestTensor <- go
-	let earliestTensor = max 0 (latestTensor - historySize)
-	replicateM batchSize (uniformRM (earliestTensor, latestTensor) rng)
-
-loadBatch :: GenIO -> StatusCheck -> FilePath -> String -> Integer -> Int -> IO Batch
-loadBatch rng sc dir category historySize batchSize = do
-	ixs <- chooseTensors rng sc dir category historySize batchSize
-	batchLoad [absFileName dir (Tensors category) (show ix <.> "nst") | ix <- ixs]
-
-logVisualization :: Procedure LogMessage () -> GenIO -> StatusCheck -> Net -> FilePath -> String -> Integer -> IO ()
-logVisualization log rng sc net dir category historySize = do
-	[ix] <- chooseTensors rng sc dir category historySize 1
-	runtimeDir <- nsRuntimeDir
-	netIn <- batchLoad [absFileName dir (Tensors category) (show ix <.> "nst")]
-	[netOut] <- netIntrospect net netIn
-	mhst <- absDecodeFileLoop dir (Positions category) (show ix <.> "json")
-	now <- Time.getCurrentTime
-
-	for_ mhst $ \hst -> do
-		let (w, h) = boardHeatmapSizeRecommendation (hstBoard hst)
-		    scale = 16
-		    [wi, hi] = (scale*) <$> [w, h]
-		    [wd, hd] = fromIntegral <$> [w, h]
-		    wb = width  (hstBoard hst)
-		    hb = height (hstBoard hst)
-		    initialPC = launchContent (hstLookahead hst)
-		    rotatedPCs = iterate (`rotateContent` Clockwise) initialPC
-		    pred = hstPrediction hst
-		    allPCs = [PillContent or bl o | or <- [minBound..maxBound], bl <- [minBound..maxBound], o <- [minBound..maxBound]]
-		    onPositions f = [(pos, f pos x y) | x <- [0..wb-1], y <- [0..hb-1], let pos = Position x y]
-		    onPositionsVec f = onPositions (\_ x y -> f netOut V.! x V.! y)
-		    onPositionsC f = onPositions (\pos _ _ -> realToFrac (f pos pred))
-		    outPriors = zip3 [0..] rotatedPCs
-		    	[ [ (Position x y, niPriors netOut V.! roti V.! x V.! y)
-		    	  -- horizontal placements can't occur in the last column
-		    	  | x <- [0..wb - 2 + (roti `rem` 2)], y <- [0..hb-1]
-		    	  ]
-		    	| roti <- [0..3]
-		    	]
-		    reachablePriors = [[p | p <- ps, Pill pc (fst p) `HM.member` hstPriors hst] | (_, pc, ps) <- outPriors]
-		    reachablePriorsSum_ = sum (reachablePriors >>= map snd)
-		    reachablePriorsSum = if reachablePriorsSum_ == 0 then 1 else reachablePriorsSum_
-		    outPriorsLo = minimum [p | (_, _, ps) <- outPriors, (_, p) <- ps]
-		    outPriorsHi = maximum [p | (_, _, ps) <- outPriors, (_, p) <- ps]
-		    allPriorsHi = max
-		    	(if null (hstPriors hst) then 0 else maximum (hstPriors hst)) -- TODO: scale hstPriors by 0.5 when bottomLeftColor == otherColor
-		    	(maximum [p / reachablePriorsSum | ps <- reachablePriors, (_, p) <- ps])
-
-		    logHeatmapGrid wg hg nm_ draw = G.withImageSurface G.FormatRGB24 (wg*wi) (hg*hi) $ \img -> do
-		    	let nm = "visualization/" ++ category ++ "/" ++ nm_
-		    	    dir = runtimeDir </> dirEncode nm
-		    	    fp = dir </> show now ++ "-" ++ show ix <.> "png"
-		    	G.renderWith img (initMath (wg*wi) (hg*hi) (fromIntegral wg*wd) (fromIntegral hg*hd) >> draw)
-		    	createDirectoryIfMissing True dir
-		    	G.surfaceWriteToPNG img fp
-		    	schedule log (ImagePath nm fp)
-
-		logHeatmapGrid 4 3 "priors" . for_ outPriors $ \(roti, pc, rotPriors) -> do
-			G.save
-			G.translate (fromIntegral roti*wd) 0
-			boardHeatmapRange outPriorsLo outPriorsHi (hstBoard hst) pc rotPriors
-			G.translate 0 hd
-			boardHeatmap0Max allPriorsHi (hstBoard hst) pc
-				[ (pos, p / reachablePriorsSum)
-				| (pos, p) <- reachablePriors !! roti
-				]
-			G.translate 0 hd
-			boardHeatmap0Max allPriorsHi (hstBoard hst) pc
-				[ (pos, prior)
-				| (Pill pc' pos, prior) <- HM.toList (hstPriors hst)
-				, pc' == pc
-				]
-			G.restore
-
-		logHeatmapGrid 1 3 "virus kills" $ do
-			let outKills = onPositionsVec niVirusKills
-			boardHeatmap0Dyn (hstBoard hst) initialPC outKills
-			G.translate 0 hd
-			boardHeatmap01 (hstBoard hst) initialPC outKills
-			G.translate 0 hd
-			boardHeatmap01 (hstBoard hst) initialPC . onPositionsC $ \pos -> M.findWithDefault 0 pos . pVirusKillWeight
-
-		logHeatmapGrid 2 2 "non-heatmaps" $ do
-			G.rectangle 0 0 20 42 >> neutral >> G.fill
-			fitTexts $ tail [undefined
-				, TextRequest { trX =  0  , trY =  0.4, trW = 8  , trH = 1.2, trText = "valuation" }
-				, TextRequest { trX =  8.4, trY =  0.4, trW = 3.2, trH = 1.2, trText = printf "%.2e" (hstValuation hst) }
-				, TextRequest { trX = 14.4, trY =  0.4, trW = 3.2, trH = 1.2, trText = printf "%.2e" (niValuation netOut) }
-				, TextRequest { trX =  0  , trY =  2.4, trW = 8  , trH = 1.2, trText = "fall time" }
-				, TextRequest { trX =  8.4, trY =  2.4, trW = 3.2, trH = 1.2, trText = show . toInteger $ pFallWeight pred }
-				, TextRequest { trX = 14.4, trY =  2.4, trW = 3.2, trH = 1.2, trText = printf "%.2f" (niFallTime netOut) }
-				, TextRequest { trX =  0  , trY = 40.4, trW = 8  , trH = 1.2, trText = "category" }
-				, TextRequest { trX =  8.4, trY = 40.4, trW = 5.2, trH = 1.2, trText = "ground truth" }
-				, TextRequest { trX = 14.4, trY = 40.4, trW = 5.2, trH = 1.2, trText = "net output" }
-				]
-			G.rectangle 12 0 2 2 >> bwGradient (hstValuation hst   ) >> G.fill
-			G.rectangle 18 0 2 2 >> bwGradient ( niValuation netOut) >> G.fill
-			forZipWithM_ [0..] allPCs $ \i pc -> do
-				let blyI = 4 + 2*i; blyD = fromIntegral blyI
-				    truth = realToFrac . HM.findWithDefault 0 pc $ pClearPillWeight pred
-				    predicted = HM.findWithDefault 0 pc (niClearPill netOut)
-				pill (Pill pc (Position 2 (blyI-1)))
-				fitTexts $ tail [undefined
-					, TextRequest { trX =  8.4, trY = blyD+0.4, trW = 3.2, trH = 1.2, trText = printf "%.2e" truth }
-					, TextRequest { trX = 14.4, trY = blyD+0.4, trW = 3.2, trH = 1.2, trText = printf "%.2e" predicted }
-					]
-				G.rectangle 12 blyD 2 2 >> bwGradient truth     >> G.fill
-				G.rectangle 18 blyD 2 2 >> bwGradient predicted >> G.fill
-
-		logHeatmapGrid 1 3 "final occupation" $ do
-			let outOccupied = onPositionsVec niOccupied
-			boardHeatmap0Dyn (hstBoard hst) initialPC outOccupied
-			G.translate 0 hd
-			boardHeatmap01 (hstBoard hst) initialPC outOccupied
-			G.translate 0 hd
-			boardHeatmap01 (hstBoard hst) initialPC . onPositionsC $ \pos p -> if HS.member pos (pOccupied p) then 1 else 0
-
-		logHeatmapGrid (length allPCs) 3 "future placements" $ do
-			let placementHi = max
-			    	(realToFrac . maximum . (0:) . HM.elems $ pPlacementWeight pred)
-			    	(maximum . fmap maximum . fmap (fmap maximum) $ niPlacements netOut)
-			forZipWithM_ [0..] allPCs $ \i pc -> do
-				G.save
-				G.translate (i*wd) 0
-				boardHeatmap0Dyn (hstBoard hst) pc $ onPositionsVec ((HM.! pc) . niPlacements)
-				G.translate 0 hd
-				boardHeatmap0Max placementHi (hstBoard hst) pc $ onPositionsVec ((HM.! pc) . niPlacements)
-				G.translate 0 hd
-				boardHeatmap0Max placementHi (hstBoard hst) pc . onPositionsC $ \pos -> HM.findWithDefault 0 (Pill pc pos) . pPlacementWeight
-				G.restore
-
-		logHeatmapGrid 1 3 "clear locations" $ do
-			let clearHi = max
-			    	(realToFrac . maximum . (0:) . M.elems $ pClearLocationWeight pred)
-			    	(maximum . fmap maximum $ niClearLocation netOut)
-			boardHeatmap0Dyn (hstBoard hst) initialPC (onPositionsVec niClearLocation)
-			G.translate 0 hd
-			boardHeatmap0Max clearHi (hstBoard hst) initialPC (onPositionsVec niClearLocation)
-			G.translate 0 hd
-			boardHeatmap0Max clearHi (hstBoard hst) initialPC . onPositionsC $ \pos -> M.findWithDefault 0 pos . pClearLocationWeight
+-- This doesn't choose training positions uniformly at random from among all
+-- those available (it's biased towards positions from longer games), but
+-- hopefully it's close enough anyway.
+loadBatch :: GenIO -> StatusCheck -> FilePath -> String -> Int -> IO (Vector NextTrainingExample)
+loadBatch rng sc dir category batchSize = do
+	(numGames, gameNames) <- gameNamesLoop
+	let gameLoadLoop n = if n < batchSize
+	    	then do
+	    		i <- uniformRM (0, numGames-1) rng
+	    		mgd <- absDecodeFileLoop dir (GamesProcessed category) (T.unpack (S.index gameNames i))
+	    		tes <- fromMaybe V.empty <$> traverse nextTrainingExamples mgd
+	    		(tes:) <$> gameLoadLoop (n + V.length tes)
+	    	else pure []
+	sampleWithoutReplacement batchSize . V.concat =<< gameLoadLoop 0
+	where
+	gameNamesLoop = readGameNames dir category >>= \case
+		Just nms | len > 0 -> pure (len, nms) where len = S.length nms
+		_ -> scIO_ sc >> threadDelay 1000000 >> gameNamesLoop
 
 data LogMessage
 	= Metric String Float

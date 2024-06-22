@@ -240,8 +240,8 @@ data SearchConfigurationView = SCV
 	{ scvTop :: Grid
 	, scvC_puct :: ConfigurationRequestView Float
 	, scvIterations :: ConfigurationRequestView Int
-	, scvTypicalMoves :: ConfigurationRequestView Double
-	, scvPriorNoise :: ConfigurationRequestView Double
+	, scvTypicalMoves :: ConfigurationRequestView Float
+	, scvPriorNoise :: ConfigurationRequestView Float
 	, scvTemperature :: ConfigurationRequestView Double
 	}
 

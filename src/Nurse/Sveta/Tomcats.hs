@@ -2,7 +2,7 @@ module Nurse.Sveta.Tomcats (
 	DMParameters, dmParameters,
 	GameStateSeed(..), initialTree,
 	mcts, descend, unsafeDescend,
-	evaluateFinalState, DetailedEvaluation, dumbEvaluation,
+	evaluateFinalState, DetailedEvaluation, netInput, dumbEvaluation,
 	dmFinished, dmPlay, approximateCostModel,
 	SearchConfiguration(..),
 	Move(..),
@@ -11,6 +11,7 @@ module Nurse.Sveta.Tomcats (
 	Tree(..),
 	clone,
 	maximumOn,
+	ppTreeIO, ppTreeSparseIO,
 	) where
 
 import Control.Applicative
@@ -28,15 +29,17 @@ import Data.Vector (Vector)
 import Dr.Mario.Model
 import Dr.Mario.Pathfinding
 import Nurse.Sveta.STM.BatchProcessor
+import Nurse.Sveta.Torch.Semantics
 import System.Random.MWC
 import System.Random.MWC.Distributions
 import System.IO.Unsafe (unsafeInterleaveIO)
-import Tomcats hiding (pucbA0, descend)
+import Tomcats hiding (descend)
+import Tomcats.AlphaZero.Float (Statistics(..))
 
 import qualified Data.HashMap.Strict as HM
 import qualified Data.Vector as V
 import qualified Tomcats as T
-import qualified Tomcats.AlphaZero as A0
+import qualified Tomcats.AlphaZero.Float as A0
 
 -- TODO:
 -- 	* board/pill generation options like MWC vs LFSR, Algorithm X vs NES' algo,
@@ -45,8 +48,8 @@ import qualified Tomcats.AlphaZero as A0
 data SearchConfiguration = SearchConfiguration
 	{ c_puct :: Float
 	, iterations :: Int
-	, typicalMoves :: Double
-	, priorNoise :: Double
+	, typicalMoves :: Float
+	, priorNoise :: Float
 	, temperature :: Double -- ^ 0 means always use the highest visitCount, large numbers trend toward the uniform distribution
 	} deriving (Eq, Ord, Read, Show)
 
@@ -143,7 +146,7 @@ initialTree params g = do
 	(_, t) <- Tomcats.initialize params s >>= preprocess params s
 	pure (s, t)
 
-dmParameters :: SearchConfiguration -> Procedure GameState DetailedEvaluation -> GenIO -> DMParameters
+dmParameters :: SearchConfiguration -> Procedure NextNetInput NextNetOutput -> GenIO -> DMParameters
 dmParameters config eval gen = Parameters
 	{ score = dmScore config
 	, expand = dmExpand gen
@@ -157,7 +160,7 @@ dmScore :: SearchConfiguration -> Move -> Statistics -> Statistics -> Float
 -- as that could introduce a bias. In dmExpand, we put a bit of randomness
 -- into the priors, which we can use to break ordering ties here.
 dmScore _ RNG{} _ stats = priorProbability stats - visitCount stats
-dmScore config _ parent child = pucbA0 (c_puct config) (priorProbability child) (visitCount parent) (visitCount child) (cumulativeValuation child)
+dmScore config _ parent child = A0.pucbA0Raw (c_puct config) (priorProbability child) (visitCount parent) (visitCount child) (cumulativeValuation child)
 
 dmFinished :: GameState -> IO Bool
 dmFinished gs = do
@@ -169,17 +172,23 @@ dmFinished gs = do
 -- score: 0 or  1/3 for finishing
 --        up to 1/3 for each virus cleared; want the bot to learn early that clearing is good, so reward heavily for the first few viruses
 --        up to 1/3 for clearing quickly if you win; the quicker you get, the harder it is to get quicker, so increase the reward more quickly when it's fast
+baseWinningValuation :: Int -> Int -> Float
+baseWinningValuation frames_ ogViruses = 1 - sqrt (min 1 (frames / maxFrames)) / 3 where
+	frames = fromIntegral (max 1 frames_)
+	maxFrames = fromIntegral (shiftL ogViruses 9)
+
 winningValuation :: GameState -> IO Float
 winningValuation gs = do
-	frames_ <- readIORef (framesPassed gs)
-	let frames = fromIntegral (max 1 frames_)
-	    maxFrames = fromIntegral (shiftL (originalVirusCount gs) 9)
-	pure $ 1 - sqrt (min 1 (frames / maxFrames)) / 3
+	frames <- readIORef (framesPassed gs)
+	pure $ baseWinningValuation frames (originalVirusCount gs)
+
+baseLosingValuation :: Int -> Int -> Float
+baseLosingValuation cleared original = sqrt (fromIntegral cleared / fromIntegral original) / 3
 
 losingValuation :: GameState -> IO Float
 losingValuation gs = do
 	clearedViruses <- readIORef (virusesKilled gs)
-	pure $ sqrt (fromIntegral clearedViruses / fromIntegral (originalVirusCount gs)) / 3
+	pure $ baseLosingValuation clearedViruses (originalVirusCount gs)
 
 evaluateFinalState :: GameState -> IO Float
 evaluateFinalState gs = do
@@ -187,6 +196,17 @@ evaluateFinalState gs = do
 	if clearedViruses == originalVirusCount gs
 		then winningValuation gs
 		else losingValuation gs
+
+niEvaluateFinalState :: NextNetInput -> Float
+niEvaluateFinalState ni = if remaining == 0
+	then baseWinningValuation (niFrames ni) orig
+	else baseLosingValuation (orig - remaining) orig
+	where
+	orig = niOriginalVirusCount ni
+	Sum remaining = ofoldMap isVirus (niBoard ni)
+	isVirus = \case
+		Occupied _ Virus -> 1
+		_ -> 0
 
 evaluationBounds :: GameState -> IO (Float, Float)
 evaluationBounds gs = liftA2 (,) (losingValuation gs) (winningValuation gs)
@@ -212,7 +232,7 @@ dmExpand = \gen gs -> dmFinished gs >>= \case
 		-- tree in the next iteration or two, and fix it up fairly promptly --
 		-- though that's not guaranteed!
 		pure (mempty, HM.fromList (zipWith mk [0..] (replicateM 2 colors)))
-	True -> evaluateFinalState gs <&> \score -> (singleVisitStats score, HM.empty)
+	True -> evaluateFinalState gs <&> \score -> (Statistics 1 0 score, HM.empty)
 	where
 	n = length colors^2
 	halfn = n `div` 2
@@ -259,40 +279,55 @@ approximateCostModel move pill counts = 0
 	+ mpPathLength move -- pill maneuvering
 	+ sum [16*n + 20 | n <- rowsFallen counts] -- fall time + clear animation
 
-dmPreprocess :: SearchConfiguration -> Procedure GameState DetailedEvaluation -> GenIO -> GameState -> Tree Statistics Move -> IO (Statistics, Tree Statistics Move)
+dmPreprocess :: SearchConfiguration -> Procedure NextNetInput NextNetOutput -> GenIO -> GameState -> Tree Statistics Move -> IO (Statistics, Tree Statistics Move)
 dmPreprocess config eval gen gs t
-	| HM.null (children t) = case HM.keys (unexplored t) of
-		RNG{}:_ -> do
-			fp <- readIORef (framesPassed gs)
-			pu <- readIORef (pillsUsed gs)
-			moves <- HM.toList <$> mapproxReachable (board gs) (fp .&. 1 /= fromEnum (originalSensitive gs)) (gravity (speed gs) pu)
-			let symmetricMoves = HM.toList $ HM.fromListWith shorterPath [(placement { mpRotations = mpRotations placement .&. 1 }, path) | (placement, path) <- moves]
-			pure . (,) mempty $ t
-				{ unexplored = HM.empty
-				, children = flip HM.mapWithKey (unexplored t) $ \(RNG l r) stats -> Tree
-					{ statistics = stats
-					, children = HM.empty
-					, cachedEvaluation = Nothing
-					, unexplored = HM.fromListWithKey deduplicationError
-						[ (Placement path (mpPill placement (Lookahead l r)), mempty)
-						| (placement, path) <- if l == r then symmetricMoves else moves
-						]
-					}
-				}
-		Placement{}:_ -> do
-			future <- schedule eval gs
-			(valueLo, valueHi) <- evaluationBounds gs
-			(valueEstimate, moveWeights) <- future
-			-- max before min, because max x nan = x but min x nan = nan
-			let stats = singleVisitStats . min valueHi . max valueLo $ valueEstimate
-			priors <- id
-				. fmap (fmap roundStatistics)
-				. A0.dirichletA0 (typicalMoves config) (priorNoise config) gen
-				. A0.normalize
-				. HM.mapWithKey (\(Placement _ (Pill pc bl)) _ -> realToFrac (moveWeights HM.! pc V.! x bl V.! y bl))
-				$ unexplored t
-			pure (stats, t { statistics = statistics t <> stats, unexplored = priors })
-		[] -> pure (mempty, t)
+	| HM.null (children t)
+	, RNG{}:_ <- HM.keys (unexplored t) = do
+		future <- schedule eval =<< netInput gs
+		fp <- readIORef (framesPassed gs)
+		pu <- readIORef (pillsUsed gs)
+		movesHM <- mapproxReachable (board gs) (fp .&. 1 /= fromEnum (originalSensitive gs)) (gravity (speed gs) pu)
+		let symmetricMovesHM = HM.fromListWith shorterPath [(placement { mpRotations = mpRotations placement .&. 1 }, path) | (placement, path) <- moves]
+		    moves = HM.toList movesHM
+		    symmetricMoves = HM.toList symmetricMovesHM
+		allNoise <- HM.fromList <$> traverse sequence
+			[ (lk, A0.dirichlet (10/A0.unzero (typicalMoves config)) const gen (if l == r then symmetricMovesHM else movesHM))
+			| l <- [minBound .. maxBound]
+			, r <- [minBound .. maxBound]
+			, let lk = Lookahead l r
+			]
+		no <- future
+		let cs = HM.fromList
+		    	[ (,) (RNG l r) Tree
+		    		{ statistics = (unexplored t HM.! mv)
+		    			{ visitCount = 1
+		    			, cumulativeValuation = noValuation no HM.! lk
+		    			}
+		    		, children = HM.empty
+		    		, unexplored = lerpNoise . A0.normalizeStatistics $ HM.fromListWithKey deduplicationError
+		    			[ (,) (Placement path pill) Statistics
+		    				{ visitCount = 0
+		    				, priorProbability = noPriors no HM.! pill
+		    				-- we smuggle the noise out through cumulativeValuation
+		    				-- lerpNoise will mix this noise with the normalized prior, then zero out the cumulativeValuation
+		    				, cumulativeValuation = noise HM.! placement
+		    				}
+		    			| (placement, path) <- if l == r then symmetricMoves else moves
+		    			, let pill = mpPill placement lk
+		    			]
+		    		, cachedEvaluation = Nothing
+		    		}
+		    	| l <- [minBound .. maxBound]
+		    	, r <- [minBound .. maxBound]
+		    	, let lk = Lookahead l r; mv = RNG l r; noise = allNoise HM.! lk
+		    	]
+		    stats = (foldMap statistics cs) { priorProbability = 0 }
+		pure (stats, Tree
+			{ statistics = stats <> statistics t
+			, children = cs
+			, unexplored = HM.empty
+			, cachedEvaluation = Nothing
+			})
 	| otherwise = pure (mempty, t)
 	where
 	deduplicationError k p1 p2 = error . unwords $ tail [undefined
@@ -300,26 +335,46 @@ dmPreprocess config eval gen gs t
 		, "guru meditation"
 		, show (k, p1, p2)
 		]
-
-singleVisitStats :: Float -> Statistics
-singleVisitStats = Statistics 1 0
+	lerpNoise = fmap \stats -> stats
+		{ priorProbability = A0.lerp (priorNoise config) (cumulativeValuation stats) (priorProbability stats)
+		, cumulativeValuation = 0
+		}
 
 type DetailedEvaluation = (Float, HashMap PillContent (Vector (Vector Float)))
 
--- | Given the game state and the colors for the upcoming pill, guess where
--- moves will be made and how good the final outcome will be. The Vector's are
--- indexed by (x, y) position of the bottom left.
-dumbEvaluation :: GameState -> IO DetailedEvaluation
-dumbEvaluation = \s -> do
-	lk <- readIORef (lookbehind s)
-	points <- evaluateFinalState s
-	pure (points, HM.fromList
-		[ (pillContentFromLookahead orient (f lk), vec)
-		| orient <- [Horizontal, Vertical]
-		, f <- [id, mirror]
-		])
-	-- when horizontal, this has one extra x position. but who cares?
-	where vec = V.replicate 8 (V.replicate 16 1)
+-- TODO: perhaps one day we should think about how to fuse this with toEndpoint
+netInput :: GameState -> IO NextNetInput
+netInput s = pure NextNetInput
+	<*> mfreeze (board s)
+	<*> readIORef (framesPassed s)
+	<*> pure (originalVirusCount s)
+
+dumbEvaluation :: NextNetInput -> IO NextNetOutput
+dumbEvaluation = \ni -> pure NextNetOutput
+	{ noPriors = uniformPriors
+	, noValuation = niEvaluateFinalState ni <$ zeroValuation
+	} where
+	zeroValuation = HM.fromList
+		[ (Lookahead { leftColor = l , rightColor = r }, 0)
+		| l <- [minBound .. maxBound]
+		, r <- [minBound .. maxBound]
+		]
+	uniformPriors = HM.fromList
+		[(,) Pill
+			{ content = PillContent
+				{ bottomLeftColor = bl
+				, otherColor = oc
+				, orientation = o
+				}
+			, bottomLeftPosition = Position x y
+			}
+			1
+		| bl <- [minBound .. maxBound]
+		, oc <- [minBound .. maxBound]
+		, o <- [minBound .. maxBound]
+		, x <- [0..case o of Horizontal -> 6; _ -> 7]
+		, y <- [0..15]
+		]
 
 -- very similar to A0.descend, except that:
 -- * it pulls the temperature from the SearchConfiguration
@@ -346,36 +401,6 @@ descend g config params s t = case (temperature config, weights) of
 	(moves, weights) = unzip . HM.toList $
 		(weight . statistics <$> children t) `HM.union`
 		(weight <$> unexplored t)
-
--- Just like A0.Statistics, except that it uses Float instead of Double.
-data Statistics = Statistics
-	{ visitCount, priorProbability, cumulativeValuation :: {-# UNPACK #-} !Float
-	}
-	deriving (Eq, Ord, Read, Show)
-
-instance Semigroup Statistics where
-	Statistics vc pp cv <> Statistics vc' pp' cv' = Statistics
-		{ visitCount = vc + vc'
-		-- I know it looks weird to add probabilities. The plan is that the
-		-- statistics that are propagated up the tree always have 0 here, so
-		-- that the initial value computed by expanding a position remains till
-		-- the end of time.
-		, priorProbability = pp + pp'
-		, cumulativeValuation = cv + cv'
-		}
-
-instance Monoid Statistics where mempty = Statistics 0 0 0
-
-instance ToJSON Statistics where toJSON stats = toJSON (visitCount stats, priorProbability stats, cumulativeValuation stats)
-instance FromJSON Statistics where parseJSON v = parseJSON v <&> \(vc, pp, cv) -> Statistics vc pp cv
-
-roundStatistics :: A0.Statistics -> Statistics
-roundStatistics (A0.Statistics vc pp cv) = Statistics (realToFrac vc) (realToFrac pp) (realToFrac cv)
-
--- Just like Tomcats.pucbA0, except that it uses Float instead of Double.
-pucbA0 :: Float -> Float -> Float -> Float -> Float -> Float
-pucbA0 c_puct p n 0 _ = c_puct * p * sqrt n
-pucbA0 c_puct p n n_i q_i = q_i/n_i + c_puct * p * sqrt n / (1 + n_i)
 
 -- all the rest of this stuff is just for debugging
 

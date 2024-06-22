@@ -1,3 +1,3 @@
-packages: . maryodel/haskell tomcats
+packages: . maryodel/haskell tomcats perfect-vector-shuffle
 haddock-hyperlink-source: True
 with-compiler: ghc-9.2.6

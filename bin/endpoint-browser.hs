@@ -14,6 +14,7 @@ import GHC.Stack
 import GI.Gio (fileNewForPath)
 import GI.Gtk hiding (Text)
 import Nurse.Sveta.Torch.Endpoint
+import Nurse.Sveta.Torch.Semantics
 import Nurse.Sveta.Cairo
 import Nurse.Sveta.Files
 import Nurse.Sveta.Widget
@@ -30,7 +31,7 @@ main :: IO ()
 main = do
 	torchPlusGtkFix
 	app <- new Application []
-	netRef <- newIORef . Just =<< nextNetSample True
+	netRef <- newIORef . Just . fst =<< nextNetSample
 	inpRef <- newIORef Nothing
 
 	on app #activate $ do
@@ -94,6 +95,10 @@ setupEndpointView netRef inpRef gsRef ssRef = do
 		(Just net, Just inp) -> do
 				tes <- nextTrainingExamples inp
 				let ni = toEndpoint (teInput <$> tes)
+				-- could use nextNetEvaluation instead, but:
+				-- 1. that would incur an extra round-trip through Endpoint
+				-- 2. I worry that would hide a bug somehow; I'd rather use
+				--    the rawest form of the data available for this tool
 				no <- nextNetEvaluation' net ni
 				let combinedEndpoint = EDictionary $ tail [undefined
 				    	, ("input", ni)
