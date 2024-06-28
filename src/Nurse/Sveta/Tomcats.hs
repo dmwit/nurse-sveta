@@ -20,6 +20,7 @@ import Control.Concurrent.MVar
 import Control.Monad
 import Data.Aeson
 import Data.Bits
+import Data.Foldable
 import Data.Functor
 import Data.Hashable
 import Data.HashMap.Strict (HashMap)
@@ -290,38 +291,38 @@ dmPreprocess config eval gen gs t
 		let symmetricMovesHM = HM.fromListWith shorterPath [(placement { mpRotations = mpRotations placement .&. 1 }, path) | (placement, path) <- moves]
 		    moves = HM.toList movesHM
 		    symmetricMoves = HM.toList symmetricMovesHM
-		allNoise <- HM.fromList <$> traverse sequence
-			[ (lk, A0.dirichlet (10/A0.unzero (typicalMoves config)) const gen (if l == r then symmetricMovesHM else movesHM))
+		allNoise <- sequence
+			[ fmap ((,) lk) . A0.dirichlet (10/A0.unzero (typicalMoves config)) const gen $ HM.fromListWithKey deduplicationError
+				[ (Placement path pill, ())
+				| (placement, path) <- if l == r then symmetricMoves else moves
+				, let pill = mpPill placement lk
+				]
 			| l <- [minBound .. maxBound]
 			, r <- [minBound .. maxBound]
 			, let lk = Lookahead l r
 			]
 		no <- future
 		let cs = HM.fromList
-		    	[ (,) (RNG l r) Tree
+		    	[ (,) mv Tree
 		    		{ statistics = (unexplored t HM.! mv)
 		    			{ visitCount = 1
 		    			, cumulativeValuation = noValuation no HM.! lk
 		    			}
 		    		, children = HM.empty
-		    		, unexplored = lerpNoise . A0.normalizeStatistics $ HM.fromListWithKey deduplicationError
-		    			[ (,) (Placement path pill) Statistics
+		    		, unexplored = lerpNoise . A0.normalizeStatistics $ flip HM.mapWithKey lkNoise \(Placement path pill) noise ->
+		    			Statistics
 		    				{ visitCount = 0
 		    				, priorProbability = noPriors no HM.! pill
 		    				-- we smuggle the noise out through cumulativeValuation
 		    				-- lerpNoise will mix this noise with the normalized prior, then zero out the cumulativeValuation
-		    				, cumulativeValuation = noise HM.! placement
+		    				, cumulativeValuation = noise
 		    				}
-		    			| (placement, path) <- if l == r then symmetricMoves else moves
-		    			, let pill = mpPill placement lk
-		    			]
 		    		, cachedEvaluation = Nothing
 		    		}
-		    	| l <- [minBound .. maxBound]
-		    	, r <- [minBound .. maxBound]
-		    	, let lk = Lookahead l r; mv = RNG l r; noise = allNoise HM.! lk
+		    	| (lk@(Lookahead l r), lkNoise) <- allNoise
+		    	, let mv = RNG l r
 		    	]
-		    stats = (foldMap statistics cs) { priorProbability = 0 }
+		    stats = (foldMap' statistics cs) { priorProbability = 0 }
 		pure (stats, Tree
 			{ statistics = stats <> statistics t
 			, children = cs
