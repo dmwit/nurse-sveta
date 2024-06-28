@@ -167,7 +167,7 @@ onSpeeds f gts = gts { summary = s { speeds = f (speeds s) } } where
 newSearchConfiguration :: SearchConfiguration
 newSearchConfiguration = SearchConfiguration
 	{ c_puct = 1 -- no idea what A0 did here
-	, iterations = 1600
+	, iterations = 200
 	, typicalMoves = 40
 	, priorNoise = 1
 	, temperature = 0.2
