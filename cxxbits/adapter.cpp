@@ -476,7 +476,7 @@ DecoderImpl::DecoderImpl(sp_structure s, std::string name)
 }
 
 torch::Tensor EncoderImpl::forward(sp_endpoint e) {
-	DebugScope dbg("EncoderImpl::forward");
+	DebugScope dbg("EncoderImpl::forward", DEFAULT_LAYER_VERBOSITY);
 	const int n = e->size;
 	switch(e->tag) {
 		case tag_tensor: {
@@ -509,7 +509,7 @@ torch::Tensor EncoderImpl::forward(sp_endpoint e) {
 }
 
 sp_endpoint DecoderImpl::forward(torch::Tensor t) {
-	DebugScope dbg("DecoderImpl::forward");
+	DebugScope dbg("DecoderImpl::forward", DEFAULT_LAYER_VERBOSITY);
 
 	auto e = new _endpoint();
 	e->size = t.size(0);
@@ -763,6 +763,7 @@ torch::Tensor next_leaf_loss(leaf_type loss_ty, const torch::Tensor &net_output,
 }
 
 torch::Tensor next_loss(sp_structure shape, sp_endpoint net_output, sp_endpoint ground_truth) {
+	DebugScope dbg("next_loss(shape, net_output, ground_truth)");
 	if(shape->tag != net_output->tag || shape->tag != ground_truth->tag) {
 		std::cerr << "Tag mismatch in next_loss." << std::endl;
 		std::cerr << "shape:        " << shape       ->tag << std::endl;
@@ -797,6 +798,7 @@ torch::Tensor next_loss(sp_structure shape, sp_endpoint net_output, sp_endpoint 
 // few extra memory allocations/deallocations, just to separate concerns and
 // reduce code duplication?
 torch::Tensor next_loss(sp_structure shape, sp_endpoint scaling, sp_endpoint net_output, sp_endpoint ground_truth) {
+	DebugScope dbg("next_loss(shape, scaling, net_output, ground_truth)");
 	if(scaling->tag == tag_tensor) {
 		if(scaling->mask.defined()) {
 			std::cerr << "Masking the loss doesn't really make sense, just set the scaling for that component to 0 instead." << std::endl;
@@ -806,7 +808,11 @@ torch::Tensor next_loss(sp_structure shape, sp_endpoint scaling, sp_endpoint net
 			std::cerr << "Scaling tensor output losses differently by position is not (yet) implemented." << std::endl;
 			throw 0;
 		}
-		return scaling->values * next_loss(shape, net_output, ground_truth);
+		if(scaling->values.size(0) != 1) {
+			std::cerr << "Scaling losses differently per training example is not (yet) implemented." << std::endl;
+			throw 0;
+		}
+		return scaling->values[0] * next_loss(shape, net_output, ground_truth);
 	}
 
 	if(shape->tag != scaling->tag || shape->tag != net_output->tag || shape->tag != ground_truth->tag) {

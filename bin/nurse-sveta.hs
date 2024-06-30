@@ -678,7 +678,7 @@ processGameFile log status dir fp = recallGame dir fp >>= \case
 		    bgs = btsLatestGlobal bts
 		gameNames_ <- asum [empty
 			, maybe empty pure $ HM.lookup categoryT (bgsGameNames bgs)
-			, maybe empty pure =<< absDecodeFileLoop dir (Tensors category) namesFilename
+			, maybe empty pure =<< absDecodeFileLoop dir (GamesProcessed category) namesFilename
 			, pure S.empty
 			]
 		meta_ <- asum [empty
@@ -767,7 +767,7 @@ recallGame dir fp = handle (\e -> if isAlreadyInUseError e then pure GDStillWrit
 		Just history -> GDSuccess history
 
 readGameNames :: FilePath -> FilePath -> IO (Maybe (Seq T.Text))
-readGameNames root category = absDecodeFileLoop root (Tensors category) namesFilename
+readGameNames root category = absDecodeFileLoop root (GamesProcessed category) namesFilename
 
 newSumView :: Grid -> Int32 -> T.Text -> IO Grid
 newSumView parent i description = do

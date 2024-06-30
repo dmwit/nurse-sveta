@@ -76,8 +76,6 @@ data Directory
 	= GamesPending
 	| GamesProcessed FilePath
 	| GamesParseError
-	| Tensors FilePath
-	| Positions FilePath
 	| Weights
 	| Logging
 	deriving (Eq, Ord, Read, Show)
@@ -87,8 +85,6 @@ relFileName dir fp = case dir of
 	GamesPending            -> "games" </> "pending" </> fp
 	GamesProcessed category -> "games" </> "processed" </> category </> fp
 	GamesParseError         -> "games" </> "parse-error" </> fp
-	Tensors category        -> "tensors" </> category </> fp
-	Positions category      -> "positions" </> category </> fp
 	Weights                 -> "weights" </> fp
 	Logging                 -> "wandb" </> fp
 
