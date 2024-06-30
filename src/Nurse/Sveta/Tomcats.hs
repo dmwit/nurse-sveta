@@ -12,6 +12,12 @@ module Nurse.Sveta.Tomcats (
 	clone,
 	maximumOn,
 	ppTreeIO, ppTreeSparseIO,
+	ppTreeSparse, ppTreesSparse, ppTree, ppTrees,
+	ppStats, ppStatss, ppCache,
+	ppMove,
+	ppPill, ppContent, ppOrientation, ppColor,
+	ppPosition,
+	ppPercent, ppPrecision,
 	) where
 
 import Control.Applicative
