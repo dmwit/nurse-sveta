@@ -29,6 +29,7 @@ import Data.Monoid
 import Data.Vector (Vector)
 import Dr.Mario.Model
 import Dr.Mario.Pathfinding
+import Numeric
 import Nurse.Sveta.STM.BatchProcessor
 import Nurse.Sveta.Torch.Semantics
 import System.Random.MWC
@@ -480,5 +481,5 @@ ppPercent :: Float -> String
 ppPercent p = (if isNaN p then "nan" else show (round (100*p))) ++ "%"
 
 ppPrecision :: Int -> Float -> String
-ppPrecision p n = if isNaN n then "nan" else show (fromInteger (round (pow*n))/pow)
+ppPrecision p n = if isNaN n then "nan" else showFFloat Nothing (fromInteger (round (pow*n))/pow) ""
 	where pow = 10^p
