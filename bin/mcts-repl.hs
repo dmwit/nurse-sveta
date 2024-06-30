@@ -9,6 +9,7 @@ import Nurse.Sveta.STM.BatchProcessor
 import Nurse.Sveta.Tomcats
 import Nurse.Sveta.Torch
 import System.Random.MWC
+import Text.Read
 
 main :: IO ()
 main = do
@@ -39,7 +40,15 @@ repl g cfg params s t = getLine >>= \case
 			repl g cfg params s t'
 	-- help below
 	-- mcts
-	'm':_ -> repl g cfg params s =<< mcts params s t
+	'm':ln -> case readMaybe <$> words ln of
+		[_, Just n] | n > 0 -> loop n t
+		[Just n] | n > 0 -> loop n t
+		[] -> loop 1 t
+		[_] -> loop 1 t
+		_ -> putStrLn "Didn't understand, assuming you want one iteration" >> loop 1 t
+		where
+		loop 0 t = repl g cfg params s t
+		loop n t = loop (n-1) =<< mcts params s t
 	-- quit
 	'q':_ -> pure ()
 	-- state
@@ -64,7 +73,7 @@ repl g cfg params s t = getLine >>= \case
 	'v':_ -> ppTreeIO t >> repl g cfg params s t
 	-- help
 	_ -> do
-		putStrLn "Options are board, descend, mcts, quit, state, tree, verbose tree"
+		putStrLn "Options are board, descend, mcts [iteration count], quit, state, tree, verbose tree"
 		repl g cfg params s t
 
 newSearchConfiguration :: SearchConfiguration
