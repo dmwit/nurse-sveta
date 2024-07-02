@@ -6,8 +6,6 @@ import Control.Exception
 import Control.Monad
 import Data.Aeson
 import Data.Aeson.Encoding
-import Data.Bits
-import Data.Fixed
 import Data.Foldable
 import Data.Functor
 import Data.HashMap.Strict (HashMap)
@@ -16,18 +14,13 @@ import Data.IntMap (IntMap)
 import Data.IORef
 import Data.List
 import Data.Maybe
-import Data.Monoid
 import Data.Sequence (Seq)
 import Data.Time (UTCTime)
-import Data.Traversable
-import Data.Universe
-import Data.Universe.Instances.Reverse
 import Data.Vector (Vector)
 import Dr.Mario.Model
 import GI.Gtk as G
 import Immutable.Shuffle
 import Numeric
-import Nurse.Sveta.Cairo
 import Nurse.Sveta.Files
 import Nurse.Sveta.STM
 import Nurse.Sveta.STM.BatchProcessor
@@ -47,15 +40,12 @@ import Util
 
 import qualified Data.ByteString as BS
 import qualified Data.HashMap.Strict as HM
-import qualified Data.HashSet as HS
 import qualified Data.IntMap as IM
-import qualified Data.Map as M
 import qualified Data.Sequence as S
 import qualified Data.Text as T
 import qualified Data.Text.Internal.Encoding.Utf8 as T
 import qualified Data.Time as Time
 import qualified Data.Vector as V
-import qualified GI.Cairo.Render as G
 
 -- ╭╴w╶──────────────────────╮
 -- │╭╴top╶──────────────────╮│

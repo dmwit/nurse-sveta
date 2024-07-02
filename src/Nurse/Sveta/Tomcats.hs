@@ -2,7 +2,7 @@ module Nurse.Sveta.Tomcats (
 	DMParameters, dmParameters,
 	GameStateSeed(..), initialTree,
 	mcts, descend, unsafeDescend,
-	evaluateFinalState, DetailedEvaluation, netInput, dumbEvaluation,
+	evaluateFinalState, netInput, dumbEvaluation,
 	dmFinished, dmPlay, approximateCostModel,
 	SearchConfiguration(..),
 	Move(..),
@@ -216,9 +216,6 @@ niEvaluateFinalState ni = if remaining == 0
 		Occupied _ Virus -> 1
 		_ -> 0
 
-evaluationBounds :: GameState -> IO (Float, Float)
-evaluationBounds gs = liftA2 (,) (losingValuation gs) (winningValuation gs)
-
 -- We should probably avoid looking at RNG moves in the same order every time,
 -- as that could introduce a bias. So we toss a tiny tiny bit of randomness
 -- into the priors.
@@ -347,8 +344,6 @@ dmPreprocess config eval gen gs t
 		{ priorProbability = A0.lerp (priorNoise config) (cumulativeValuation stats) (priorProbability stats)
 		, cumulativeValuation = 0
 		}
-
-type DetailedEvaluation = (Float, HashMap PillContent (Vector (Vector Float)))
 
 -- TODO: perhaps one day we should think about how to fuse this with toEndpoint
 netInput :: GameState -> IO NextNetInput

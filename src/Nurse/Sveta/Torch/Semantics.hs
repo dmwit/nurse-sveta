@@ -8,15 +8,15 @@ module Nurse.Sveta.Torch.Semantics (
 	-- * ToEndpoint
 	ToEndpoint(..),
 	ToEndpointRecordDescription(..), toEndpointRecord,
-	OneHot(..), MapLike(..),
-	eqAsFloat, oneHotValue,
-	OneHotScalar(..), ZeroDefault(..), NoDefault(..), ContainerEndpoint(..),
+	eqAsFloat,
+	ZeroDefault(..), NoDefault(..), ContainerEndpoint(..),
 	-- * FromEndpoint
 	FromEndpoint(..), fromEndpoint,
 	FromEndpointRecordDescription(..), endpointIndexRecord, field,
 	-- * Miscellaneous
 	Structured(..),
 	EndpointKey(..),
+	MapLike(..),
 	safeLog,
 	) where
 
@@ -32,7 +32,6 @@ import GHC.Stack
 import Nurse.Sveta.Torch.Endpoint
 
 import qualified Data.HashMap.Strict as HM
-import qualified Data.HashSet as HS
 import qualified Data.Map as M
 import qualified Data.Vector as V
 
@@ -54,16 +53,8 @@ instance ToEndpoint CFloat where
 instance FromEndpoint CFloat where
 	endpointIndex (EFullTensor _ v) i = the (v ! i)
 
-newtype RealToFracEndpoint a = RealToFracEndpoint { getRealToFracEndpoint :: a }
-	deriving newtype (Eq, Ord, Fractional, Num, Real)
-instance Real a => ToEndpoint (RealToFracEndpoint a) where
-	toEndpoint = toEndpoint . fmap (realToFrac @_ @CFloat)
-instance Fractional a => FromEndpoint (RealToFracEndpoint a) where
-	endpointIndex e i = realToFrac @CFloat (endpointIndex e i)
-
-deriving via RealToFracEndpoint Float instance ToEndpoint Float
-deriving via RealToFracEndpoint Float instance FromEndpoint Float
-deriving via RealToFracEndpoint CUChar instance ToEndpoint CUChar
+instance ToEndpoint Float where toEndpoint = toEndpoint . coerce @_ @(_ CFloat)
+instance FromEndpoint Float where endpointIndex e i = coerce @CFloat (endpointIndex e i)
 
 -- | Assumes 8x16 boards
 instance Structured Board where
@@ -78,15 +69,15 @@ instance ToEndpoint Board where
 		, ("shape", full shape)
 		, ("color", full color)
 		] where
-		full :: forall a. (Eq a, OneHot a) => (Cell -> Maybe a) -> Endpoint
+		full :: forall a. (Eq a, EndpointKey a) => (Cell -> Maybe a) -> Endpoint
 		full f = EFullTensor gcs $ generate
 			(V.length boards:map evalGameConstant gcs)
-			-- it is important to use toIndex rather than fromIndex here,
+			-- it is important to use toIndices rather than fromIndices here,
 			-- because the Shape instance collapses multiple shapes to the same
 			-- index
-			\[i, v, x, y] -> eqAsFloat (Just v)
-				(toIndex <$> f (unsafeGet (boards V.! i) (Position x y)))
-			where gcs = [indexCountGC @a, gcw, gch]
+			\[i, v, x, y] -> eqAsFloat (Just [v])
+				(toIndices <$> f (unsafeGet (boards V.! i) (Position x y)))
+			where gcs = indexCounts @a ++ [gcw, gch]
 		(gcw, gch) = case boards V.!? 0 of
 			Nothing -> (GCWidth, GCHeight)
 			Just b -> (GCWidth `orMiscellaneous` width b, GCHeight `orMiscellaneous` height b)
@@ -113,64 +104,8 @@ toEndpointRecord desc vs = EDictionary (go desc) where
 	go (nm :=: f) = [(nm, toEndpoint (f <$> vs))]
 	go (l :&: r) = go l ++ go r
 
-class OneHot a where
-	indexCount :: Int
-	indexCountGC :: GameConstant
-	toIndex :: a -> Int
-	fromIndex :: Int -> a
-
-	indexCount = evalGameConstant (indexCountGC @a)
-	indexCountGC = GCMiscellaneous (indexCount @a)
-
-	default toIndex :: Enum a => a -> Int
-	default fromIndex :: Enum a => Int -> a
-	toIndex = fromEnum
-	fromIndex = toEnum
-
-instance OneHot Color where indexCountGC = GCColors
-instance OneHot Orientation where indexCountGC = GCOrientations
-
-instance OneHot Shape where
-	indexCountGC = GCShapes
-	toIndex = \case
-		Virus -> 0
-		West -> 1
-		East -> 2
-		_ -> 3 -- Disconnected, North, and South all have the same strategic content
-	fromIndex = \case
-		0 -> Virus
-		1 -> West
-		2 -> East
-		3 -> Disconnected
-
-instance OneHot PillContent where
-	indexCount = indexCount @Orientation * indexCount @Color * indexCount @Color
-	toIndex pc = (toIndex (orientation pc) * indexCount @Color + toIndex (bottomLeftColor pc)) * indexCount @Color + toIndex (otherColor pc)
-	fromIndex n = PillContent
-		{ orientation = fromIndex o
-		, bottomLeftColor = fromIndex l
-		, otherColor = fromIndex r
-		} where
-		(n', r) = n `quotRem` indexCount @Color
-		(o , l) = n' `quotRem` indexCount @Color
-
 eqAsFloat :: Eq a => a -> a -> CFloat
 eqAsFloat x y = if x == y then 1 else 0
-
--- | Handy for building an argument to 'generate'; takes an actual value and
--- the one-hot index we're currently generating the value for.
-oneHotValue :: (Eq a, OneHot a) => a -> Int -> CFloat
-oneHotValue = eqAsFloat . toIndex
-
--- | A newtype to hang some Endpoint instances off of. See also 'SingletonSet',
--- which is essentially the same, but supports types that would prefer to be
--- represented as a collection of indices rather than a single index.
-newtype OneHotScalar a = OneHotScalar { getOneHotScalar :: a }
-	deriving (Eq, Ord, Read, Show)
-
-instance (Eq a, OneHot a) => ToEndpoint (OneHotScalar a) where
-	toEndpoint vs = EFullTensor [indexCountGC @a]
-		$ generate [V.length vs, indexCount @a] \[n, i] -> oneHotValue (getOneHotScalar (vs V.! n)) i
 
 -- | @toIndices . fromIndices = id@ is a law, but @fromIndices . toIndices =
 -- id@ is not (e.g. see the 'Shape' instance, where 'North', 'South', and
@@ -180,35 +115,43 @@ class (Eq a, Show a) => EndpointKey a where
 	toIndices :: a -> [Int]
 	fromIndices :: HasCallStack => [Int] -> a
 
-	default indexCounts :: OneHot a => [GameConstant]
-	indexCounts = [indexCountGC @a]
+	default toIndices :: Enum a => a -> [Int]
+	toIndices = (:[]) . fromEnum
 
-	default toIndices :: OneHot a => a -> [Int]
-	toIndices = (:[]) . toIndex
-
-	default fromIndices :: (HasCallStack, OneHot a) => [Int] -> a
-	fromIndices [i] = fromIndex i
+	default fromIndices :: (HasCallStack, Enum a) => [Int] -> a
+	fromIndices [i] = toEnum i
 	fromIndices is = error $ "Expected one index to decode, but saw " ++ show (length is) ++ ", namely, " ++ show is
 
-instance EndpointKey Orientation
-instance EndpointKey Color
-instance EndpointKey Shape
+instance EndpointKey Orientation where indexCounts = [GCOrientations]
+instance EndpointKey Color where indexCounts = [GCColors]
+instance EndpointKey Shape where
+	indexCounts = [GCShapes]
+	toIndices = \case
+		Virus -> [0]
+		West -> [1]
+		East -> [2]
+		_ -> [3] -- Disconnected, North, and South all have the same strategic content
+	fromIndices = \case
+		[0] -> Virus
+		[1] -> West
+		[2] -> East
+		[3] -> Disconnected
 
 instance EndpointKey Lookahead where
-	indexCounts = [indexCountGC @Color, indexCountGC @Color]
-	toIndices lk = [toIndex (f lk) | f <- [leftColor, rightColor]]
+	indexCounts = indexCounts @Color ++ indexCounts @Color
+	toIndices lk = toIndices (leftColor lk) ++ toIndices (rightColor lk)
 	fromIndices [l, r] = Lookahead
-		{ leftColor = fromIndex l
-		, rightColor = fromIndex r
+		{ leftColor = fromIndices [l]
+		, rightColor = fromIndices [r]
 		}
 
 instance EndpointKey PillContent where
-	indexCounts = [indexCountGC @Orientation, indexCountGC @Color, indexCountGC @Color]
-	toIndices pc = [toIndex (orientation pc), toIndex (bottomLeftColor pc), toIndex (otherColor pc)]
+	indexCounts = indexCounts @Orientation ++ indexCounts @Color ++ indexCounts @Color
+	toIndices pc = toIndices (orientation pc) ++ toIndices (bottomLeftColor pc) ++ toIndices (otherColor pc)
 	fromIndices [o, bl, oc] = PillContent
-		{ orientation = fromIndex o
-		, bottomLeftColor = fromIndex bl
-		, otherColor = fromIndex oc
+		{ orientation = fromIndices [o]
+		, bottomLeftColor = fromIndices [bl]
+		, otherColor = fromIndices [oc]
 		}
 
 -- | BEWARE! This instance assumes that positions are in-bounds for a standard 8x16 board.
@@ -364,7 +307,6 @@ instance ToEndpoint NextGroundTruth where
 data NextNetOutput = NextNetOutput
 	{ noPriors :: HashMap Pill Float
 	, noValuation :: HashMap Lookahead Float
-	-- TODO: poke through the stuff in Prediction and see what we should migrate into here
 	} deriving (Eq, Ord, Read, Show)
 
 instance Structured NextNetOutput where
