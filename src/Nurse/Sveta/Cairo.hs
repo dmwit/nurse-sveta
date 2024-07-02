@@ -225,12 +225,20 @@ gradientStops = tail [undefined
 	, (0.78, 0.78, 0.98)
 	]
 
-nanError :: Render ()
+nanError, infError :: Render ()
 nanError = setSourceRGB 1 0 1
+infError = setSourceRGB 0.3 0 0.5
+
+errorStops :: HasCallStack => Float -> Maybe (Render ())
+errorStops n
+	| isNaN n = Just nanError
+	| n == 1/0 = Just infError
+	| n == -1/0 = Just infError
+	| otherwise = Nothing
 
 bwGradient :: HasCallStack => Float -> Render ()
 bwGradient n
-	| isNaN n = nanError
+	| Just err <- errorStops n = err
 	| n <= 0 = setSourceRGB 0 0 0
 	| n >= 1 = setSourceRGB 1 1 1
 	| otherwise = unsafeGradient n
@@ -240,7 +248,7 @@ saturatingGradient = unsafeGradient . max 0 . min 1
 
 bSaturatingGradient :: HasCallStack => Float -> Render ()
 bSaturatingGradient n
-	| isNaN n = nanError
+	| Just err <- errorStops n = err
 	| n <= 0 = setSourceRGB 0 0 0
 	| otherwise = unsafeGradient $ min 1 n
 
