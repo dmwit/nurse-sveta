@@ -69,7 +69,10 @@ main = do
 			Just gm -> True <$ (writeIORef inpRef (Just gm) >> updateView)
 
 		fsOnUnload nnw (writeIORef netRef Nothing >> updateView)
-		fsOnLoad nnw \fp -> fail "Neural net loading not yet implemented"
+		fsOnLoad nnw \fp -> do
+			(net, _optim) <- nextNetLoadForTraining fp
+			writeIORef netRef (Just net)
+			True <$ updateView
 
 		w <- new Window $ tail [undefined
 			, #title := "Nurse Sveta endpoint browser"
