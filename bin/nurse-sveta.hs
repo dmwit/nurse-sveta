@@ -177,7 +177,7 @@ acceptConfiguration gts = gts { currentConfiguration = sTrySet (requestedConfigu
 -- │       │╰─────╯││
 -- │       ╰───────╯│
 -- ╰────────────────╯
-generationThreadView :: Procedure NextNetInput NextNetOutput -> IO ThreadView
+generationThreadView :: Procedure NetInput NetOutput -> IO ThreadView
 generationThreadView eval = do
 	genRef <- newTVarIO (newGenerationThreadState newSearchConfiguration)
 
@@ -216,7 +216,7 @@ renderSpeeds spd sss = do
 	where
 	updateLabel n t = gridUpdateLabelAt spd n 0 t (numericLabel t)
 
-generationThread :: Procedure NextNetInput NextNetOutput -> TVar GenerationThreadState -> StatusCheck -> IO ()
+generationThread :: Procedure NetInput NetOutput -> TVar GenerationThreadState -> StatusCheck -> IO ()
 generationThread eval genRef sc = do
 	g <- createSystemRandom
 	threadSpeed <- newSearchSpeed
@@ -303,7 +303,7 @@ data InferenceThreadState = InferenceThreadState
 	, itsThreadPositions :: SearchSpeed
 	, itsNetBatches :: SearchSpeed
 	, itsNetPositions :: SearchSpeed
-	, itsNet :: Stable (Maybe (Integer, NextNet))
+	, itsNet :: Stable (Maybe (Integer, Net))
 	, itsUseNet :: Bool
 	}
 
@@ -314,7 +314,7 @@ itsNewNet its = \case
 		Nothing -> True
 		Just (n', _) -> n /= n'
 
-inferenceThreadView :: Procedure NextNetInput NextNetOutput -> TVar (Maybe Integer) -> IO ThreadView
+inferenceThreadView :: Procedure NetInput NetOutput -> TVar (Maybe Integer) -> IO ThreadView
 inferenceThreadView eval netUpdate = do
 	top <- new Box [#orientation := OrientationVertical]
 	lbl <- descriptionLabel "<initializing net>"
@@ -371,7 +371,7 @@ data InferenceThreadStep
 	| ITSProgress (IO Int)
 	| ITSDie
 
-inferenceThread :: Procedure NextNetInput NextNetOutput -> TVar (Maybe Integer) -> TVar InferenceThreadState -> StatusCheck -> IO ()
+inferenceThread :: Procedure NetInput NetOutput -> TVar (Maybe Integer) -> TVar InferenceThreadState -> StatusCheck -> IO ()
 inferenceThread eval netUpdate itsRef sc = forever $ do
 	step <- atomically $ do
 		its <- readTVar itsRef
@@ -379,7 +379,7 @@ inferenceThread eval netUpdate itsRef sc = forever $ do
 			, ITSDie <$ scSTM sc
 			, ITSLoadNet <$> (readTVar netUpdate >>= ensure (itsNewNet its))
 			, case (itsUseNet its, sPayload (itsNet its)) of
-				(True, Just (_, net)) -> liftEvaluation (nextNetEvaluation net)
+				(True, Just (_, net)) -> liftEvaluation (netEvaluation net)
 				(True, _) -> retry
 				_ -> liftEvaluation (traverse dumbEvaluation)
 			]
@@ -404,20 +404,20 @@ inferenceThread eval netUpdate itsRef sc = forever $ do
 				writeTVar itsRef its' { itsNet = sSet net (itsNet its) }
 		ITSDie -> scIO_ sc
 	where
-	liftEvaluation :: (V.Vector NextNetInput -> IO (V.Vector NextNetOutput)) -> STM InferenceThreadStep
+	liftEvaluation :: (V.Vector NetInput -> IO (V.Vector NetOutput)) -> STM InferenceThreadStep
 	liftEvaluation f = ITSProgress <$> serviceCallsSTM eval (fmap (\answers -> (answers, V.length answers)) . f)
 
-inferenceThreadLoadLatestNet :: IO (Maybe (Integer, NextNet))
+inferenceThreadLoadLatestNet :: IO (Maybe (Integer, Net))
 inferenceThreadLoadLatestNet = do
 	n <- relDecodeFileLoop Weights latestFilename
 	traverse inferenceThreadLoadNet n
 
 -- TODO: better error handling
-inferenceThreadLoadNet :: Integer -> IO (Integer, NextNet)
+inferenceThreadLoadNet :: Integer -> IO (Integer, Net)
 inferenceThreadLoadNet tensor = do
 	dir <- nsDataDir
 	-- [N]urse [S]veta [n]et
-	net <- nextNetLoadForInference (absFileName dir Weights (show tensor <.> "nsn"))
+	net <- netLoadForInference (absFileName dir Weights (show tensor <.> "nsn"))
 	pure (tensor, net)
 
 data LevelMetric = LevelMetric
@@ -791,7 +791,7 @@ data TrainingConfiguration = TrainingConfiguration
 	, tcHoursPerDetailReport :: Double
 	, tcBatchSizeTrain :: Int
 	, tcBatchSizeTest :: Int
-	, tcLossScaling :: NextLossScaling
+	, tcLossScaling :: LossScaling
 	} deriving (Eq, Ord, Read, Show)
 
 newTrainingConfiguration :: TrainingConfiguration
@@ -804,7 +804,7 @@ newTrainingConfiguration = TrainingConfiguration
 	-- these are set to normalize the priors and valuation to about 1, and the
 	-- rest to about 0.5, based on the final test loss from a long training run
 	-- TODO: make this configurable
-	, tcLossScaling = NextLossScaling
+	, tcLossScaling = LossScaling
 		{ lsPriors = 1
 		, lsValuation = 4
 		}
@@ -968,14 +968,14 @@ trainingThread log netUpdate ref sc = do
 	    	every (tcHoursPerSave cfg) saveT (saveWeights ten)
 	    	batch <- loadBatch rng sc dir "train" (tcBatchSizeTrain cfg)
 	    	before <- Time.getCurrentTime
-	    	loss <- nextNetTrain net sgd (tcLossScaling cfg) batch
+	    	loss <- netTrain net sgd (tcLossScaling cfg) batch
 	    	after <- Time.getCurrentTime
 	    	schedule log (Metric "loss/train/sum" loss)
 
 	    	every (tcHoursPerDetailReport cfg) detailT $ do
 	    		testBatch <- loadBatch rng sc dir "test" (tcBatchSizeTest cfg)
-	    		trainComponents <- nextNetLossComponents net (tcLossScaling cfg) batch
-	    		testComponents <- nextNetLossComponents net (tcLossScaling cfg) testBatch
+	    		trainComponents <- netLossComponents net (tcLossScaling cfg) batch
+	    		testComponents <- netLossComponents net (tcLossScaling cfg) testBatch
 	    		schedule log $ Metric "loss/test/sum" (sum . map snd $ testComponents)
 	    		traverse_ (schedule log)
 	    			[ Metric (intercalate "/" ("loss":category:ty)) loss
@@ -1016,7 +1016,7 @@ trainingThread log netUpdate ref sc = do
 
 	    saveWeights ten = do
 	    		path <- absPrepareFile dir Weights (show ten <.> "nsn")
-	    		nextNetSave net sgd path
+	    		netSave net sgd path
 	    		absEncodeFileLoop dir Weights latestFilename ten
 	    		atomically . writeTVar netUpdate $ Just ten
 	    		atomically . modifyTVar ref $ \tts -> tts { ttsLastSaved = sSet (Just ten) (ttsLastSaved tts) }
@@ -1033,29 +1033,29 @@ trainingThread log netUpdate ref sc = do
 			act
 			writeIORef tref now
 
-trainingThreadLoadLatestNet :: IO (Integer, (NextNet, Optimizer))
+trainingThreadLoadLatestNet :: IO (Integer, (Net, Optimizer))
 trainingThreadLoadLatestNet = do
 	dir <- nsDataDir
 	mn <- absDecodeFileLoop dir Weights latestFilename
 	case mn of
 		Nothing -> do
-			netOptim <- nextNetSample
+			netOptim <- netSample
 			pure (0, netOptim)
 		Just n -> do
-			netOptim <- nextNetLoadForTraining (absFileName dir Weights (show n <.> "nsn"))
+			netOptim <- netLoadForTraining (absFileName dir Weights (show n <.> "nsn"))
 			pure (n, netOptim)
 
 -- This doesn't choose training positions uniformly at random from among all
 -- those available (it's biased towards positions from longer games), but
 -- hopefully it's close enough anyway.
-loadBatch :: GenIO -> StatusCheck -> FilePath -> String -> Int -> IO (Vector NextTrainingExample)
+loadBatch :: GenIO -> StatusCheck -> FilePath -> String -> Int -> IO (Vector TrainingExample)
 loadBatch rng sc dir category batchSize = do
 	(numGames, gameNames) <- gameNamesLoop
 	let gameLoadLoop n = if n < batchSize
 	    	then do
 	    		i <- uniformRM (0, numGames-1) rng
 	    		mgd <- absDecodeFileLoop dir (GamesProcessed category) (T.unpack (S.index gameNames i))
-	    		tes <- fromMaybe V.empty <$> traverse nextTrainingExamples mgd
+	    		tes <- fromMaybe V.empty <$> traverse trainingExamples mgd
 	    		(tes:) <$> gameLoadLoop (n + V.length tes)
 	    	else pure []
 	sampleWithoutReplacement batchSize . V.concat =<< gameLoadLoop 0

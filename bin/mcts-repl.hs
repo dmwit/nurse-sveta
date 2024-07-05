@@ -18,8 +18,8 @@ import qualified Data.HashMap.Strict as HM
 main :: IO ()
 main = do
 	proc <- newProcedure 100
-	(net, _optim) <- nextNetSample
-	forkIO $ forever (serviceCalls_ proc (nextNetEvaluation net))
+	(net, _optim) <- netSample
+	forkIO $ forever (serviceCalls_ proc (netEvaluation net))
 	g <- createSystemRandom
 	let cfg = newSearchConfiguration
 	    params = dmParameters cfg proc g

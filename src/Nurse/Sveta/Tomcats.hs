@@ -154,7 +154,7 @@ initialTree params g = do
 	(_, t) <- Tomcats.initialize params s >>= preprocess params s
 	pure (s, t)
 
-dmParameters :: SearchConfiguration -> Procedure NextNetInput NextNetOutput -> GenIO -> DMParameters
+dmParameters :: SearchConfiguration -> Procedure NetInput NetOutput -> GenIO -> DMParameters
 dmParameters config eval gen = Parameters
 	{ score = dmScore config
 	, expand = dmExpand gen
@@ -205,7 +205,7 @@ evaluateFinalState gs = do
 		then winningValuation gs
 		else losingValuation gs
 
-niEvaluateFinalState :: NextNetInput -> Float
+niEvaluateFinalState :: NetInput -> Float
 niEvaluateFinalState ni = if remaining == 0
 	then baseWinningValuation (niFrames ni) orig
 	else baseLosingValuation (orig - remaining) orig
@@ -284,7 +284,7 @@ approximateCostModel move pill counts = 0
 	+ mpPathLength move -- pill maneuvering
 	+ sum [16*n + 20 | n <- rowsFallen counts] -- fall time + clear animation
 
-dmPreprocess :: SearchConfiguration -> Procedure NextNetInput NextNetOutput -> GenIO -> GameState -> Tree Statistics Move -> IO (Statistics, Tree Statistics Move)
+dmPreprocess :: SearchConfiguration -> Procedure NetInput NetOutput -> GenIO -> GameState -> Tree Statistics Move -> IO (Statistics, Tree Statistics Move)
 dmPreprocess config eval gen gs t
 	| HM.null (children t)
 	, RNG{}:_ <- HM.keys (unexplored t) = do
@@ -346,14 +346,14 @@ dmPreprocess config eval gen gs t
 		}
 
 -- TODO: perhaps one day we should think about how to fuse this with toEndpoint
-netInput :: GameState -> IO NextNetInput
-netInput s = pure NextNetInput
+netInput :: GameState -> IO NetInput
+netInput s = pure NetInput
 	<*> mfreeze (board s)
 	<*> readIORef (framesPassed s)
 	<*> pure (originalVirusCount s)
 
-dumbEvaluation :: NextNetInput -> IO NextNetOutput
-dumbEvaluation = \ni -> pure NextNetOutput
+dumbEvaluation :: NetInput -> IO NetOutput
+dumbEvaluation = \ni -> pure NetOutput
 	{ noPriors = uniformPriors
 	, noValuation = niEvaluateFinalState ni <$ zeroValuation
 	} where

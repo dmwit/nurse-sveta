@@ -31,7 +31,7 @@ main :: IO ()
 main = do
 	torchPlusGtkFix
 	app <- new Application []
-	netRef <- newIORef . Just . fst =<< nextNetSample
+	netRef <- newIORef . Just . fst =<< netSample
 	inpRef <- newIORef Nothing
 
 	on app #activate $ do
@@ -70,7 +70,7 @@ main = do
 
 		fsOnUnload nnw (writeIORef netRef Nothing >> updateView)
 		fsOnLoad nnw \fp -> do
-			(net, _optim) <- nextNetLoadForTraining fp
+			(net, _optim) <- netLoadForTraining fp
 			writeIORef netRef (Just net)
 			True <$ updateView
 
@@ -86,24 +86,24 @@ main = do
 	args <- getArgs
 	() <$ #run app (Just args)
 
-setupEndpointView :: IORef (Maybe NextNet) -> IORef (Maybe GameDetails) -> IORef GraphsState -> IORef SelectionState -> IO ()
+setupEndpointView :: IORef (Maybe Net) -> IORef (Maybe GameDetails) -> IORef GraphsState -> IORef SelectionState -> IO ()
 setupEndpointView netRef inpRef gsRef ssRef = do
 	mnet <- readIORef netRef
 	minp <- readIORef inpRef
 	res <- case (mnet, minp) of
 		(Nothing, Nothing) -> pure defaultResidue
-		(Just net, Nothing) -> liftM2 newResidue (nextNetWeights net) (pure V.empty)
-		(Nothing, Just inp) -> nextTrainingExamples inp <&> \tes ->
+		(Just net, Nothing) -> liftM2 newResidue (netWeights net) (pure V.empty)
+		(Nothing, Just inp) -> trainingExamples inp <&> \tes ->
 			newResidue (toEndpoint tes) (teBackground <$> tes)
 		(Just net, Just inp) -> do
-				tes <- nextTrainingExamples inp
+				tes <- trainingExamples inp
 				let ni = toEndpoint (teInput <$> tes)
-				-- could use nextNetEvaluation instead, but:
+				-- could use netEvaluation instead, but:
 				-- 1. that would incur an extra round-trip through Endpoint
 				-- 2. I worry that would hide a bug somehow; I'd rather use
 				--    the rawest form of the data available for this tool
-				no <- nextNetEvaluation' net ni
-				na <- nextNetActivations' net ni
+				no <- netEvaluation' net ni
+				na <- netActivations' net ni
 				let combinedEndpoint = EDictionary $ tail [undefined
 				    	, ("input", ni)
 				    	, ("output", no)
@@ -364,7 +364,7 @@ data Background = Background
 	, bgLookahead :: Lookahead
 	} deriving (Eq, Ord, Read, Show)
 
-teBackground :: NextTrainingExample -> Background
+teBackground :: TrainingExample -> Background
 teBackground te = Background
 	{ bgBoard = niBoard (teInput te)
 	, bgLookahead = gtLookahead (teTruth te)

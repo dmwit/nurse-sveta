@@ -3,7 +3,7 @@
 module Nurse.Sveta.Torch.Semantics (
 	module Nurse.Sveta.Torch.Endpoint,
 	-- * Neural net interface
-	NextNetInput(..), NextNetOutput(..), NextLossScaling(..), NextGroundTruth(..), NextTrainingExample(..),
+	NetInput(..), NetOutput(..), LossScaling(..), GroundTruth(..), TrainingExample(..),
 	lsEndpoint,
 	-- * ToEndpoint
 	ToEndpoint(..),
@@ -256,13 +256,13 @@ endpointIndexRecord (FromEndpointRecordDescription f) = \case
 	EDictionary dict -> f (HM.fromList dict)
 	e -> error $ "attempted to decode a non-dictionary endpoint as if it were record-like\nfull endpoint: " ++ show e
 
-data NextNetInput = NextNetInput
+data NetInput = NetInput
 	{ niBoard :: Board
 	, niFrames :: Int
 	, niOriginalVirusCount :: Int
 	} deriving (Eq, Ord, Read, Show)
 
-instance Structured NextNetInput where
+instance Structured NetInput where
 	structure = SDictionary $ tail [undefined
 		, ("board", structure @Board)
 		, ("frames", STensor Positive [])
@@ -279,7 +279,7 @@ instance Structured NextNetInput where
 safeLog :: CFloat -> CFloat
 safeLog = log . max (exp (-1))
 
-instance ToEndpoint NextNetInput where
+instance ToEndpoint NetInput where
 	toEndpoint = toEndpointRecord
 		$   "board" :=: niBoard
 		:&: "frames" :=: frames
@@ -289,56 +289,56 @@ instance ToEndpoint NextNetInput where
 		:&: "log(original virus count)" :=: safeLog . viruses
 		:&: "1/sqrt(original virus count)" :=: recip . sqrt . viruses
 		where
-		frames, viruses :: NextNetInput -> CFloat
+		frames, viruses :: NetInput -> CFloat
 		frames = fromIntegral . niFrames
 		viruses = fromIntegral . niOriginalVirusCount
 
-data NextGroundTruth = NextGroundTruth
+data GroundTruth = GroundTruth
 	{ gtPriors :: HashMap Pill Float
 	, gtLookahead :: Lookahead
 	, gtValuation :: Float
 	} deriving (Eq, Ord, Read, Show)
 
-instance ToEndpoint NextGroundTruth where
+instance ToEndpoint GroundTruth where
 	toEndpoint = toEndpointRecord
 		$   "priors" :=: NoDefault . gtPriors
 		:&: "valuation" :=: \gt -> NoDefault (HM.singleton (gtLookahead gt) (gtValuation gt))
 
-data NextNetOutput = NextNetOutput
+data NetOutput = NetOutput
 	{ noPriors :: HashMap Pill Float
 	, noValuation :: HashMap Lookahead Float
 	} deriving (Eq, Ord, Read, Show)
 
-instance Structured NextNetOutput where
+instance Structured NetOutput where
 	structure = SDictionary $ tail [undefined
 		, ("priors", STensor Categorical (indexCounts @Pill))
 		, ("valuation", STensor Unit (indexCounts @Lookahead))
 		]
 
-instance FromEndpoint NextNetOutput where
-	endpointIndex = endpointIndexRecord $ pure NextNetOutput
+instance FromEndpoint NetOutput where
+	endpointIndex = endpointIndexRecord $ pure NetOutput
 		<*> field "priors"
 		<*> field "valuation"
 
-data NextLossScaling = NextLossScaling
+data LossScaling = LossScaling
 	{ lsPriors :: Float
 	, lsValuation :: Float
 	} deriving (Eq, Ord, Read, Show)
 
-instance ToEndpoint NextLossScaling where
+instance ToEndpoint LossScaling where
 	toEndpoint = toEndpointRecord
 		$   "priors" :=: lsPriors
 		:&: "valuation" :=: lsValuation
 
-lsEndpoint :: NextLossScaling -> Endpoint
+lsEndpoint :: LossScaling -> Endpoint
 lsEndpoint = toEndpoint . V.singleton
 
-data NextTrainingExample = NextTrainingExample
-	{ teInput :: NextNetInput
-	, teTruth :: NextGroundTruth
+data TrainingExample = TrainingExample
+	{ teInput :: NetInput
+	, teTruth :: GroundTruth
 	} deriving (Eq, Ord, Read, Show)
 
-instance ToEndpoint NextTrainingExample where
+instance ToEndpoint TrainingExample where
 	toEndpoint = toEndpointRecord
 		$   "input" :=: teInput
 		:&: "ground truth" :=: teTruth
