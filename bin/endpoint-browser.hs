@@ -103,9 +103,11 @@ setupEndpointView netRef inpRef gsRef ssRef = do
 				-- 2. I worry that would hide a bug somehow; I'd rather use
 				--    the rawest form of the data available for this tool
 				no <- nextNetEvaluation' net ni
+				na <- nextNetActivations' net ni
 				let combinedEndpoint = EDictionary $ tail [undefined
 				    	, ("input", ni)
 				    	, ("output", no)
+				    	, ("activations", na)
 				    	, ("ground truth", toEndpoint (teTruth <$> tes))
 				    	]
 				pure (newResidue combinedEndpoint (teBackground <$> tes))

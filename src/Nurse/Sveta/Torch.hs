@@ -1,13 +1,13 @@
 module Nurse.Sveta.Torch (
 	NextNet, Optimizer,
 	nextNetSample, nextNetLoadForInference, nextNetLoadForTraining,
-	nextNetEvaluation, nextNetLossComponents, nextNetTrain,
+	nextNetEvaluation, nextNetLossComponents, nextNetActivations, nextNetTrain,
 	nextNetSave, nextNetWeights,
 	NextTrainingExample(..), GameDetails, GameStep(..),
 	nextTrainingExamples,
 	NextNetInput(..), NextNetOutput(..), NextGroundTruth(..), NextLossScaling(..),
 	nextNetSample', nextNetLoadForInference', nextNetLoadForTraining',
-	nextNetEvaluation', nextNetLossComponents', nextNetTrain',
+	nextNetEvaluation', nextNetLossComponents', nextNetActivations', nextNetTrain',
 	)
 	where
 
@@ -49,6 +49,7 @@ foreign import ccall "&discard_optimizer" cxx_discard_optimizer :: FunPtr (Ptr O
 foreign import ccall "next_save_net" cxx_next_save_net :: Ptr NextNet -> Ptr Optimizer -> CString -> IO ()
 foreign import ccall "next_evaluate_net" cxx_next_evaluate_net :: Ptr NextNet -> Ptr CEndpoint -> IO (Ptr CEndpoint)
 foreign import ccall "next_loss_components" cxx_next_loss_components :: Ptr NextNet -> Ptr CEndpoint -> Ptr CEndpoint -> Ptr CEndpoint -> IO (Ptr CEndpoint)
+foreign import ccall "next_net_activations" cxx_next_net_activations :: Ptr NextNet -> Ptr CEndpoint -> IO (Ptr CEndpoint)
 foreign import ccall "next_train_net" cxx_next_train_net :: Ptr NextNet -> Ptr Optimizer -> Ptr CEndpoint -> Ptr CEndpoint -> IO CFloat
 foreign import ccall "next_net_weights" cxx_next_net_weights :: Ptr NextNet -> IO (Ptr CEndpoint)
 
@@ -108,6 +109,12 @@ nextNetLossComponents' net_ scaling_ net_input_ ground_truth_ = do
 			components <- gcEndpoint ptr_components >>= hsEndpoint
 			components <$ gcEndpoint ptr_net_output
 
+nextNetActivations' :: NextNet -> Endpoint -> IO Endpoint
+nextNetActivations' net_ i_ = do
+	c_i <- cEndpoint i_
+	withUnwrapped (net_, c_i) \(net, ptr_i) ->
+		cxx_next_net_activations net ptr_i >>= gcEndpoint >>= hsEndpoint
+
 nextNetTrain' :: NextNet -> Optimizer -> Endpoint -> Endpoint -> IO Float
 nextNetTrain' net_ optim_ scaling_ batch_ = do
 	c_scaling <- cEndpoint scaling_
@@ -133,6 +140,9 @@ nextNetSave net_ optim_ path_ = withUnwrapped (WCS path_, (net_, optim_)) \(path
 
 nextNetEvaluation :: NextNet -> Vector NextNetInput -> IO (Vector NextNetOutput)
 nextNetEvaluation net is = fromEndpoint <$> nextNetEvaluation' net (toEndpoint is)
+
+nextNetActivations :: NextNet -> Vector NextNetInput -> IO Endpoint
+nextNetActivations net is = nextNetActivations' net (toEndpoint is)
 
 -- TODO: could do a slight optimization here (in nextNetLossComponents and
 -- nextNetTrain) where we serialize NextLossScaling just once and pass around a

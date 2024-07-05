@@ -18,6 +18,7 @@ const float EPSILON = 1e-7;
 constexpr bool CHECK_MASK_VALIDITY = true;
 constexpr bool CHECK_NO_CLAMPING = true;
 
+sp_endpoint tensor_endpoint(const torch::Tensor &t);
 template<typename T> sp_endpoint generic_module_weights(T m);
 
 class Conv2dReLUInitImpl : public torch::nn::Module {
@@ -87,6 +88,32 @@ class ResidualImpl : public torch::nn::Module {
 				in))))));
 		}
 
+		sp_endpoint activations(const torch::Tensor &in) {
+			DebugScope dbg("ResidualImpl::activations", DEFAULT_LAYER_VERBOSITY);
+
+			auto conv0_out = conv0->forward(in),
+			     norm0_out = norm0->forward(conv0_out),
+			     lrelu_out = lrelu->forward(norm0_out),
+			     conv1_out = conv1->forward(lrelu_out),
+			     norm1_out = norm1->forward(conv1_out),
+			     skip_out = in + norm1_out,
+			     final_out = lrelu->forward(skip_out);
+
+			sp_endpoint out(new _endpoint);
+			out->tag = tag_dictionary;
+			out->size = in.size(0);
+			// TODO: use c_width and c_height in appropriate places
+			out->add_child("conv0", tensor_endpoint(conv0_out));
+			out->add_child("norm0", tensor_endpoint(norm0_out));
+			out->add_child("lrelu", tensor_endpoint(lrelu_out));
+			out->add_child("conv1", tensor_endpoint(conv1_out));
+			out->add_child("norm1", tensor_endpoint(norm1_out));
+			out->add_child("skip", tensor_endpoint(skip_out));
+			out->add_child("output", tensor_endpoint(final_out));
+
+			return out;
+		}
+
 		sp_endpoint weights() {
 			DebugScope dbg("ResidualImpl::weights");
 			sp_endpoint out(new _endpoint);
@@ -111,6 +138,7 @@ class EncoderImpl : public torch::nn::Module {
 	public:
 		EncoderImpl(sp_structure s, std::string name = "Encoder");
 		torch::Tensor forward(sp_endpoint e);
+		sp_endpoint activations(sp_endpoint e);
 		sp_endpoint weights();
 
 	private:
@@ -126,7 +154,8 @@ class Decoder;
 class DecoderImpl : public torch::nn::Module {
 	public:
 		DecoderImpl(sp_structure s, std::string name = "Decoder");
-		sp_endpoint forward(torch::Tensor t);
+		sp_endpoint forward(const torch::Tensor &t);
+		sp_endpoint activations(const torch::Tensor &t) { return forward(t); }
 		sp_endpoint weights();
 		sp_structure shape;
 
@@ -250,7 +279,65 @@ torch::Tensor EncoderImpl::forward(sp_endpoint e) {
 	}
 }
 
-sp_endpoint DecoderImpl::forward(torch::Tensor t) {
+sp_endpoint EncoderImpl::activations(sp_endpoint e) {
+	DebugScope dbg("EncoderImpl::activations", DEFAULT_LAYER_VERBOSITY);
+	const int n = e->size;
+	torch::Tensor out_t;
+	sp_endpoint out_e(new _endpoint);
+	out_e->tag = tag_dictionary;
+	out_e->size = n;
+
+	switch(e->tag) {
+		case tag_tensor: {
+			int64_t sz_per_batch = eval_game_constants(e->dims);
+			if(is_board(e->dims)) {
+				out_t = convolution->forward(e->values.reshape({n, sz_per_batch/CELLS, BOARD_WIDTH, BOARD_HEIGHT}));
+			} else {
+				out_t = linear
+					->forward(e->values.reshape({n, sz_per_batch}))
+					.reshape({n, FILTERS, 1, 1})
+					.expand({n, FILTERS, BOARD_WIDTH, BOARD_HEIGHT});
+			}
+			break;
+		}
+		case tag_vector: {
+			sp_endpoint addends(new _endpoint);
+			addends->tag = tag_vector;
+			addends->size = n;
+			addends->dims.push_back(~vec.size());
+			addends->vec.reserve(vec.size());
+
+			out_t = torch::zeros({n, FILTERS, BOARD_WIDTH, BOARD_HEIGHT}, GPU_FLOAT);
+			for(int i = 0; i < vec.size(); ++i) {
+				sp_endpoint addend = vec[i]->activations(e->vec[i]);
+				addends->vec.push_back(addend);
+				out_t += addend->dict["output"]->values;
+			}
+
+			out_e->add_child("addends", addends);
+			break;
+		}
+		case tag_dictionary: {
+			out_t = torch::zeros({n, FILTERS, BOARD_WIDTH, BOARD_HEIGHT}, GPU_FLOAT);
+			for(auto [nm, child]: dict) {
+				assert(nm != "output"); // TODO: handle this more carefully
+				sp_endpoint addend = child->activations(e->dict[nm]);
+				out_e->add_child(nm, addend);
+				out_t += addend->dict["output"]->values;
+			}
+			break;
+		}
+		default:
+			std::cerr << "Invalid tag " << e->tag << " in EncoderImpl::forward()." << std::endl;
+			throw 0;
+	}
+
+	// TODO: better dimensions
+	out_e->add_child("output", tensor_endpoint(out_t));
+	return out_e;
+}
+
+sp_endpoint DecoderImpl::forward(const torch::Tensor &t) {
 	DebugScope dbg("DecoderImpl::forward", DEFAULT_LAYER_VERBOSITY);
 
 	auto e = new _endpoint();
@@ -290,7 +377,7 @@ sp_endpoint DecoderImpl::forward(torch::Tensor t) {
 	return sp_endpoint(e);
 }
 
-sp_endpoint tensor_endpoint(torch::Tensor t) {
+sp_endpoint tensor_endpoint(const torch::Tensor &t) {
 	DebugScope dbg("tensor_endpoint");
 	sp_endpoint e(new _endpoint);
 	e->tag = tag_tensor;
@@ -418,6 +505,30 @@ class NextNetImpl : public torch::nn::Module {
 			torch::Tensor t = enc->forward(in);
 			for(int i = 0; i < RESIDUAL_BLOCKS; i++) t = residuals[i]->forward(t);
 			return dec->forward(t);
+		}
+
+		sp_endpoint activations(sp_endpoint in) {
+			DebugScope dbg("NextNetImpl::activations");
+
+			sp_endpoint res(new _endpoint), out(new _endpoint);
+			res->tag = tag_vector;
+			out->tag = tag_dictionary;
+			res->size = in->size;
+			out->size = in->size;
+			res->dims.push_back(~residuals.size());
+			res->vec.reserve(residuals.size());
+
+			out->add_child("encoder", enc->activations(in));
+			torch::Tensor t = out->dict["encoder"]->dict["output"]->values;
+			for(auto residual: residuals) {
+				sp_endpoint tmp = residual->activations(t);
+				res->vec.push_back(tmp);
+				t = tmp->dict["output"]->values;
+			}
+			out->add_child("residuals", res);
+			out->add_child("decoder", dec->activations(t));
+
+			return out;
 		}
 
 		sp_endpoint weights() {
@@ -646,6 +757,7 @@ extern "C" {
 	void next_save_net(NextNet *net, torch::optim::SGD *optim, char *path);
 	endpoint *next_evaluate_net(NextNet *net, endpoint *in);
 	endpoint *next_loss_components(NextNet *net, endpoint *scaling, endpoint *net_output, endpoint *ground_truth);
+	endpoint *next_net_activations(NextNet *net, endpoint *in);
 	float next_train_net(NextNet *net, torch::optim::SGD *optim, endpoint *scaling, endpoint *training_example);
 	endpoint *next_net_weights(NextNet *net);
 	void discard_optimizer(torch::optim::SGD *optim);
@@ -710,6 +822,17 @@ endpoint *next_loss_components(NextNet *net_, endpoint *scaling, endpoint *net_o
 	bool was_training = net->is_training();
 	net->train(false);
 	sp_endpoint out = next_loss_components(net->dec->shape, scaling->ref, net_output->ref, ground_truth->ref);
+	net->train(was_training);
+	return new endpoint(out);
+}
+
+endpoint *next_net_activations(NextNet *net_, endpoint *in) {
+	DebugScope dbg("next_net_activations");
+	torch::NoGradGuard g;
+	NextNet &net = *net_;
+	bool was_training = net->is_training();
+	net->train(false);
+	sp_endpoint out = net->activations(in->ref);
 	net->train(was_training);
 	return new endpoint(out);
 }
