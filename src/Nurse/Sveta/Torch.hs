@@ -151,7 +151,7 @@ netActivations net is = netActivations' net (toEndpoint is)
 netLossComponents :: Net -> LossScaling -> Vector TrainingExample -> IO [([String], Float)]
 netLossComponents net scaling batch = flatten [] <$> netLossComponents' net (lsEndpoint scaling) (toEndpoint (teInput <$> batch)) (toEndpoint (teTruth <$> batch)) where
 	flatten prefix = \case
-		EFullTensor [] vals -> [(reverse prefix, realToFrac (the vals))]
+		EFullTensor [] vals -> [(reverse prefix, realToFrac (the (vals ! 0)))]
 		EFullTensor{} -> error "flattening complicated tensor loss scalings is not (yet) implemented"
 		EMaskedTensor{} -> error "loss_components returned a masked tensor; this is almost certainly a bug in loss_components"
 		EVector gc es -> do
