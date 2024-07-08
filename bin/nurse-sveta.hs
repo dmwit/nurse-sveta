@@ -158,9 +158,9 @@ newSearchConfiguration :: SearchConfiguration
 newSearchConfiguration = SearchConfiguration
 	{ c_puct = 1 -- no idea what A0 did here
 	, iterations = 200
-	, typicalMoves = 40
-	, priorNoise = 1
-	, temperature = 0.2
+	, typicalMoves = 25
+	, priorNoise = 0.1
+	, temperature = 2
 	}
 
 requestConfiguration :: SearchConfiguration -> GenerationThreadState -> GenerationThreadState
