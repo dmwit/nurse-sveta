@@ -244,7 +244,9 @@ bwGradient n
 	| otherwise = unsafeGradient n
 
 saturatingGradient :: HasCallStack => Float -> Render ()
-saturatingGradient = unsafeGradient . max 0 . min 1
+saturatingGradient n
+	| Just err <- errorStops n = err
+	| otherwise = unsafeGradient . max 0 . min 1 $ n
 
 bSaturatingGradient :: HasCallStack => Float -> Render ()
 bSaturatingGradient n
