@@ -265,14 +265,14 @@ data NetInput = NetInput
 instance Structured NetInput where
 	structure = SDictionary $ tail [undefined
 		, ("board", structure @Board)
-		, ("frames", STensor Positive [])
+		, ("frames/10,000", STensor Positive [])
 		-- Positive isn't really right for log(frames), since it can be as low
 		-- as -1, but reporting a leaf type for net *inputs* is a bit odd
 		-- anyway and the leaf type will be essentially ignored
-		, ("log(frames)", STensor Positive [])
-		, ("sqrt(frames)", STensor Positive [])
-		, ("original virus count", STensor Positive [])
-		, ("log(original virus count)", STensor Positive [])
+		, ("log(frames/10,000)", STensor Positive [])
+		, ("sqrt(frames/10,000)", STensor Positive [])
+		, ("original virus count/100", STensor Positive [])
+		, ("log(original virus count/100)", STensor Positive [])
 		, ("1/sqrt(original virus count)", STensor Positive [])
 		]
 
@@ -282,15 +282,15 @@ safeLog = log . max (exp (-1))
 instance ToEndpoint NetInput where
 	toEndpoint = toEndpointRecord
 		$   "board" :=: niBoard
-		:&: "frames" :=: frames
-		:&: "log(frames)" :=: safeLog . frames
-		:&: "sqrt(frames)" :=: sqrt . frames
-		:&: "original virus count" :=: viruses
-		:&: "log(original virus count)" :=: safeLog . viruses
+		:&: "frames/10,000" :=: frames
+		:&: "log(frames/10,000)" :=: safeLog . frames
+		:&: "sqrt(frames/10,000)" :=: sqrt . frames
+		:&: "original virus count/100" :=: (/100) . viruses
+		:&: "log(original virus count/100)" :=: safeLog . (/100) . viruses
 		:&: "1/sqrt(original virus count)" :=: recip . sqrt . viruses
 		where
 		frames, viruses :: NetInput -> CFloat
-		frames = fromIntegral . niFrames
+		frames = (/10000) . fromIntegral . niFrames
 		viruses = fromIntegral . niOriginalVirusCount
 
 data GroundTruth = GroundTruth

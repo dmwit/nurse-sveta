@@ -253,10 +253,11 @@ torch::Tensor EncoderImpl::forward(sp_endpoint e) {
 		case tag_tensor: {
 				int64_t sz_per_batch = eval_game_constants(e->dims);
 				if(is_board(e->dims)) {
-					return convolution->forward(e->values.reshape({n, sz_per_batch/CELLS, BOARD_WIDTH, BOARD_HEIGHT}));
+					sz_per_batch /= CELLS;
+					return convolution->forward(e->values.reshape({n, sz_per_batch, BOARD_WIDTH, BOARD_HEIGHT}))/sz_per_batch;
 				} else {
-					return linear
-						->forward(e->values.reshape({n, sz_per_batch}))
+					return (linear
+						->forward(e->values.reshape({n, sz_per_batch}))/sz_per_batch)
 						.reshape({n, FILTERS, 1, 1})
 						.expand({n, FILTERS, BOARD_WIDTH, BOARD_HEIGHT});
 				}
@@ -265,13 +266,13 @@ torch::Tensor EncoderImpl::forward(sp_endpoint e) {
 			torch::Tensor sum = torch::zeros({n, FILTERS, BOARD_WIDTH, BOARD_HEIGHT}, GPU_FLOAT);
 			for(int i = 0; i < vec.size(); ++i)
 				sum += vec[i]->forward(e->vec[i]);
-			return sum;
+			return sum/float(vec.size());
 			}
 		case tag_dictionary: {
 			torch::Tensor sum = torch::zeros({n, FILTERS, BOARD_WIDTH, BOARD_HEIGHT}, GPU_FLOAT);
 			for(auto [nm, child]: dict)
 				sum += child->forward(e->dict[nm]);
-			return sum;
+			return sum/float(dict.size());
 			}
 		default:
 			std::cerr << "Invalid tag " << e->tag << " in EncoderImpl::forward()." << std::endl;
@@ -291,10 +292,11 @@ sp_endpoint EncoderImpl::activations(sp_endpoint e) {
 		case tag_tensor: {
 			int64_t sz_per_batch = eval_game_constants(e->dims);
 			if(is_board(e->dims)) {
-				out_t = convolution->forward(e->values.reshape({n, sz_per_batch/CELLS, BOARD_WIDTH, BOARD_HEIGHT}));
+				sz_per_batch /= CELLS;
+				out_t = convolution->forward(e->values.reshape({n, sz_per_batch, BOARD_WIDTH, BOARD_HEIGHT}))/sz_per_batch;
 			} else {
-				out_t = linear
-					->forward(e->values.reshape({n, sz_per_batch}))
+				out_t = (linear
+					->forward(e->values.reshape({n, sz_per_batch}))/sz_per_batch)
 					.reshape({n, FILTERS, 1, 1})
 					.expand({n, FILTERS, BOARD_WIDTH, BOARD_HEIGHT});
 			}
@@ -313,6 +315,7 @@ sp_endpoint EncoderImpl::activations(sp_endpoint e) {
 				addends->vec.push_back(addend);
 				out_t += addend->dict["output"]->values;
 			}
+			out_t /= float(vec.size());
 
 			out_e->add_child("addends", addends);
 			break;
@@ -325,6 +328,7 @@ sp_endpoint EncoderImpl::activations(sp_endpoint e) {
 				out_e->add_child(nm, addend);
 				out_t += addend->dict["output"]->values;
 			}
+			out_t /= float(dict.size());
 			break;
 		}
 		default:
