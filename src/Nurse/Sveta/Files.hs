@@ -75,6 +75,7 @@ dirDecode = normal where
 data Directory
 	= GamesPending
 	| GamesProcessed FilePath
+	| GamesArchive FilePath
 	| GamesParseError
 	| Weights
 	| Logging
@@ -84,6 +85,7 @@ relFileName :: Directory -> FilePath -> FilePath
 relFileName dir fp = case dir of
 	GamesPending            -> "games" </> "pending" </> fp
 	GamesProcessed category -> "games" </> "processed" </> category </> fp
+	GamesArchive category   -> "games" </> "archive" </> category </> fp
 	GamesParseError         -> "games" </> "parse-error" </> fp
 	Weights                 -> "weights" </> fp
 	Logging                 -> "wandb" </> fp

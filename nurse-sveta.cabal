@@ -21,10 +21,12 @@ common shared
     build-depends:        base >=4.14 && <4.17
                         , aeson >=2.1 && <2.3
                         , containers ^>=0.6
+                        , directory ^>=1.3
                         , gi-cairo-render ^>=0.1
                         , gi-gtk ^>=4.0.8
                         , haskell-gi-base ^>=0.26
                         , maryodel ^>=0.1
+                        , mtl ^>=2.2
                         , mwc-random ^>=0.15
                         , text ^>=2.1
                         , unordered-containers ^>=0.2
@@ -89,13 +91,11 @@ library
                         , Nurse.Sveta.Widget
     other-modules:        Paths_nurse_sveta
     build-depends:        array ^>=0.5
-                        , directory ^>=1.3
                         , filepath ^>=1.4
                         , gi-cairo-connector ^>=0.1
                         , gi-glib ^>=2.0
                         , hashable ^>=1.4
                         , haskell-gi-base ^>=0.26
-                        , mtl ^>=2.2
                         , primitive >=0.7 && <0.10
                         , stm ^>=2.5.1
                         , tomcats ^>=0.1
@@ -122,6 +122,7 @@ executable nurse-sveta-pathfinding-demo
 executable nurse-sveta
     import:             executable
     main-is:            nurse-sveta.hs
+    other-modules:      CategoryMetadata
     build-depends:        bytestring >=0.10 && <0.12
                         , clock ^>=0.8
                         , process ^>=1.6
@@ -146,3 +147,8 @@ executable nurse-sveta-endpoint-browser
 executable nurse-sveta-mcts-repl
     import:             executable
     main-is:            mcts-repl.hs
+
+executable nurse-sveta-archive-games
+    import:             executable
+    main-is:            archive-games.hs
+    other-modules:      CategoryMetadata
