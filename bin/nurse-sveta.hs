@@ -685,7 +685,7 @@ processGameFile log status dir fp = recallGame dir fp >>= \case
 		let viruses = originalVirusCount gs
 		    meta = cmInsert fp viruses kills frames meta_
 		    -- TODO: make 10000 configurable
-		    gameNames = S.take 10000 (gameNames_ S.:|> T.pack fp)
+		    gameNames = S.take 10000 (T.pack fp S.:<| gameNames_)
 		    processedDir = absDirectoryName dir (GamesProcessed category)
 		    tmpNames = processedDir </> ('.':namesFilename)
 
