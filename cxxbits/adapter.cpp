@@ -20,6 +20,7 @@ constexpr bool CHECK_NO_CLAMPING = true;
 
 sp_endpoint tensor_endpoint(const torch::Tensor &t);
 template<typename T> sp_endpoint generic_module_weights(T m);
+template<typename T> sp_endpoint generic_module_gradients(T m);
 
 class Conv2dReLUInitImpl : public torch::nn::Module {
 	public:
@@ -46,6 +47,11 @@ class Conv2dReLUInitImpl : public torch::nn::Module {
 		sp_endpoint weights() {
 			DebugScope dbg("Conv2dReLUInitImpl::weights");
 			return generic_module_weights(conv);
+		}
+
+		sp_endpoint gradients() {
+			DebugScope dbg("Conv2dReLUInitImpl::gradients");
+			return generic_module_gradients(conv);
 		}
 
 		torch::nn::Conv2d conv;
@@ -127,6 +133,18 @@ class ResidualImpl : public torch::nn::Module {
 			return out;
 		}
 
+		sp_endpoint gradients() {
+			DebugScope dbg("ResidualImpl::gradients");
+			sp_endpoint out(new _endpoint);
+			out->tag = tag_dictionary;
+			out->size = 1;
+			out->add_child("norm0", generic_module_gradients(norm0));
+			out->add_child("norm1", generic_module_gradients(norm1));
+			out->add_child("conv0", conv0->gradients());
+			out->add_child("conv1", conv1->gradients());
+			return out;
+		}
+
 	Conv2dReLUInit conv0, conv1;
 	torch::nn::BatchNorm2d norm0, norm1;
 	torch::nn::LeakyReLU lrelu;
@@ -140,6 +158,7 @@ class EncoderImpl : public torch::nn::Module {
 		torch::Tensor forward(sp_endpoint e);
 		sp_endpoint activations(sp_endpoint e);
 		sp_endpoint weights();
+		sp_endpoint gradients();
 
 	private:
 		sp_structure shape;
@@ -157,6 +176,7 @@ class DecoderImpl : public torch::nn::Module {
 		sp_endpoint forward(const torch::Tensor &t);
 		sp_endpoint activations(const torch::Tensor &t) { return forward(t); }
 		sp_endpoint weights();
+		sp_endpoint gradients();
 		sp_structure shape;
 
 	private:
@@ -436,6 +456,19 @@ sp_endpoint generic_module_weights(T m) {
 	return out;
 }
 
+template<typename T>
+sp_endpoint generic_module_gradients(T m) {
+	DebugScope dbg("generic_module_gradients");
+	auto v = m->parameters(true);
+	for(auto &t: v) t = t.grad();
+	sp_endpoint out = multi_tensor_endpoint(v);
+	if(out == nullptr) {
+		std::cerr << "Attempted to extract gradients from a module with no parameters." << std::endl;
+		throw 0;
+	}
+	return out;
+}
+
 sp_endpoint EncoderImpl::weights() {
 	DebugScope dbg("EncoderImpl::weights");
 	sp_endpoint e(new _endpoint);
@@ -480,6 +513,53 @@ sp_endpoint DecoderImpl::weights() {
 			return e;
 		default:
 			std::cerr << "Invalid tag " << shape->tag << " in DecoderImpl::weights()." << std::endl;
+			throw 0;
+	}
+}
+
+sp_endpoint EncoderImpl::gradients() {
+	DebugScope dbg("EncoderImpl::gradients");
+	sp_endpoint e(new _endpoint);
+	e->tag = shape->tag;
+	e->size = 1;
+
+	switch(shape->tag) {
+		case tag_tensor:
+			if(is_board(shape->dims)) return convolution->gradients();
+			else return generic_module_gradients(linear);
+		case tag_vector:
+			e->dims = shape->dims;
+			for(auto child: vec) e->vec.push_back(child->gradients());
+			return e;
+		case tag_dictionary:
+			for(auto pair: dict)
+				e->add_child(pair.first, pair.second->gradients());
+			return e;
+		default:
+			std::cerr << "Invalid tag " << shape->tag << " in EncoderImpl::gradients()." << std::endl;
+			throw 0;
+	}
+}
+
+sp_endpoint DecoderImpl::gradients() {
+	DebugScope dbg("DecoderImpl::gradients");
+	sp_endpoint e(new _endpoint);
+	e->tag = shape->tag;
+	e->size = 1;
+
+	switch(shape->tag) {
+		case tag_tensor:
+			if(is_board(shape->dims)) return convolution->gradients();
+			// TODO: better dimensions
+			else return generic_module_gradients(linear);
+		case tag_vector:
+			for(auto child: vec) e->vec.push_back(child->gradients());
+			return e;
+		case tag_dictionary:
+			for(auto pair: dict) e->add_child(pair.first, pair.second->gradients());
+			return e;
+		default:
+			std::cerr << "Invalid tag " << shape->tag << " in DecoderImpl::gradients()." << std::endl;
 			throw 0;
 	}
 }
@@ -553,6 +633,28 @@ class NetImpl : public torch::nn::Module {
 			top->add_child("encoder", enc->weights());
 			top->add_child("residuals", res);
 			top->add_child("decoder", dec->weights());
+
+			return top;
+		}
+
+		sp_endpoint gradients() {
+			DebugScope dbg("NetImpl::gradients");
+
+			auto res = sp_endpoint(new _endpoint);
+			res->tag = tag_vector;
+			res->size = 1;
+			res->dims.push_back(~residuals.size());
+			res->vec.reserve(residuals.size());
+			for(auto residual: residuals) {
+				res->vec.push_back(residual->gradients());
+			}
+
+			auto top = sp_endpoint(new _endpoint);
+			top->tag = tag_dictionary;
+			top->size = 1;
+			top->add_child("encoder", enc->gradients());
+			top->add_child("residuals", res);
+			top->add_child("decoder", dec->gradients());
 
 			return top;
 		}
@@ -754,6 +856,26 @@ float train_net(Net &net, torch::optim::SGD &optim, sp_endpoint scaling, sp_endp
 	return sum.item<float>();
 }
 
+sp_endpoint batch_gradients(Net &net, sp_endpoint scaling, sp_endpoint training_examples) {
+	DebugScope dbg("batch_gradients");
+	{ auto dict = training_examples->dict; auto dict_end = dict.end();
+	if(training_examples->tag != tag_dictionary || dict.find("input") == dict_end || dict.find("ground truth") == dict_end) {
+		std::cerr << "batch_gradients expects a dictionary with keys \"input\" and \"ground truth\", but got " << *training_examples << std::endl;
+		throw 0;
+	}
+	} // auto dict, dict_end
+
+	std::vector<sp_endpoint> out; out.reserve(training_examples->size);
+	for(auto training_example: splat(training_examples)) {
+		for(auto &t: net->parameters(true))
+			if(t.mutable_grad().defined())
+				t.mutable_grad() = torch::zeros(t.grad().sizes(), t.grad().options());
+		loss(net->dec->shape, scaling, net->forward(training_example->dict["input"]), training_example->dict["ground truth"]).backward();
+		out.push_back(net->gradients());
+	}
+	return cat(out);
+}
+
 extern "C" {
 	void sample_net(structure *in, structure *out, Net **net_out, torch::optim::SGD **optim_out);
 	void load_net(char *path, structure *in, structure *out, Net **net_out, torch::optim::SGD **optim_out);
@@ -763,6 +885,7 @@ extern "C" {
 	endpoint *loss_components(Net *net, endpoint *scaling, endpoint *net_output, endpoint *ground_truth);
 	endpoint *net_activations(Net *net, endpoint *in);
 	float train_net(Net *net, torch::optim::SGD *optim, endpoint *scaling, endpoint *training_example);
+	endpoint *gradients(Net *net, endpoint *scaling, endpoint *training_examples);
 	endpoint *net_weights(Net *net);
 	void discard_optimizer(torch::optim::SGD *optim);
 }
@@ -846,6 +969,16 @@ float train_net(Net *net, torch::optim::SGD *optim, endpoint *scaling, endpoint 
 	if(!(*net)->is_training())
 		std::cerr << "WARNING: training a net while in evaluation mode" << std::endl;
 	return train_net(*net, *optim, scaling->ref, training_example->ref);
+}
+
+endpoint *gradients(Net *net_, endpoint *scaling, endpoint *training_examples) {
+	DebugScope dbg("gradients");
+	Net &net = *net_;
+	bool was_training = net->is_training();
+	net->train(true);
+	sp_endpoint out = batch_gradients(net, scaling->ref, training_examples->ref);
+	net->train(was_training);
+	return new endpoint(out);
 }
 
 endpoint *net_weights(Net *net) {

@@ -97,18 +97,20 @@ setupEndpointView netRef inpRef gsRef ssRef = do
 			newResidue (toEndpoint tes) (teBackground <$> tes)
 		(Just net, Just inp) -> do
 				tes <- trainingExamples inp
-				let ni = toEndpoint (teInput <$> tes)
+				let tesE@(EDictionary [("input", ni), ("ground truth", gt)]) = toEndpoint tes
 				-- could use netEvaluation instead, but:
 				-- 1. that would incur an extra round-trip through Endpoint
 				-- 2. I worry that would hide a bug somehow; I'd rather use
 				--    the rawest form of the data available for this tool
 				no <- netEvaluation' net ni
 				na <- netActivations' net ni
+				ng <- netGradients' net (lsEndpoint $ LossScaling 1 1) tesE
 				let combinedEndpoint = EDictionary $ tail [undefined
 				    	, ("input", ni)
 				    	, ("output", no)
 				    	, ("activations", na)
-				    	, ("ground truth", toEndpoint (teTruth <$> tes))
+				    	, ("gradients", ng)
+				    	, ("ground truth", gt)
 				    	]
 				pure (newResidue combinedEndpoint (teBackground <$> tes))
 	resetSelection gsRef ssRef res

@@ -101,6 +101,123 @@ void _structure::add_child(string name, sp_structure child) {
 
 void free_structure(structure *s) { delete s; }
 
+sp_endpoint cat(std::vector<sp_endpoint> &es) {
+	sp_endpoint out(new _endpoint);
+	if(es.empty()) {
+		out->tag = tag_dictionary;
+		out->size = -1;
+		return out;
+	}
+	out->tag = es[0]->tag;
+	out->dims = es[0]->dims;
+
+	out->size = 0;
+	for(auto &e: es) {
+		if(e->tag != out->tag) {
+			std::cerr << "Tag mismatch found in cat: " << out->tag << " for the first endpoint, and " << e->tag << " for a later one." << std::endl;
+			throw 0;
+		}
+		if(e->dims != out->dims) {
+			std::cerr << "Dimensions mismatch found in cat: ";
+			dump_game_constants(cerr, out->dims) << " for the first endpoint, and ";
+			dump_game_constants(cerr, e->dims) << " for a later one." << std::endl;
+			throw 0;
+		}
+		out->size += e->size;
+	}
+
+	switch(out->tag) {
+		case tag_tensor: {
+			const bool use_mask = es[0]->mask.defined();
+			out->values = torch::zeros(tensor_dimensions(out->size, out->dims), GPU_FLOAT);
+			if(use_mask) out->mask = torch::zeros(tensor_dimensions(out->size, out->dims), GPU_FLOAT);
+			int batch_index = 0;
+			for(auto e: es) {
+				out->values.index_put_({torch::indexing::Slice(batch_index, batch_index + e->size), "..."}, e->values);
+				if(use_mask) out->mask.index_put_({torch::indexing::Slice(batch_index, batch_index + e->size), "..."}, e->mask);
+				batch_index += e->size;
+			}
+			break;
+		}
+		case tag_vector: {
+			out->vec.reserve(es[0]->vec.size());
+			for(int i = 0; i < es[0]->vec.size(); ++i) {
+				std::vector<sp_endpoint> children;
+				children.reserve(es.size());
+				for(auto &e: es) children.push_back(e->vec[i]);
+				out->vec.push_back(cat(children));
+			}
+			break;
+		}
+		case tag_dictionary: {
+			for(auto [nm, _]: es[0]->dict) {
+				std::vector<sp_endpoint> children;
+				children.reserve(es.size());
+				for(auto &e: es) children.push_back(e->dict[nm]);
+				out->add_child(nm, cat(children));
+			}
+			break;
+		}
+		default:
+			std::cerr << "Invalid tag " << out->tag << " found in cat" << std::endl;
+			throw 0;
+	}
+
+	return out;
+}
+
+std::vector<sp_endpoint> splat(sp_endpoint e) {
+	std::vector<sp_endpoint> es;
+	es.reserve(e->size);
+	switch(e->tag) {
+		case tag_tensor:
+			for(int i = 0; i < e->size; i++) {
+				sp_endpoint e_single(new _endpoint);
+				e_single->tag = tag_tensor;
+				e_single->dims = e->dims;
+				e_single->size = 1;
+				e_single->values = e->values.index({torch::indexing::Slice(i,i+1), "..."});
+				if(e->mask.defined())
+					e_single->mask = e->mask.index({torch::indexing::Slice(i,i+1), "..."});
+				es.push_back(e_single);
+			}
+			break;
+		case tag_vector: {
+			std::vector<std::vector<sp_endpoint>> es_tr;
+
+			es_tr.reserve(e->vec.size());
+			for(auto &child: e->vec) es_tr.push_back(splat(child));
+
+			for(int i = 0; i < e->size; ++i) {
+				sp_endpoint child(new _endpoint);
+				child->tag = tag_vector;
+				child->size = 1;
+				child->dims = e->dims;
+				child->vec.reserve(es_tr.size());
+				for(auto &row: es_tr) child->vec.push_back(row[i]);
+				es.push_back(child);
+			}
+			break;
+		}
+		case tag_dictionary: {
+			std::map<std::string, std::vector<sp_endpoint>> es_tr;
+			for(auto [nm, child]: e->dict) es_tr[nm] = splat(child);
+			for(int i = 0; i < e->size; ++i) {
+				sp_endpoint child(new _endpoint);
+				child->tag = tag_dictionary;
+				child->size = 1;
+				for(auto [nm, children]: es_tr) child->dict[nm] = children[i];
+				es.push_back(child);
+			}
+			break;
+		}
+		default:
+			std::cerr << "Invalid tag " << e->tag << " found in splat" << std::endl;
+			throw 0;
+	}
+	return es;
+}
+
 ostream &dump_game_constants(ostream &os, const vector<game_constant> &gcs) {
 	if(gcs.size() == 0) os << '-';
 	else dump_game_constant(os, gcs[0]);

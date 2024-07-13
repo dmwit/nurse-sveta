@@ -52,6 +52,9 @@ struct _endpoint {
 	bool assert_size(int other_size);
 };
 
+sp_endpoint cat(std::vector<sp_endpoint> &es);
+std::vector<sp_endpoint> splat(sp_endpoint e);
+
 std::ostream &dump_game_constant(std::ostream &os, const game_constant c);
 std::ostream &dump_game_constants(std::ostream &os, const std::vector<game_constant> &gcs);
 std::ostream &dump_leaf_type(std::ostream &os, const leaf_type ty);

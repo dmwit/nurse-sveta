@@ -1,13 +1,13 @@
 module Nurse.Sveta.Torch (
 	Net, Optimizer,
 	netSample, netLoadForInference, netLoadForTraining,
-	netEvaluation, netLossComponents, netActivations, netTrain,
+	netEvaluation, netLossComponents, netActivations, netGradients, netTrain,
 	netSave, netWeights,
 	TrainingExample(..), GameDetails, GameStep(..),
 	trainingExamples,
 	NetInput(..), NetOutput(..), GroundTruth(..), LossScaling(..),
 	netSample', netLoadForInference', netLoadForTraining',
-	netEvaluation', netLossComponents', netActivations', netTrain',
+	netEvaluation', netLossComponents', netActivations', netGradients', netTrain',
 	)
 	where
 
@@ -51,6 +51,7 @@ foreign import ccall "evaluate_net" cxx_evaluate_net :: Ptr Net -> Ptr CEndpoint
 foreign import ccall "loss_components" cxx_loss_components :: Ptr Net -> Ptr CEndpoint -> Ptr CEndpoint -> Ptr CEndpoint -> IO (Ptr CEndpoint)
 foreign import ccall "net_activations" cxx_net_activations :: Ptr Net -> Ptr CEndpoint -> IO (Ptr CEndpoint)
 foreign import ccall "train_net" cxx_train_net :: Ptr Net -> Ptr Optimizer -> Ptr CEndpoint -> Ptr CEndpoint -> IO CFloat
+foreign import ccall "gradients" cxx_gradients :: Ptr Net -> Ptr CEndpoint -> Ptr CEndpoint -> IO (Ptr CEndpoint)
 foreign import ccall "net_weights" cxx_net_weights :: Ptr Net -> IO (Ptr CEndpoint)
 
 newtype Net = Net (ForeignPtr Net) deriving newtype CWrapper
@@ -122,6 +123,13 @@ netTrain' net_ optim_ scaling_ batch_ = do
 	withUnwrapped (net_, (optim_, (c_scaling, c_batch))) \(net, (optim, (scaling, batch))) ->
 		realToFrac <$> cxx_train_net net optim scaling batch
 
+netGradients' :: Net -> Endpoint -> Endpoint -> IO Endpoint
+netGradients' net_ scaling_ batch_ = do
+	c_scaling <- cEndpoint scaling_
+	c_batch <- cEndpoint batch_
+	withUnwrapped (net_, (c_scaling, c_batch)) \(net, (scaling, batch)) ->
+		cxx_gradients net scaling batch >>= gcEndpoint >>= hsEndpoint
+
 withNetIO :: (Structure -> Structure -> a) -> a
 withNetIO f = f (structure @NetInput) (structure @NetOutput)
 
@@ -166,6 +174,9 @@ netTrain net optim scaling batch = netTrain' net optim (lsEndpoint scaling) (toE
 
 netWeights :: Net -> IO Endpoint
 netWeights net_ = withUnwrapped net_ (cxx_net_weights >=> gcEndpoint >=> hsEndpoint)
+
+netGradients :: Net -> LossScaling -> Vector TrainingExample -> IO Endpoint
+netGradients net scaling batch = netGradients' net (lsEndpoint scaling) (toEndpoint batch)
 
 trainingExamples :: GameDetails -> IO (Vector TrainingExample)
 trainingExamples (b0, steps) = do
