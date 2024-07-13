@@ -801,12 +801,10 @@ newTrainingConfiguration = TrainingConfiguration
 	, tcHoursPerDetailReport = 0.1
 	, tcBatchSizeTrain = 2000 -- TODO: optimize this choice (empirically, maxing out GPU memory is not the fastest choice)
 	, tcBatchSizeTest = 100
-	-- these are set to normalize the priors and valuation to about 1, and the
-	-- rest to about 0.5, based on the final test loss from a long training run
 	-- TODO: make this configurable
 	, tcLossScaling = LossScaling
-		{ lsPriors = 1
-		, lsValuation = 4
+		{ lsPriors = 0.1
+		, lsValuation = 100
 		}
 	}
 
