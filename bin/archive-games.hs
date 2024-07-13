@@ -85,7 +85,7 @@ describePlan :: String -> CategoryPlan -> App ()
 describePlan category plan = do
 	src <- directoryNameM (GamesProcessed category)
 	dst <- directoryNameM (GamesArchive category)
-	printFiles (printf "These files will be moved from %s to %s:\n" src dst) move
+	printFiles (printf "These files will be moved from %s to %s:" src dst) move
 	whenVerbose do
 		let notMoved :: String -> String
 		    notMoved = printf "These files will not be moved out of %s because they %s:" src
