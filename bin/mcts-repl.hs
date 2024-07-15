@@ -3,17 +3,22 @@ module Main where
 import Control.Concurrent
 import Control.Monad
 import Data.Aeson
+import Data.Foldable
 import Data.IORef
 import Data.List
+import Data.Ord
 import Dr.Mario.Model
 import Nurse.Sveta.STM.BatchProcessor
 import Nurse.Sveta.Tomcats
 import Nurse.Sveta.Torch
 import Nurse.Sveta.Util
 import System.Random.MWC
+import System.Random.MWC.Distributions
 import Text.Read
+import Text.Printf
 
 import qualified Data.HashMap.Strict as HM
+import qualified Data.Vector as V
 
 main :: IO ()
 main = do
@@ -34,6 +39,32 @@ repl g cfg params s t = getLine >>= \case
 	'b':_ -> do
 		putStr . pp =<< mfreeze (board s)
 		repl g cfg params s t
+	-- choose
+	'c':_ -> do
+		case (temperature cfg, weights) of
+			(_, []) -> putStrLn "There are no children or unexplored nodes in the current tree.\n(Perhaps the game is over.)\nNothing"
+			(0, _) -> do
+				putStrLn "At 0 temperature, so we choose the maximal visit count."
+				putStrLn "All moves and visit counts"
+				for_ (enumerateMono rawWeights) \(i, (mv, n)) -> printf "\t%2d: %3d %s\n" i (round n :: Int) (ppMove mv)
+				printf "Just %s\n" . ppMove . fst $ maximumBy (comparing snd) rawWeights
+			_ -> do
+				printf "Temperature is %f; exponent is %f.\n" (temperature cfg) tmpExp
+				putStrLn "All moves and visit counts:"
+				for_ (enumerateMono rawWeights) \(i, (mv, n)) -> printf "\t%2d: %3d %s\n" i (round n :: Int) (ppMove mv)
+				putStrLn "All moves and temperature-adjusted weights:"
+				for_ (enumerateMono tmpWeights) \(i, (mv, w)) -> printf "\t%2d: %0.3e %s\n" i w (ppMove mv)
+				i <- categorical (V.fromList weights) g
+				printf "Chose index %d.\n" i
+				printf "Just %s\n" . ppMove $ moves !! i
+		repl g cfg params s t
+		where
+		tmpExp = recip (temperature cfg)
+		weight stats = realToFrac (1 + visitCount stats) ** tmpExp
+		allStats = (statistics <$> children t) `HM.union` unexplored t
+		rawWeights = HM.toList (visitCount <$> allStats)
+		tmpWeights = HM.toList (weight <$> allStats)
+		(moves, weights) = unzip tmpWeights
 	-- descend
 	'd':ln -> do
 		t' <- case readMaybe <$> words ln of
@@ -94,8 +125,11 @@ repl g cfg params s t = getLine >>= \case
 	'v':_ -> ppTreeIO t >> repl g cfg params s t
 	-- help
 	_ -> do
-		putStrLn "Options are board, descend [move number], list, mcts [iteration count], quit, state, tree, verbose tree"
+		putStrLn "Options are board, choose, descend [move number], list, mcts [iteration count], quit, state, tree, verbose tree"
 		repl g cfg params s t
+
+enumerateMono :: [a] -> [(Int, a)]
+enumerateMono = zip [0..]
 
 movesList :: Ord move => Tree stats move -> [move]
 movesList t = sort (HM.keys (children t) ++ HM.keys (unexplored t))
