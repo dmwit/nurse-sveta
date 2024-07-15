@@ -102,7 +102,7 @@ void _structure::add_child(string name, sp_structure child) {
 void free_structure(structure *s) { delete s; }
 
 sp_endpoint cat(std::vector<sp_endpoint> &es) {
-	sp_endpoint out(new _endpoint);
+	sp_endpoint out(new _endpoint());
 	if(es.empty()) {
 		out->tag = tag_dictionary;
 		out->size = -1;
@@ -172,7 +172,7 @@ std::vector<sp_endpoint> splat(sp_endpoint e) {
 	switch(e->tag) {
 		case tag_tensor:
 			for(int i = 0; i < e->size; i++) {
-				sp_endpoint e_single(new _endpoint);
+				sp_endpoint e_single(new _endpoint());
 				e_single->tag = tag_tensor;
 				e_single->dims = e->dims;
 				e_single->size = 1;
@@ -189,7 +189,7 @@ std::vector<sp_endpoint> splat(sp_endpoint e) {
 			for(auto &child: e->vec) es_tr.push_back(splat(child));
 
 			for(int i = 0; i < e->size; ++i) {
-				sp_endpoint child(new _endpoint);
+				sp_endpoint child(new _endpoint());
 				child->tag = tag_vector;
 				child->size = 1;
 				child->dims = e->dims;
@@ -203,7 +203,7 @@ std::vector<sp_endpoint> splat(sp_endpoint e) {
 			std::map<std::string, std::vector<sp_endpoint>> es_tr;
 			for(auto [nm, child]: e->dict) es_tr[nm] = splat(child);
 			for(int i = 0; i < e->size; ++i) {
-				sp_endpoint child(new _endpoint);
+				sp_endpoint child(new _endpoint());
 				child->tag = tag_dictionary;
 				child->size = 1;
 				for(auto [nm, children]: es_tr) child->dict[nm] = children[i];

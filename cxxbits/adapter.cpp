@@ -105,7 +105,7 @@ class ResidualImpl : public torch::nn::Module {
 			     skip_out = in + norm1_out,
 			     final_out = lrelu->forward(skip_out);
 
-			sp_endpoint out(new _endpoint);
+			sp_endpoint out(new _endpoint());
 			out->tag = tag_dictionary;
 			out->size = in.size(0);
 			// TODO: use c_width and c_height in appropriate places
@@ -122,7 +122,7 @@ class ResidualImpl : public torch::nn::Module {
 
 		sp_endpoint weights() {
 			DebugScope dbg("ResidualImpl::weights");
-			sp_endpoint out(new _endpoint);
+			sp_endpoint out(new _endpoint());
 			// conv0 and conv1 are different enough that this can't be a two-element vector of dictionaries
 			out->tag = tag_dictionary;
 			out->size = 1;
@@ -135,7 +135,7 @@ class ResidualImpl : public torch::nn::Module {
 
 		sp_endpoint gradients() {
 			DebugScope dbg("ResidualImpl::gradients");
-			sp_endpoint out(new _endpoint);
+			sp_endpoint out(new _endpoint());
 			out->tag = tag_dictionary;
 			out->size = 1;
 			out->add_child("norm0", generic_module_gradients(norm0));
@@ -304,7 +304,7 @@ sp_endpoint EncoderImpl::activations(sp_endpoint e) {
 	DebugScope dbg("EncoderImpl::activations", DEFAULT_LAYER_VERBOSITY);
 	const int n = e->size;
 	torch::Tensor out_t;
-	sp_endpoint out_e(new _endpoint);
+	sp_endpoint out_e(new _endpoint());
 	out_e->tag = tag_dictionary;
 	out_e->size = n;
 
@@ -323,7 +323,7 @@ sp_endpoint EncoderImpl::activations(sp_endpoint e) {
 			break;
 		}
 		case tag_vector: {
-			sp_endpoint addends(new _endpoint);
+			sp_endpoint addends(new _endpoint());
 			addends->tag = tag_vector;
 			addends->size = n;
 			addends->dims.push_back(~vec.size());
@@ -403,7 +403,7 @@ sp_endpoint DecoderImpl::forward(const torch::Tensor &t) {
 
 sp_endpoint tensor_endpoint(const torch::Tensor &t) {
 	DebugScope dbg("tensor_endpoint");
-	sp_endpoint e(new _endpoint);
+	sp_endpoint e(new _endpoint());
 	e->tag = tag_tensor;
 	e->size = t.size(0);
 	for(int i = 1; i < t.dim(); ++i) e->dims.push_back(~t.size(i));
@@ -426,7 +426,7 @@ sp_endpoint multi_tensor_endpoint(const std::vector<torch::Tensor> &v) {
 				for(auto t: v) unsquoze.push_back(t.unsqueeze(0));
 				return tensor_endpoint(at::cat(unsquoze, 0).unsqueeze(0));
 			} else {
-				sp_endpoint e(new _endpoint);
+				sp_endpoint e(new _endpoint());
 				e->tag = tag_dictionary;
 				e->size = 1;
 				for(int i = 0; i < v.size(); i++)
@@ -448,7 +448,7 @@ sp_endpoint generic_module_weights(T m) {
 	if(params == nullptr) return buffers;
 	if(buffers == nullptr) return params;
 
-	sp_endpoint out(new _endpoint);
+	sp_endpoint out(new _endpoint());
 	out->size = 1;
 	out->tag = tag_dictionary;
 	out->add_child("parameters", params);
@@ -471,7 +471,7 @@ sp_endpoint generic_module_gradients(T m) {
 
 sp_endpoint EncoderImpl::weights() {
 	DebugScope dbg("EncoderImpl::weights");
-	sp_endpoint e(new _endpoint);
+	sp_endpoint e(new _endpoint());
 	e->tag = shape->tag;
 	e->size = 1;
 
@@ -496,7 +496,7 @@ sp_endpoint EncoderImpl::weights() {
 
 sp_endpoint DecoderImpl::weights() {
 	DebugScope dbg("DecoderImpl::weights");
-	sp_endpoint e(new _endpoint);
+	sp_endpoint e(new _endpoint());
 	e->tag = shape->tag;
 	e->size = 1;
 
@@ -519,7 +519,7 @@ sp_endpoint DecoderImpl::weights() {
 
 sp_endpoint EncoderImpl::gradients() {
 	DebugScope dbg("EncoderImpl::gradients");
-	sp_endpoint e(new _endpoint);
+	sp_endpoint e(new _endpoint());
 	e->tag = shape->tag;
 	e->size = 1;
 
@@ -543,7 +543,7 @@ sp_endpoint EncoderImpl::gradients() {
 
 sp_endpoint DecoderImpl::gradients() {
 	DebugScope dbg("DecoderImpl::gradients");
-	sp_endpoint e(new _endpoint);
+	sp_endpoint e(new _endpoint());
 	e->tag = shape->tag;
 	e->size = 1;
 
@@ -594,7 +594,7 @@ class NetImpl : public torch::nn::Module {
 		sp_endpoint activations(sp_endpoint in) {
 			DebugScope dbg("NetImpl::activations");
 
-			sp_endpoint res(new _endpoint), out(new _endpoint);
+			sp_endpoint res(new _endpoint()), out(new _endpoint());
 			res->tag = tag_vector;
 			out->tag = tag_dictionary;
 			res->size = in->size;
@@ -618,7 +618,7 @@ class NetImpl : public torch::nn::Module {
 		sp_endpoint weights() {
 			DebugScope dbg("NetImpl::weights");
 
-			auto res = sp_endpoint(new _endpoint);
+			auto res = sp_endpoint(new _endpoint());
 			res->tag = tag_vector;
 			res->size = 1;
 			res->dims.push_back(~residuals.size());
@@ -627,7 +627,7 @@ class NetImpl : public torch::nn::Module {
 				res->vec.push_back(residual->weights());
 			}
 
-			auto top = sp_endpoint(new _endpoint);
+			auto top = sp_endpoint(new _endpoint());
 			top->tag = tag_dictionary;
 			top->size = 1;
 			top->add_child("encoder", enc->weights());
@@ -640,7 +640,7 @@ class NetImpl : public torch::nn::Module {
 		sp_endpoint gradients() {
 			DebugScope dbg("NetImpl::gradients");
 
-			auto res = sp_endpoint(new _endpoint);
+			auto res = sp_endpoint(new _endpoint());
 			res->tag = tag_vector;
 			res->size = 1;
 			res->dims.push_back(~residuals.size());
@@ -649,7 +649,7 @@ class NetImpl : public torch::nn::Module {
 				res->vec.push_back(residual->gradients());
 			}
 
-			auto top = sp_endpoint(new _endpoint);
+			auto top = sp_endpoint(new _endpoint());
 			top->tag = tag_dictionary;
 			top->size = 1;
 			top->add_child("encoder", enc->gradients());
@@ -810,7 +810,7 @@ sp_endpoint loss_components(sp_structure shape, sp_endpoint scaling, sp_endpoint
 		throw 0;
 	}
 
-	sp_endpoint out(new _endpoint);
+	sp_endpoint out(new _endpoint());
 	out->tag = scaling->tag;
 	out->size = 1;
 
