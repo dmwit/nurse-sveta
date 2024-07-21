@@ -28,6 +28,7 @@ common shared
                         , maryodel ^>=0.1
                         , mtl ^>=2.2
                         , mwc-random ^>=0.15
+                        , random ^>=1.2
                         , text ^>=2.1
                         , unordered-containers ^>=0.2
                         , vector ^>=0.13

@@ -10,7 +10,7 @@ module Nurse.Sveta.Tomcats (
 	Statistics(..),
 	Tree(..),
 	clone,
-	maximumOn,
+	maximumOn, BestMoves(..), bestMoves,
 	ppTreeIO, ppTreeSparseIO,
 	ppTreeSparse, ppTreesSparse, ppTree, ppTrees,
 	ppStats, ppStatss, ppCache,
@@ -32,6 +32,7 @@ import Data.Hashable
 import Data.HashMap.Strict (HashMap)
 import Data.IORef
 import Data.Monoid
+import Data.Traversable
 import Data.Vector (Vector)
 import Dr.Mario.Model
 import Dr.Mario.Pathfinding
@@ -40,6 +41,7 @@ import Nurse.Sveta.STM.BatchProcessor
 import Nurse.Sveta.Torch.Semantics
 import System.Random.MWC
 import System.Random.MWC.Distributions
+import System.Random.Stateful (uniformDouble01M)
 import System.IO.Unsafe (unsafeInterleaveIO)
 import Tomcats hiding (descend)
 import Tomcats.AlphaZero.Float (Statistics(..))
@@ -58,7 +60,7 @@ data SearchConfiguration = SearchConfiguration
 	, iterations :: Int
 	, typicalMoves :: Float
 	, priorNoise :: Float
-	, temperature :: Double -- ^ 0 means always use the highest visitCount, large numbers trend toward the uniform distribution
+	, moveNoise :: Double -- ^ probability of not choosing the best move
 	} deriving (Eq, Ord, Read, Show)
 
 -- | The 'MidPath' is ignored for 'Eq', 'Ord', and 'Hashable'.
@@ -379,31 +381,48 @@ dumbEvaluation = \ni -> pure NetOutput
 		, y <- [0..15]
 		]
 
--- very similar to A0.descend, except that:
--- * it pulls the temperature from the SearchConfiguration
--- * the meaning of the temperature is inverted (lower is more deterministic)
--- * it works with this module's Statistics rather than A0.Statistics
--- * it smoothly handles negative temperatures
--- * argument order is swapped for consistency with other stuff in nurse-sveta.hs
--- * some extra care is needed when choosing an unexplored move due to the oddities of our preprocessing step
+-- With probability p, choose the move with the most visits. If that doesn't
+-- happen, with probability p, choose using the visit counts as weights for a
+-- (lightly smoothed) categorical distribution. Otherwise choose completely
+-- uniformly at random.
+--
+-- All the complicated bits are just about handling edge cases gracefully.
 descend :: GenIO -> SearchConfiguration -> DMParameters -> GameState -> Tree Statistics Move -> IO (Maybe (Move, Tree Statistics Move))
-descend g config params s t = case (temperature config, weights) of
-	(0, _) -> T.descend params visitCount s t
-	(_, []) -> pure Nothing
-	_ -> do
-		i <- categorical (V.fromList weights) g
-		let move = moves !! i
+descend g config params s t = do
+	v <- uniformDouble01M g
+	mmove <- case (moves, v < moveNoise config^2, v < moveNoise config) of
+		([], _    , _    ) -> pure Nothing
+		(_ , True , _    ) -> Just . (moves!!) <$> uniformR (0, length moves - 1) g
+		(_ , _    , True ) -> Just . (moves!!) <$> categorical (V.fromList weights) g
+		_ -> case bestMoves t of
+			BestMoves _ ms | V.length ms == 0 -> Just . (moves!!) <$> uniformR (0, length moves - 1) g
+			               | otherwise        -> Just . (ms  V.!) <$> uniformR (0, V.length ms - 1) g
+	for mmove \move -> do
 		play params s move
 		case HM.lookup move (children t) of
-			Just t' -> pure $ Just (move, t')
-			Nothing -> Just . (,) move . snd <$> initialTree params s
+			Just t' -> pure (move, t')
+			Nothing -> (,) move . snd <$> initialTree params s
 	where
-	tmpExp = recip (temperature config)
-	-- the (1+) bit is to handle negative temperatures smoothly
-	weight stats = realToFrac (1 + visitCount stats) ** tmpExp
+	weight = realToFrac . (1+) . visitCount
 	(moves, weights) = unzip . HM.toList $
 		(weight . statistics <$> children t) `HM.union`
 		(weight <$> unexplored t)
+
+data BestMoves = BestMoves Float (Vector Move) deriving (Eq, Ord, Read, Show)
+
+instance Semigroup BestMoves where
+	bm@(BestMoves n mvs) <> bm'@(BestMoves n' mvs') = case compare n n' of
+		LT -> bm'
+		EQ -> BestMoves n (mvs <> mvs')
+		GT -> bm
+
+instance Monoid BestMoves where mempty = BestMoves (-1/0) V.empty
+
+injBestMoves :: Move -> Tree Statistics Move -> BestMoves
+injBestMoves mv t = BestMoves (visitCount (statistics t)) (V.singleton mv)
+
+bestMoves :: Tree Statistics Move -> BestMoves
+bestMoves = HM.foldMapWithKey injBestMoves . children
 
 -- all the rest of this stuff is just for debugging
 

@@ -159,7 +159,7 @@ newSearchConfiguration = SearchConfiguration
 	, iterations = 200
 	, typicalMoves = 25
 	, priorNoise = 0.1
-	, temperature = 2
+	, moveNoise = 0.2
 	}
 
 requestConfiguration :: SearchConfiguration -> GenerationThreadState -> GenerationThreadState

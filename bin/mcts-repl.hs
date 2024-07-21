@@ -14,6 +14,7 @@ import Nurse.Sveta.Torch
 import Nurse.Sveta.Util
 import System.Random.MWC
 import System.Random.MWC.Distributions
+import System.Random.Stateful (uniformDouble01M)
 import Text.Read
 import Text.Printf
 
@@ -41,30 +42,47 @@ repl g cfg params s t = getLine >>= \case
 		repl g cfg params s t
 	-- choose
 	'c':_ -> do
-		case (temperature cfg, weights) of
-			(_, []) -> putStrLn "There are no children or unexplored nodes in the current tree.\n(Perhaps the game is over.)\nNothing"
-			(0, _) -> do
-				putStrLn "At 0 temperature, so we choose the maximal visit count."
-				putStrLn "All moves and visit counts"
-				for_ (enumerateMono rawWeights) \(i, (mv, n)) -> printf "\t%2d: %3d %s\n" i (round n :: Int) (ppMove mv)
-				printf "Just %s\n" . ppMove . fst $ maximumBy (comparing snd) rawWeights
+		v <- uniformDouble01M g
+		printf "Sampled %f uniformly from [0,1]. Current noise probability is %f.\n" v (moveNoise cfg)
+		mmove <- case (moves, v < moveNoise cfg^2, v < moveNoise cfg) of
+			([], _    , _    ) -> Nothing <$ putStrLn "There are no children or unexplored nodes in the current tree.\n(Perhaps the game is over.)"
+			(_ , True , _    ) -> do
+				putStrLn "Choosing a move uniformly at random."
+				n <- uniformR (0, length moves - 1) g
+				printf "Chose move %d (out of %d).\n" n (length moves)
+				pure . Just $ moves !! n
+			(_ , _    , True ) -> do
+				putStrLn "Choosing a move using the visit counts as weights."
+				putStrLn "All moves and weights:"
+				for_ (enumerateMono (zip moves weights)) \(i, (mv, w)) -> printf "\t%2d: %0.3e %s\n" i w (ppMove mv)
+				n <- categorical (V.fromList weights) g
+				printf "Chose move %d.\n" n
+				pure . Just $ moves !! n
 			_ -> do
-				printf "Temperature is %f; exponent is %f.\n" (temperature cfg) tmpExp
-				putStrLn "All moves and visit counts:"
-				for_ (enumerateMono rawWeights) \(i, (mv, n)) -> printf "\t%2d: %3d %s\n" i (round n :: Int) (ppMove mv)
-				putStrLn "All moves and temperature-adjusted weights:"
-				for_ (enumerateMono tmpWeights) \(i, (mv, w)) -> printf "\t%2d: %0.3e %s\n" i w (ppMove mv)
-				i <- categorical (V.fromList weights) g
-				printf "Chose index %d.\n" i
-				printf "Just %s\n" . ppMove $ moves !! i
+				putStrLn "Choosing the best move."
+				case bestMoves t of
+					BestMoves c ms
+						| V.length ms == 0 -> do
+							putStrLn "There are no best moves?? This seems like it's probably a bug. Falling back to choosing uniformly at random."
+							n <- uniformR (0, length moves - 1) g
+							printf "Chose move %d (out of %d).\n" n (length moves)
+							pure . Just $ moves !! n
+						| V.length ms == 1 -> pure . Just $ ms V.! 0
+						| otherwise -> do
+							printf "The following moves all tied for best, with visit count %f:\n" c
+							V.iforM_ ms \i move -> printf "%2d: %s\n" i (ppMove move)
+							n <- uniformR (0, V.length ms - 1) g
+							printf "Chose move %d.\n" n
+							pure . Just $ ms V.! n
+		case mmove of
+			Nothing -> putStrLn "Nothing"
+			Just move -> putStr "Just " >> putStrLn (ppMove move)
 		repl g cfg params s t
 		where
-		tmpExp = recip (temperature cfg)
-		weight stats = realToFrac (1 + visitCount stats) ** tmpExp
-		allStats = (statistics <$> children t) `HM.union` unexplored t
-		rawWeights = HM.toList (visitCount <$> allStats)
-		tmpWeights = HM.toList (weight <$> allStats)
-		(moves, weights) = unzip tmpWeights
+		weight = realToFrac . (1+) . visitCount
+		(moves, weights) = unzip . HM.toList $
+			(weight . statistics <$> children t) `HM.union`
+			(weight <$> unexplored t)
 	-- descend
 	'd':ln -> do
 		t' <- case readMaybe <$> words ln of
@@ -143,5 +161,5 @@ newSearchConfiguration = SearchConfiguration
 	, iterations = 200
 	, typicalMoves = 25
 	, priorNoise = 0.1
-	, temperature = 2
+	, moveNoise = 0.2
 	}
