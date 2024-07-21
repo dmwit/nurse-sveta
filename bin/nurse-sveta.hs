@@ -952,13 +952,13 @@ loggingThread log sc = do
 			else throwIO e
 	absPrepareDirectory dir Logging
 	(Just h, Nothing, Nothing, ph) <- createProcess (proc "python3" [wandbCat, "-q"]) { std_in = CreatePipe }
+	hSetBuffering h LineBuffering
 
 	hPutStrLn h dir
 	hPutStrLn h "Nurse Sveta"
 	Time.getCurrentTime >>= hPrint h
 	hPutStrLn h "" -- no support for resuming (yet?)
 	hPutStrLn h "" -- no reporting of configuration data (yet?)
-	hFlush h
 
 	start <- getTime Monotonic
 	let go = \case
