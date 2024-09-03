@@ -54,6 +54,7 @@ ostream &dump_leaf_type(ostream &os, const leaf_type ty) {
 		case type_positive: return os << "exp/L2";
 		case type_categorical: return os << "softmax/KL divergence";
 		case type_probability: return os << "sigmoid/cross entropy";
+		case type_unbounded: return os << "id/L2";
 		default:
 			cerr << "Invalid leaf type " << ty << endl;
 			throw 0;

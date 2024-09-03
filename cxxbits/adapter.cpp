@@ -380,6 +380,7 @@ sp_endpoint DecoderImpl::forward(const torch::Tensor &t) {
 				case type_unit: e->values = e->values.sigmoid(); break;
 				case type_positive: [[fallthrough]];
 				case type_categorical: e->values = e->values.exp(); break;
+				case type_unbounded: break;
 				default:
 					std::cerr << "Invalid leaf type " << shape->ty << " in DecoderImpl::forward()." << std::endl;
 					throw 0;
@@ -684,6 +685,7 @@ torch::Tensor leaf_loss(leaf_type loss_ty, const torch::Tensor &net_output, cons
 	}
 
 	switch(loss_ty) {
+		case type_unbounded: [[fallthrough]];
 		case type_unit: [[fallthrough]];
 		case type_positive:
 			return mask.defined() ?

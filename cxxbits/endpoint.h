@@ -33,6 +33,8 @@ typedef int leaf_type;
 #define type_categorical ((leaf_type)2)
 // 0-1, cross-entropy loss
 #define type_probability ((leaf_type)3)
+// -∞-∞, squared-error loss
+#define type_unbounded ((leaf_type)4)
 
 void dump_leaf_type(leaf_type ty);
 

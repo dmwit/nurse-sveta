@@ -1,4 +1,6 @@
 module Nurse.Sveta.Tomcats (
+	RNGTree(..), newRNGTree,
+	MoveTree(..), newMoveTree,
 	DMParameters, dmParameters,
 	GameStateSeed(..), initialTree,
 	mcts, descend, unsafeDescend,
@@ -12,6 +14,9 @@ module Nurse.Sveta.Tomcats (
 	clone,
 	maximumOn, BestMoves(..), bestMoves,
 	ppTreeIO, ppTreeSparseIO,
+	ppRNGTree, ppRNGTreeDebug, ppMoveTree, ppMoveTreeDebug,
+	ppMoveTrees, ppPlacements, ppEndpointMap, ppUnexploredMove,
+	ppAeson,
 	ppTreeSparse, ppTreesSparse, ppTree, ppTrees,
 	ppStats, ppStatss, ppCache,
 	ppMove,
@@ -31,6 +36,7 @@ import Data.Functor
 import Data.Hashable
 import Data.HashMap.Strict (HashMap)
 import Data.IORef
+import Data.List
 import Data.Monoid
 import Data.Traversable
 import Data.Vector (Vector)
@@ -46,8 +52,11 @@ import System.IO.Unsafe (unsafeInterleaveIO)
 import Tomcats hiding (descend)
 import Tomcats.AlphaZero.Float (Statistics(..))
 
+import qualified Data.ByteString.Lazy.Char8 as LBS8
 import qualified Data.HashMap.Strict as HM
 import qualified Data.Vector as V
+import qualified Nurse.Sveta.Torch.EndpointMap as EM
+import qualified Data.Text as T
 import qualified Tomcats as T
 import qualified Tomcats.AlphaZero.Float as A0
 
@@ -149,6 +158,192 @@ instance (a ~ Board, b ~ Bool, c ~ CoarseSpeed) => GameStateSeed (a, b, c) where
 		<*> pure speed
 
 instance GameStateSeed GameState where initialState = pure
+
+data RNGTree = RNGTree
+	{ childrenRNG :: HashMap Lookahead MoveTree
+	, orderRNG :: Vector Lookahead
+	, nextLookaheadRNG :: Int
+	, placementsRNG :: HashMap MidPlacement MidPath
+	, symmetricPlacementsRNG :: HashMap MidPlacement MidPath
+	, childPriorsRNG :: EndpointMap Pill CFloat
+	, priorProbabilityRNG :: Float
+	, cumulativeValuationRNG :: Float
+	, visitCountRNG :: Float
+	} deriving (Eq, Ord, Read, Show)
+
+data MoveTree = MoveTree
+	{ childrenMove :: HashMap Pill RNGTree
+	, unexploredMove :: [(Pill, Float)] -- ^ prior probability, sorted descending
+	, pathsMove :: HashMap Pill MidPath
+	} deriving (Eq, Ord, Read, Show)
+
+newRNGTree :: GameStateSeed a => Procedure NetInput NetOutput' -> GenIO -> Float -> a -> IO (GameState, RNGTree)
+newRNGTree eval rng prior seed = do
+	gs <- initialState seed
+	future <- schedule eval =<< netInput gs
+	visitOrder <- uniformShuffle allLookaheads rng
+
+	fp <- readIORef (framesPassed gs)
+	pu <- readIORef (pillsUsed gs)
+	placements <- mapproxReachable (board gs) (fp .&. 1 /= fromEnum (originalSensitive gs)) (gravity (speed gs) pu)
+
+	no <- future
+
+	let t = RNGTree
+	    	{ childrenRNG = HM.empty
+	    	, orderRNG = visitOrder
+	    	, nextLookaheadRNG = 0
+	    	, placementsRNG = placements
+	    	, symmetricPlacementsRNG = symmetrize placements
+	    	, childPriorsRNG = noPriors' no
+	    	, priorProbabilityRNG = prior
+	    	, cumulativeValuationRNG = noValuation' no
+	    	, visitCountRNG = 1
+	    	}
+
+	pure (gs, t)
+	where
+	symmetrize :: HashMap MidPlacement MidPath -> HashMap MidPlacement MidPath
+	symmetrize moves = HM.fromListWith shorterPath [(placement { mpRotations = mpRotations placement .&. 1 }, path) | (placement, path) <- HM.toList moves]
+
+newMoveTree :: HashMap MidPlacement MidPath -> EndpointMap Pill CFloat -> Lookahead -> MoveTree
+newMoveTree pathCache priors lk = MoveTree
+	{ childrenMove = HM.empty
+	, unexploredMove = sortBy
+		(\(pill, prior) (pill', prior') -> compare prior prior' <> compare pill pill')
+		[(pill, (priors EM.! pill) / normalizationFactor) | pill <- HM.keys paths]
+	, pathsMove = paths
+	} where
+	paths = HM.fromListWithKey (\pill -> error $ "Two different MidPlacements both got specialized to " ++ show pill ++ ". Original path cache: " ++ show pathCache)
+		[ (mpPill placement lk, path)
+		| (placement, path) <- HM.toList pathCache
+		]
+	Sum normalizationFactor = HM.foldMapWithKey (\pill _ -> Sum (priors EM.! pill)) paths
+
+allLookaheads :: Vector Lookahead
+-- could use EndpointKey to not have constants 9 and 3 here, but the result is completely unreadable
+allLookaheads = V.generate (product (indexCounts' @Lookahead)) fromIndex
+
+uniformPriors :: EndpointMap Pill CFloat
+uniformPriors = EM.EndpointMap (foldr (svReplicate . evalGameConstant) (generate [] \_ -> 1) (indexCounts @Pill))
+
+--- begin PP
+ppRNGTree :: String -> RNGTree -> String
+ppRNGTree indent t = indent
+	++ ppPercent (priorProbabilityRNG t) ++ " "
+	++ ppPrecision 2 (cumulativeValuationRNG t) ++ "/" ++ show (round (visitCountRNG t))
+	++ "\n" ++ ppMoveTrees indent (childrenRNG t)
+
+ppRNGTreeDebug :: String -> RNGTree -> String
+ppRNGTreeDebug indent t = indent
+	++ ppPercent (priorProbabilityRNG t) ++ " "
+	++ ppPrecision 2 (cumulativeValuationRNG t) ++ "/" ++ show (round (visitCountRNG t))
+	++ "\n" ++ indent
+	++ V.ifoldr
+		(\i lk s -> (if i == nextLookaheadRNG t then \content -> "<" ++ content ++ ">" else id) (ppAeson lk) ++ " " ++ s)
+		""
+		(orderRNG t)
+	++ "(" ++ show (nextLookaheadRNG t) ++ ")"
+	++ "\n" ++ ppLabeledHashMap indent "children" ppMoveTreesDebug (childrenRNG t)
+	++ "\n" ++ ppLabeledHashMap indent "placements" ppPlacements (placementsRNG t)
+	++ "\n" ++ ppLabeledHashMap indent "symmetric placements" ppPlacements (symmetricPlacementsRNG t)
+	++ "\n" ++ indent
+	++ if childPriorsRNG t == uniformPriors
+		then "priors: <uniform>"
+		else "priors:" ++ "\n" ++ ppEndpointMap ("  " ++ indent) (childPriorsRNG t)
+
+ppMoveTree :: String -> MoveTree -> String
+ppMoveTree indent t = case (children, unexplored) of
+	("", "") -> indent ++ "<empty>"
+	("", _ ) -> labeledUnexplored
+	(_ , "") -> labeledChildren
+	(_ , _ ) -> labeledUnexplored ++ "\n" ++ labeledChildren
+	where
+	children = ppHashMap ("  " ++ indent) ppPill ppRNGTree (childrenMove t)
+	unexplored = ppUnexploredMove (unexploredMove t)
+	labeledChildren = indent ++ "children:\n" ++ children
+	labeledUnexplored = indent ++ "unexplored: " ++ unexplored
+
+ppMoveTreeDebug :: String -> MoveTree -> String
+ppMoveTreeDebug indent t = ""
+	++ (if null unexplored then "" else labeledUnexplored)
+	++ (if null children then "" else labeledChildren)
+	++ indent ++ "paths:\n" ++ ppHashMapInline ("  " ++ indent) ppPill ppAeson (pathsMove t)
+	where
+	children = ppHashMap ("  " ++ indent) ppPill ppRNGTreeDebug (childrenMove t)
+	unexplored = ppUnexploredMove (unexploredMove t)
+	labeledChildren = indent ++ "children:\n" ++ children ++ "\n"
+	labeledUnexplored = indent ++ "unexplored: " ++ unexplored ++ "\n"
+
+ppMoveTrees :: String -> HashMap Lookahead MoveTree -> String
+ppMoveTrees indent ts = if HM.null ts
+	then indent ++ "(no children)"
+	else ppHashMap ("  " ++ indent) ppAeson ppMoveTree ts
+
+ppLabeledHashMap :: String -> String -> (String -> HashMap k v -> String) -> HashMap k v -> String
+ppLabeledHashMap indent label pp m = indent ++ if HM.null m
+	then "<empty " ++ label ++ ">"
+	else label ++ ":\n" ++ pp ("  " ++ indent) m
+
+ppMoveTreesDebug :: String -> HashMap Lookahead MoveTree -> String
+ppMoveTreesDebug indent = ppHashMap indent ppAeson ppMoveTreeDebug
+
+ppPlacements :: String -> HashMap MidPlacement MidPath -> String
+ppPlacements indent = ppHashMapInline indent ppMidPlacement ppAeson
+
+ppEndpointMap :: String -> EndpointMap Pill CFloat -> String
+ppEndpointMap indent m = intercalate "\n"
+	[ indent ++ ppContent pc ++ ":\n" ++ ppRows ("  " ++ indent) pc
+	| or <- [minBound .. maxBound]
+	, bl <- [minBound .. maxBound]
+	, oc <- [minBound .. maxBound]
+	, let pc = PillContent
+	      	{ orientation = or
+	      	, bottomLeftColor = bl
+	      	, otherColor = oc
+	      	}
+	] where
+	ppRows indent' pc = intercalate "\n" [ppRow indent' pc y | y <- [15, 14..0]]
+	ppRow indent' pc y = indent' ++ unwords
+		[ show . round @Float . (*100) $ m EM.! Pill pc (Position x y)
+		| x <- [0..7]
+		]
+
+ppHashMap :: String -> (k -> String) -> (String -> v -> String) -> HashMap k v -> String
+ppHashMap indent ppk ppv m = intercalate "\n"
+	[ indent ++ ppk k ++ ":\n" ++ ppv ("  " ++ indent) v
+	| (k, v) <- HM.toList m
+	]
+
+ppMidPlacement :: MidPlacement -> String
+ppMidPlacement (MidPlacement pos rot) = ppClockwiseRotations rot ++ " " ++ padr 7 (ppPosition pos)
+
+ppClockwiseRotations :: Int -> String
+ppClockwiseRotations = \case
+	0 -> "  "
+	1 -> " ↻"
+	2 -> "↻↻"
+	3 -> " ↺"
+	_ -> "!!"
+
+ppUnexploredMove :: [(Pill, Float)] -> String
+ppUnexploredMove ms = unwords [ppPill pill ++ "@" ++ ppPercent prior | (pill, prior) <- ms]
+
+ppHashMapInline :: String -> (k -> String) -> (v -> String) -> HashMap k v -> String
+ppHashMapInline indent ppk ppv m = intercalate "\n"
+	[ indent ++ ppk k ++ " ↦ " ++ ppv v
+	| (k, v) <- HM.toList m
+	]
+
+ppAeson :: ToJSON a => a -> String
+ppAeson a = case toJSON a of
+	String t -> T.unpack t
+	other -> LBS8.unpack (encode other)
+
+padr :: Int -> String -> String
+padr n s = s ++ replicate (n - length s) ' '
+
+--- end PP
 
 initialTree :: GameStateSeed a => DMParameters -> a -> IO (GameState, Tree Statistics Move)
 initialTree params g = do

@@ -2,10 +2,11 @@ module Nurse.Sveta.Torch (
 	Net, Optimizer,
 	netSample, netLoadForInference, netLoadForTraining,
 	netEvaluation, netLossComponents, netActivations, netGradients, netTrain,
+	netSampleNext, netEvaluationNext,
 	netSave, netWeights,
 	TrainingExample(..), GameDetails, GameStep(..),
 	trainingExamples,
-	NetInput(..), NetOutput(..), GroundTruth(..), LossScaling(..),
+	NetInput(..), NetOutput(..), NetOutput'(..), GroundTruth(..), LossScaling(..),
 	netSample', netLoadForInference', netLoadForTraining',
 	netEvaluation', netLossComponents', netActivations', netGradients', netTrain',
 	)
@@ -133,8 +134,14 @@ netGradients' net_ scaling_ batch_ = do
 withNetIO :: (Structure -> Structure -> a) -> a
 withNetIO f = f (structure @NetInput) (structure @NetOutput)
 
+withNetIO' :: (Structure -> Structure -> a) -> a
+withNetIO' f = f (structure @NetInput) (structure @NetOutput')
+
 netSample :: IO (Net, Optimizer)
 netSample = withNetIO netSample'
+
+netSampleNext :: IO (Net, Optimizer)
+netSampleNext = withNetIO' netSample'
 
 netLoadForInference :: FilePath -> IO Net
 netLoadForInference = withNetIO . netLoadForInference'
@@ -148,6 +155,9 @@ netSave net_ optim_ path_ = withUnwrapped (WCS path_, (net_, optim_)) \(path, (n
 
 netEvaluation :: Net -> Vector NetInput -> IO (Vector NetOutput)
 netEvaluation net is = fromEndpoint <$> netEvaluation' net (toEndpoint is)
+
+netEvaluationNext :: Net -> Vector NetInput -> IO (Vector NetOutput')
+netEvaluationNext net is = fromEndpoint <$> netEvaluation' net (toEndpoint is)
 
 netActivations :: Net -> Vector NetInput -> IO Endpoint
 netActivations net is = netActivations' net (toEndpoint is)

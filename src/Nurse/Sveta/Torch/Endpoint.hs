@@ -7,7 +7,7 @@ module Nurse.Sveta.Torch.Endpoint (
 	-- * Strided vectors
 	StridedVector,
 	generate, generateM, fromList,
-	(!), the, ifoldMap,
+	(!), the, svMap, svReplicate, ifoldMap,
 	-- * Structures
 	Structure(..), CStructure, gcStructure,
 	cStructure,
@@ -117,12 +117,12 @@ orMiscellaneous gc n
 	| evalGameConstant gc == n = gc
 	| otherwise = GCMiscellaneous n
 
-data LeafType = Unit | Positive | Categorical | Probability deriving (Bounded, Enum, Eq, Ord, Read, Show)
+data LeafType = Unit | Positive | Categorical | Probability | Unbounded deriving (Bounded, Enum, Eq, Ord, Read, Show)
 newtype CLeafType = CLeafType CInt deriving newtype (Eq, Ord, Show, Storable)
 
 -- See [NOTE: FFI, switch, and linking].
 c_type_unit, c_type_positive, c_type_categorical, c_type_probability :: CLeafType
-c_type_unit:c_type_positive:c_type_categorical:c_type_probability:_ = CLeafType <$> [0..]
+c_type_unit:c_type_positive:c_type_categorical:c_type_probability:c_type_unbounded:_ = CLeafType <$> [0..]
 
 foreign import ccall "dump_leaf_type" c_dump_leaf_type :: CLeafType -> IO ()
 
@@ -132,6 +132,7 @@ cLeafType_ = \case
 	Positive -> c_type_positive
 	Categorical -> c_type_categorical
 	Probability -> c_type_probability
+	Unbounded -> c_type_unbounded
 
 cLeafType :: LeafType -> IO CLeafType
 cLeafType = pure . cLeafType_
@@ -142,6 +143,7 @@ hsLeafType_ ty
 	| ty == c_type_positive = Positive
 	| ty == c_type_categorical = Categorical
 	| ty == c_type_probability = Probability
+	| ty == c_type_unbounded = Unbounded
 	| otherwise = error $ "Unknown leaf type " ++ show ty
 
 hsLeafType :: HasCallStack => CLeafType -> IO LeafType
@@ -194,6 +196,7 @@ data StridedVector a = StridedVector
 	{ strides :: [Int]
 	, bounds :: [Int]
 	, contents :: VS.Vector a
+	-- TODO: these instances are not semantic (for Read/Show, do we even want them to be?)
 	} deriving (Eq, Ord, Read, Show)
 
 lenStridesFor :: [Int] -> [Int]
@@ -250,6 +253,15 @@ StridedVector { strides = s:ss, bounds = b:bs, contents = c } ! i | 0 <= i && i 
 	, contents = VS.drop (i*s) c
 	}
 sv ! i = error $ "Indexing error while computing StridedVector { strides = " ++ show (strides sv) ++ ", bounds = " ++ show (bounds sv) ++ ", contents = <elided> } ! " ++ show i
+
+svMap :: (Storable a, Storable b) => (a -> b) -> StridedVector a -> StridedVector b
+svMap f sv = sv { contents = VS.map f (contents sv) }
+
+svReplicate :: Int -> StridedVector a -> StridedVector a
+svReplicate n sv = sv
+	{ strides = 0:strides sv
+	, bounds = n:bounds sv
+	}
 
 ifoldMap :: (Monoid m, Storable a) => ([Int] -> a -> m) -> StridedVector a -> m
 ifoldMap f StridedVector { strides = ss0, bounds = bs0, contents = c } = go ss0 bs0 [] 0 where

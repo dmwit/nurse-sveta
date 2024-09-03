@@ -1,7 +1,9 @@
 module Main where
 
 import Control.Concurrent
+import Control.Exception
 import Control.Monad
+import Control.Monad.State
 import Data.Aeson
 import Data.Foldable
 import Data.IORef
@@ -24,142 +26,112 @@ import qualified Data.Vector as V
 main :: IO ()
 main = do
 	proc <- newProcedure 100
-	(net, _optim) <- netSample
-	forkIO $ forever (serviceCalls_ proc (netEvaluation net))
+	(net, _optim) <- netSampleNext
+	forkIO $ forever (serviceCalls_ proc (netEvaluationNext net))
 	g <- createSystemRandom
-	let cfg = newSearchConfiguration
-	    params = dmParameters cfg proc g
-	(s, t_) <- initialTree params g
-	[l, r] <- map toEnum <$> replicateM 2 (uniformR (0, 2) g)
-	t <- unsafeDescend params (RNG l r) s t_
-	repl g cfg params s t
+	(s, t) <- newRNGTree proc g 0 g
+	evalStateT repl ReplState
+		{ rng = g
+		, game = s
+		, tree = Left t
+		, net = proc
+		}
 
-repl :: GenIO -> SearchConfiguration -> DMParameters -> GameState -> Tree Statistics Move -> IO ()
-repl g cfg params s t = getLine >>= \case
-	-- board
-	'b':_ -> do
-		putStr . pp =<< mfreeze (board s)
-		repl g cfg params s t
-	-- choose
-	'c':_ -> do
-		v <- uniformDouble01M g
-		printf "Sampled %f uniformly from [0,1]. Current noise probability is %f.\n" v (moveNoise cfg)
-		mmove <- case (moves, v < moveNoise cfg^2, v < moveNoise cfg) of
-			([], _    , _    ) -> Nothing <$ putStrLn "There are no children or unexplored nodes in the current tree.\n(Perhaps the game is over.)"
-			(_ , True , _    ) -> do
-				putStrLn "Choosing a move uniformly at random."
-				n <- uniformR (0, length moves - 1) g
-				printf "Chose move %d (out of %d).\n" n (length moves)
-				pure . Just $ moves !! n
-			(_ , _    , True ) -> do
-				putStrLn "Choosing a move using the visit counts as weights."
-				putStrLn "All moves and weights:"
-				for_ (enumerateMono (zip moves weights)) \(i, (mv, w)) -> printf "\t%2d: %0.3e %s\n" i w (ppMove mv)
-				n <- categorical (V.fromList weights) g
-				printf "Chose move %d.\n" n
-				pure . Just $ moves !! n
-			_ -> do
-				putStrLn "Choosing the best move."
-				case bestMoves t of
-					BestMoves c ms
-						| V.length ms == 0 -> do
-							putStrLn "There are no best moves?? This seems like it's probably a bug. Falling back to choosing uniformly at random."
-							n <- uniformR (0, length moves - 1) g
-							printf "Chose move %d (out of %d).\n" n (length moves)
-							pure . Just $ moves !! n
-						| V.length ms == 1 -> pure . Just $ ms V.! 0
-						| otherwise -> do
-							printf "The following moves all tied for best, with visit count %f:\n" c
-							V.iforM_ ms \i move -> printf "%2d: %s\n" i (ppMove move)
-							n <- uniformR (0, V.length ms - 1) g
-							printf "Chose move %d.\n" n
-							pure . Just $ ms V.! n
-		case mmove of
-			Nothing -> putStrLn "Nothing"
-			Just move -> putStr "Just " >> putStrLn (ppMove move)
-		repl g cfg params s t
-		where
-		weight = realToFrac . (1+) . visitCount
-		(moves, weights) = unzip . HM.toList $
-			(weight . statistics <$> children t) `HM.union`
-			(weight <$> unexplored t)
-	-- descend
-	'd':ln -> do
-		t' <- case readMaybe <$> words ln of
-			[_, Just n] -> desc n
-			[Just n] -> desc n
-			[] -> desc'
-			[_] -> desc'
-			_ -> t <$ putStrLn "Didn't understand; looks like you passed a move number but it wasn't a number or maybe there was some extraneous stuff after?"
-		repl g cfg params s t'
-		where
-		desc n
-			| 0 <= n && n < moveCount t = do
-				let m = movesList t !! n
-				putStrLn $ "making move " ++ show m
-				unsafeDescend params m s t
-			| otherwise = t <$ putStrLn ("move number out of bounds (max is " ++ show (moveCount t - 1) ++ ")")
-		desc' = descend g cfg params s t >>= \case
-			Nothing -> t <$ putStrLn "game's already over"
-			Just (m, t') -> t' <$ putStrLn ("making move " ++ show m)
-	-- help below
-	-- list
-	'l':_ -> do
-		forZipWithM [0..] (movesList t) \i m -> putStrLn $ show i ++ ": " ++ ppMove m
-		repl g cfg params s t
-	-- mcts
-	'm':ln -> case readMaybe <$> words ln of
-		[_, Just n] | n > 0 -> loop n t
-		[Just n] | n > 0 -> loop n t
-		[] -> loop 1 t
-		[_] -> loop 1 t
-		_ -> do
-			putStrLn "Didn't understand; looks like you passed an iteration count but it wasn't a number or maybe there was some extraneous stuff after?"
-			repl g cfg params s t
-		where
-		loop 0 t = repl g cfg params s t
-		loop n t = loop (n-1) =<< mcts params s t
-	-- quit
-	'q':_ -> pure ()
-	-- state
-	's':_ -> do
-		vk <- readIORef (virusesKilled s)
-		pu <- readIORef (pillsUsed s)
-		fp <- readIORef (framesPassed s)
-		Lookahead l r <- readIORef (lookbehind s)
-
-		putStrLn [ppColor l, ppColor r]
-		putStr . pp =<< mfreeze (board s)
-		putStrLn
-			$  show (originalVirusCount s - vk) ++ "/" ++ show (originalVirusCount s) ++ " viruses; "
-			++ show pu ++ " pills; "
-			++ show fp ++ " frames; "
-			++ show (speed s) ++ " speed"
-		putStrLn $ "down would " ++ (if originalSensitive s then "" else "not ") ++ "have worked on frame 0"
-		repl g cfg params s t
-	-- tree
-	't':_ -> ppTreeSparseIO t >> repl g cfg params s t
-	-- verbose tree
-	'v':_ -> ppTreeIO t >> repl g cfg params s t
-	-- help
-	_ -> do
-		putStrLn "Options are board, choose, descend [move number], list, mcts [iteration count], quit, state, tree, verbose tree"
-		repl g cfg params s t
-
-enumerateMono :: [a] -> [(Int, a)]
-enumerateMono = zip [0..]
-
-movesList :: Ord move => Tree stats move -> [move]
-movesList t = sort (HM.keys (children t) ++ HM.keys (unexplored t))
-
-moveCount :: Tree stats move -> Int
-moveCount t = HM.size (children t) + HM.size (unexplored t)
-
-newSearchConfiguration :: SearchConfiguration
-newSearchConfiguration = SearchConfiguration
-	{ c_puct = 1 -- no idea what A0 did here
-	, iterations = 200
-	, typicalMoves = 25
-	, priorNoise = 0.1
-	, moveNoise = 0.2
+data ReplState = ReplState
+	{ rng :: GenIO
+	, game :: GameState
+	, tree :: Either RNGTree MoveTree
+	, net :: Procedure NetInput NetOutput'
 	}
+
+type Repl = StateT ReplState IO
+
+data ParseResult
+	= NoParse
+	| SubcommandError String
+	| Match (Repl ())
+
+data Command = Command
+	{ name :: String
+	, help :: String
+	, parser :: String -> ParseResult
+	}
+
+parseAll :: [Command] -> String -> ([(String, String)], [(String, Repl ())])
+parseAll cmds s = mconcat
+	[ case parser cmd s of
+		NoParse -> ([], [])
+		SubcommandError e -> ([(name cmd, e)], [])
+		Match act -> ([], [(name cmd, act)])
+	| cmd <- cmds
+	]
+
+repl :: Repl ()
+repl = do
+	ms <- liftIO (try @IOException getLine)
+	forM_ ms \s -> case parseAll commands s of
+		(_, [(_, act)]) -> act
+		(_, succs@(_:_)) -> do
+			replLn $ "Ambiguous command; matching verbs are " ++ intercalate ", " (map fst succs)
+			repl
+		([], _) -> do
+			replLn $ "No matching verbs. Try help for suggestions."
+			repl
+		(es, _) -> do
+			forM_ es \(nm, e) -> replLn $ "Error while trying to parse a " ++ nm ++ " command: " ++ e
+			repl
+
+replOut :: String -> Repl ()
+replOut = liftIO . putStr
+
+replLn :: String -> Repl ()
+replLn = liftIO . putStrLn
+
+commands :: [Command]
+commands = sortOn name [helpC, quitC, boardC, treeC]
+
+command_ :: String -> String -> ([String] -> Either String (Repl ())) -> Command
+command_ nm h f = Command
+	{ name = nm
+	, help = h
+	, parser = go nm
+	} where
+	go _ [] = success ""
+	go _ (' ':s) = success s
+	go [] _ = NoParse
+	go (c:cs) (c':cs') = if c == c' then go cs cs' else NoParse
+	success s = case f (words s) of
+		Left e -> SubcommandError e
+		Right act -> Match act
+
+command :: String -> String -> ([String] -> Either String (Repl ())) -> Command
+command nm h f = command_ nm h (fmap (>>repl) . f)
+
+helpC :: Command
+helpC = command "help" helpH \case
+	[] -> Right . replLn $ "Available verbs are " ++ intercalate ", " [name cmd | cmd <- commands, name cmd /= "help"] ++ ".\nUse help <verb> for more info."
+	[nm] -> Right $ replLn case [(name cmd, help cmd) | cmd <- commands, nm `isPrefixOf` name cmd] of
+		[] -> "No matching verbs."
+		[(_, h)] -> h
+		res -> "Ambiguous help request; matching verbs are " ++ intercalate ", " (map fst res)
+	_ -> Left $ "You must ask for help one verb at a time because I am lazy."
+	where
+	helpH = "help [VERB]\nGives more info about how to use the given VERB, or lists available verbs if no argument is given."
+
+quitC :: Command
+quitC = command_ "quit" "Quits. What were you expecting?" \_ -> Right (pure ())
+
+boardC :: Command
+boardC = command "board" "Prints the board." \case
+	[] -> Right $ replOut . pp =<< liftIO . mfreeze =<< gets (board . game)
+	_ -> Left "too many arguments"
+
+treeC :: Command
+treeC = command "tree" "Usage: tree [ARG]\nPrints the current MCTS tree. Pass an argument for more verbosity." \case
+	[] -> Right $ gets tree >>= \case
+		Left t -> replLn (ppRNGTree "" t)
+		Right t -> replLn (ppMoveTree "" t)
+	[_] -> Right $ gets tree >>= \case
+		Left t -> replLn (ppRNGTreeDebug "" t)
+		Right t -> replLn (ppMoveTreeDebug "" t)
+	_ -> Left "too many arguments"

@@ -20,6 +20,7 @@ flag debug
 common shared
     build-depends:        base >=4.14 && <4.17
                         , aeson >=2.1 && <2.3
+                        , bytestring >=0.10 && <0.12
                         , containers ^>=0.6
                         , directory ^>=1.3
                         , gi-cairo-render ^>=0.1
@@ -87,6 +88,7 @@ library
                         , Nurse.Sveta.Torch
                         , Nurse.Sveta.Torch.CWrapper
                         , Nurse.Sveta.Torch.Endpoint
+                        , Nurse.Sveta.Torch.EndpointMap
                         , Nurse.Sveta.Torch.Semantics
                         , Nurse.Sveta.Util
                         , Nurse.Sveta.Widget
@@ -124,8 +126,7 @@ executable nurse-sveta
     import:             executable
     main-is:            nurse-sveta.hs
     other-modules:      CategoryMetadata
-    build-depends:        bytestring >=0.10 && <0.12
-                        , clock ^>=0.8
+    build-depends:        clock ^>=0.8
                         , process ^>=1.6
                         , time >=1.9 && <1.12
                         , perfect-vector-shuffle ^>=0.1
