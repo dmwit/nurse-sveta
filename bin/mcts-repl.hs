@@ -14,6 +14,7 @@ import Nurse.Sveta.STM.BatchProcessor
 import Nurse.Sveta.Tomcats
 import Nurse.Sveta.Torch
 import Nurse.Sveta.Util
+import System.IO
 import System.Random.MWC
 import System.Random.MWC.Distributions
 import System.Random.Stateful (uniformDouble01M)
@@ -82,7 +83,7 @@ repl = do
 			repl
 
 replOut :: String -> Repl ()
-replOut = liftIO . putStr
+replOut s = liftIO (putStr s >> hFlush stdout)
 
 replLn :: String -> Repl ()
 replLn = liftIO . putStrLn
