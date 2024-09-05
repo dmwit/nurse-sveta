@@ -1,6 +1,7 @@
 module Nurse.Sveta.Tomcats (
-	RNGTree(..), newRNGTree,
-	MoveTree(..), newMoveTree,
+	SearchContext(..),
+	RNGTree(..), newRNGTree, newRNGTreeFromSeed, descendRNGTree,
+	MoveTree(..), newMoveTree, descendMoveTree,
 	DMParameters, dmParameters,
 	GameStateSeed(..), initialTree,
 	mcts, descend, unsafeDescend,
@@ -118,6 +119,21 @@ data GameState = GameState
 uninitializedLookbehind :: IO (IORef Lookahead)
 uninitializedLookbehind = newIORef (error "asked what pill was last launched before any pill was launched")
 
+chooseRNG :: GameState -> Lookahead -> IO ()
+chooseRNG = writeIORef . lookbehind
+
+chooseMove :: GameState -> MidPath -> Pill -> IO Bool
+chooseMove gs path pill = mplace (board gs) pill >>= \case
+	Nothing -> pure False
+	Just counts -> do
+		-- defensive programming: these should naturally get forced during
+		-- position evaluation, but why take the risk? let's just keep the
+		-- thunk depth low
+		modifyIORef' (virusesKilled gs) (clears counts +)
+		modifyIORef' (pillsUsed gs) succ
+		modifyIORef' (framesPassed gs) (approximateCostModel path pill counts +)
+		pure True
+
 type DMParameters = Parameters IO Float Statistics Move GameState
 
 class GameStateSeed a where initialState :: a -> IO GameState
@@ -173,12 +189,22 @@ data RNGTree = RNGTree
 
 data MoveTree = MoveTree
 	{ childrenMove :: HashMap Pill RNGTree
-	, unexploredMove :: [(Pill, Float)] -- ^ prior probability, sorted descending
+	, unexploredMove :: Vector (Pill, Float) -- ^ prior probability, sorted descending
 	, pathsMove :: HashMap Pill MidPath
 	} deriving (Eq, Ord, Read, Show)
 
-newRNGTree :: GameStateSeed a => Procedure NetInput NetOutput' -> GenIO -> Float -> a -> IO (GameState, RNGTree)
-newRNGTree eval rng prior seed = do
+data SearchContext = SearchContext
+	{ ctxEval :: Procedure NetInput NetOutput'
+	, ctxRNG :: GenIO
+	, ctxState :: GameState
+	}
+
+newRNGTree :: SearchContext -> Float -> IO RNGTree
+newRNGTree ctx prior = snd <$> newRNGTreeFromSeed (ctxEval ctx) (ctxRNG ctx) prior (ctxState ctx)
+
+-- TODO: could return an IO (GameState, IO RNGTree) to let the caller choose when to wait on the net evaluation
+newRNGTreeFromSeed :: GameStateSeed a => Procedure NetInput NetOutput' -> GenIO -> Float -> a -> IO (GameState, RNGTree)
+newRNGTreeFromSeed eval rng prior seed = do
 	gs <- initialState seed
 	future <- schedule eval =<< netInput gs
 	visitOrder <- uniformShuffle allLookaheads rng
@@ -209,8 +235,8 @@ newRNGTree eval rng prior seed = do
 newMoveTree :: HashMap MidPlacement MidPath -> EndpointMap Pill CFloat -> Lookahead -> MoveTree
 newMoveTree pathCache priors lk = MoveTree
 	{ childrenMove = HM.empty
-	, unexploredMove = sortBy
-		(\(pill, prior) (pill', prior') -> compare prior prior' <> compare pill pill')
+	, unexploredMove = V.fromList $ sortBy
+		(\(pill, prior) (pill', prior') -> compare prior' prior <> compare pill pill')
 		[(pill, (priors EM.! pill) / normalizationFactor) | pill <- HM.keys paths]
 	, pathsMove = paths
 	} where
@@ -219,6 +245,32 @@ newMoveTree pathCache priors lk = MoveTree
 		| (placement, path) <- HM.toList pathCache
 		]
 	Sum normalizationFactor = HM.foldMapWithKey (\pill _ -> Sum (priors EM.! pill)) paths
+
+-- | modifies the GameState
+descendRNGTree :: SearchContext -> RNGTree -> Lookahead -> IO MoveTree
+descendRNGTree ctx t lk = HM.findWithDefault tNew lk (childrenRNG t) <$ chooseRNG (ctxState ctx) lk where
+	tNew = newMoveTree (placements t) (childPriorsRNG t) lk
+	placements | leftColor lk == rightColor lk = symmetricPlacementsRNG
+	           | otherwise = placementsRNG
+
+-- | modifies the GameState
+descendMoveTree :: SearchContext -> MoveTree -> Pill -> IO RNGTree
+descendMoveTree ctx t pill = case HM.lookup pill (pathsMove t) of
+	Nothing -> die True False "Illegal play (no path)"
+	Just path -> chooseMove (ctxState ctx) path pill >>= \case
+		False -> die False False "Illegal play (occupied or out-of-bounds placement)"
+		True -> case HM.lookup pill (childrenMove t) of
+			Just t' -> pure t'
+			Nothing -> case V.find (\(pill', _) -> pill == pill') (unexploredMove t) of
+				Nothing -> die True True "Tried to play a move with no known prior"
+				Just (_, prior) -> newRNGTree ctx prior
+	where
+	die verbose played msg = do
+		b <- mfreeze (board (ctxState ctx))
+		fail $ msg
+			++ "; attempted pill placement was " ++ ppPill pill
+			++ " leading " ++ (if played then "to" else "from") ++ " this board:\n" ++ pp b
+			++ "current search tree:\n" ++ (if verbose then ppMoveTreeDebug else ppMoveTree) "  " t
 
 allLookaheads :: Vector Lookahead
 -- could use EndpointKey to not have constants 9 and 3 here, but the result is completely unreadable
@@ -326,8 +378,8 @@ ppClockwiseRotations = \case
 	3 -> " ↺"
 	_ -> "!!"
 
-ppUnexploredMove :: [(Pill, Float)] -> String
-ppUnexploredMove ms = unwords [ppPill pill ++ "@" ++ ppPercent prior | (pill, prior) <- ms]
+ppUnexploredMove :: Vector (Pill, Float) -> String
+ppUnexploredMove ms = unwords [ppPill pill ++ "@" ++ ppPercent prior | (pill, prior) <- V.toList ms]
 
 ppHashMapInline :: String -> (k -> String) -> (v -> String) -> HashMap k v -> String
 ppHashMapInline indent ppk ppv m = intercalate "\n"
@@ -459,16 +511,8 @@ cloneBoard = mfreeze >=> thaw
 
 dmPlay :: GameState -> Move -> IO ()
 dmPlay gs = \case
-	RNG l r -> writeIORef (lookbehind gs) (Lookahead l r)
-	Placement path pill -> mplace (board gs) pill >>= \case
-		Nothing -> pure ()
-		Just counts ->  do
-			-- defensive programming: these should naturally get forced during
-			-- position evaluation, but why take the risk? let's just keep the
-			-- thunk depth low
-			modifyIORef' (virusesKilled gs) (clears counts +)
-			modifyIORef' (pillsUsed gs) succ
-			modifyIORef' (framesPassed gs) (approximateCostModel path pill counts +)
+	RNG l r -> chooseRNG gs (Lookahead l r)
+	Placement path pill -> () <$ chooseMove gs path pill
 
 yCosts :: V.Vector Int
 yCosts = V.fromList [47 {- TODO -}, 46 {- TODO -}, 44, 42, 41, 41, 39, 39, 37, 37, 35, 35, 33, 34, 34, 34]
