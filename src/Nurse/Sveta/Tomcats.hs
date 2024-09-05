@@ -333,9 +333,9 @@ ppMoveTrees indent ts = if HM.null ts
 	else ppHashMap ("  " ++ indent) ppAeson ppMoveTree ts
 
 ppLabeledHashMap :: String -> String -> (String -> HashMap k v -> String) -> HashMap k v -> String
-ppLabeledHashMap indent label pp m = indent ++ if HM.null m
-	then "<empty " ++ label ++ ">"
-	else label ++ ":\n" ++ pp ("  " ++ indent) m
+ppLabeledHashMap indent label pp m = indent ++ label ++ ":" ++ if HM.null m
+	then " <empty>"
+	else "\n" ++ pp ("  " ++ indent) m
 
 ppMoveTreesDebug :: String -> HashMap Lookahead MoveTree -> String
 ppMoveTreesDebug indent = ppHashMap indent ppAeson ppMoveTreeDebug
