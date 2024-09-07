@@ -39,6 +39,12 @@ main = do
 			{ ctxRNG = g
 			, ctxState = s
 			, ctxEval = proc
+			, ctxDiscountRate = 0.9998 -- yields a discount of about 0.1 after 3 minutes
+			, ctxC_puct = 0.5
+			, ctxRewardVirusClear = 0.1
+			, ctxRewardOtherClear = 0.01
+			, ctxRewardWin = 1
+			, ctxRewardLoss = -1
 			}
 		, tree = Left t
 		}
@@ -92,7 +98,7 @@ replLn :: String -> Repl ()
 replLn = liftIO . putStrLn
 
 commands :: [Command]
-commands = sortOn name [helpC, quitC, boardC, treeC, listC, descendC]
+commands = sortOn name [helpC, quitC, boardC, treeC, listC, descendC, mctsC]
 
 command_ :: String -> String -> ([String] -> Either String (Repl ())) -> Command
 command_ nm h f = Command
@@ -187,6 +193,19 @@ descendC = commandN "descend" "Usage: descend N\nPlays move N (see also list) an
 			other -> other <$ replLn "Move index is out of bounds; try list to see your options"
 		put rs { tree = t' }
 	[s] -> Left $ show s ++ " does not look like a positive number"
+
+mctsC :: Command
+mctsC = commandN "mcts" "Usage: mcts [N]\nExpand the tree using N (default 1) iterations of MCTS." [0, 1] \case
+	[] -> Right go
+	[readMaybe -> Just n] | n >= 0 -> Right (replicateM_ n go)
+	[s] -> Left $ show s ++ " does not look like a positive number"
+	where
+	go = do
+		rs <- State.get
+		t' <- liftIO case tree rs of
+			Left t -> Left <$> expandRNGTree (context rs) t
+			Right t -> Right <$> expandMoveTree (context rs) t
+		put rs { tree = t' }
 
 moves :: MoveTree -> [Pill]
 moves t = sort (HM.keys (childrenMove t) <> V.toList (fst <$> unexploredMove t))

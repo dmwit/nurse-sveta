@@ -1,7 +1,9 @@
 module Nurse.Sveta.Tomcats (
 	SearchContext(..),
-	RNGTree(..), newRNGTree, newRNGTreeFromSeed, descendRNGTree,
-	MoveTree(..), newMoveTree, descendMoveTree,
+	RNGTree(..), MoveTree(..),
+	newRNGTree, newRNGTreeFromSeed, newMoveTree,
+	descendRNGTree, descendMoveTree,
+	expandRNGTree', expandRNGTree, expandMoveTree', expandMoveTree,
 	DMParameters, dmParameters,
 	GameStateSeed(..), initialTree,
 	mcts, descend, unsafeDescend,
@@ -38,7 +40,7 @@ import Data.Hashable
 import Data.HashMap.Strict (HashMap)
 import Data.IORef
 import Data.List
-import Data.Monoid
+import Data.Semigroup
 import Data.Traversable
 import Data.Vector (Vector)
 import Dr.Mario.Model
@@ -122,17 +124,17 @@ uninitializedLookbehind = newIORef (error "asked what pill was last launched bef
 chooseRNG :: GameState -> Lookahead -> IO ()
 chooseRNG = writeIORef . lookbehind
 
-chooseMove :: GameState -> MidPath -> Pill -> IO Bool
-chooseMove gs path pill = mplace (board gs) pill >>= \case
-	Nothing -> pure False
-	Just counts -> do
+chooseMove :: GameState -> MidPath -> Pill -> IO (Maybe ClearResults)
+chooseMove gs path pill = do
+	mres <- mplaceDetails (board gs) pill
+	mres <$ for_ mres \results -> do
+		let counts = summarizeClearResults results
 		-- defensive programming: these should naturally get forced during
 		-- position evaluation, but why take the risk? let's just keep the
 		-- thunk depth low
 		modifyIORef' (virusesKilled gs) (clears counts +)
 		modifyIORef' (pillsUsed gs) succ
 		modifyIORef' (framesPassed gs) (approximateCostModel path pill counts +)
-		pure True
 
 type DMParameters = Parameters IO Float Statistics Move GameState
 
@@ -191,16 +193,26 @@ data MoveTree = MoveTree
 	{ childrenMove :: HashMap Pill RNGTree
 	, unexploredMove :: Vector (Pill, Float) -- ^ prior probability, sorted descending
 	, pathsMove :: HashMap Pill MidPath
+	, visitCountMove :: Float
 	} deriving (Eq, Ord, Read, Show)
 
 data SearchContext = SearchContext
 	{ ctxEval :: Procedure NetInput NetOutput'
 	, ctxRNG :: GenIO
 	, ctxState :: GameState
+	, ctxDiscountRate :: Float
+	, ctxC_puct :: Float
+	, ctxRewardVirusClear :: Float
+	, ctxRewardOtherClear :: Float
+	, ctxRewardWin :: Float
+	, ctxRewardLoss :: Float
 	}
 
 newRNGTree :: SearchContext -> Float -> IO RNGTree
 newRNGTree ctx prior = snd <$> newRNGTreeFromSeed (ctxEval ctx) (ctxRNG ctx) prior (ctxState ctx)
+
+newRNGTree' :: SearchContext -> Float -> IO (Float, RNGTree)
+newRNGTree' ctx prior = (\t -> (cumulativeValuationRNG t, t)) <$> newRNGTree ctx prior
 
 -- TODO: could return an IO (GameState, IO RNGTree) to let the caller choose when to wait on the net evaluation
 newRNGTreeFromSeed :: GameStateSeed a => Procedure NetInput NetOutput' -> GenIO -> Float -> a -> IO (GameState, RNGTree)
@@ -232,14 +244,17 @@ newRNGTreeFromSeed eval rng prior seed = do
 	symmetrize :: HashMap MidPlacement MidPath -> HashMap MidPlacement MidPath
 	symmetrize moves = HM.fromListWith shorterPath [(placement { mpRotations = mpRotations placement .&. 1 }, path) | (placement, path) <- HM.toList moves]
 
-newMoveTree :: HashMap MidPlacement MidPath -> EndpointMap Pill CFloat -> Lookahead -> MoveTree
-newMoveTree pathCache priors lk = MoveTree
+newMoveTree :: SearchContext -> HashMap MidPlacement MidPath -> EndpointMap Pill CFloat -> Lookahead -> IO MoveTree
+newMoveTree ctx pathCache priors lk = dmFinished (ctxState ctx) <&> \finished -> MoveTree
 	{ childrenMove = HM.empty
-	, unexploredMove = V.fromList $ sortBy
+	, unexploredMove = if finished then V.empty else unexplored
+	, pathsMove = if finished then HM.empty else paths
+	, visitCountMove = 0
+	}
+	where
+	unexplored = V.fromList $ sortBy
 		(\(pill, prior) (pill', prior') -> compare prior' prior <> compare pill pill')
-		[(pill, (priors EM.! pill) / normalizationFactor) | pill <- HM.keys paths]
-	, pathsMove = paths
-	} where
+		[(pill, (priors EM.! pill) / A0.unzero normalizationFactor) | pill <- HM.keys paths]
 	paths = HM.fromListWithKey (\pill -> error $ "Two different MidPlacements both got specialized to " ++ show pill ++ ". Original path cache: " ++ show pathCache)
 		[ (mpPill placement lk, path)
 		| (placement, path) <- HM.toList pathCache
@@ -248,8 +263,12 @@ newMoveTree pathCache priors lk = MoveTree
 
 -- | modifies the GameState
 descendRNGTree :: SearchContext -> RNGTree -> Lookahead -> IO MoveTree
-descendRNGTree ctx t lk = HM.findWithDefault tNew lk (childrenRNG t) <$ chooseRNG (ctxState ctx) lk where
-	tNew = newMoveTree (placements t) (childPriorsRNG t) lk
+descendRNGTree ctx t lk = do
+	chooseRNG (ctxState ctx) lk
+	case HM.lookup lk (childrenRNG t) of
+		Nothing -> newMoveTree ctx (placements t) (childPriorsRNG t) lk
+		Just t' -> pure t'
+	where
 	placements | leftColor lk == rightColor lk = symmetricPlacementsRNG
 	           | otherwise = placementsRNG
 
@@ -258,8 +277,8 @@ descendMoveTree :: SearchContext -> MoveTree -> Pill -> IO RNGTree
 descendMoveTree ctx t pill = case HM.lookup pill (pathsMove t) of
 	Nothing -> die True False "Illegal play (no path)"
 	Just path -> chooseMove (ctxState ctx) path pill >>= \case
-		False -> die False False "Illegal play (occupied or out-of-bounds placement)"
-		True -> case HM.lookup pill (childrenMove t) of
+		Nothing -> die False False "Illegal play (occupied or out-of-bounds placement)"
+		Just _ -> case HM.lookup pill (childrenMove t) of
 			Just t' -> pure t'
 			Nothing -> case V.find (\(pill', _) -> pill == pill') (unexploredMove t) of
 				Nothing -> die True True "Tried to play a move with no known prior"
@@ -271,6 +290,92 @@ descendMoveTree ctx t pill = case HM.lookup pill (pathsMove t) of
 			++ "; attempted pill placement was " ++ ppPill pill
 			++ " leading " ++ (if played then "to" else "from") ++ " this board:\n" ++ pp b
 			++ "current search tree:\n" ++ (if verbose then ppMoveTreeDebug else ppMoveTree) "  " t
+
+-- | modifies the GameState
+expandRNGTree' :: SearchContext -> RNGTree -> IO (Float, RNGTree)
+expandRNGTree' ctx t = do
+	child <- descendRNGTree ctx t lk
+	(v, child') <- expandMoveTree' ctx child
+	let t' = t
+	    	{ childrenRNG = HM.insert lk child' (childrenRNG t)
+	    	, nextLookaheadRNG = lk'
+	    	, placementsRNG = plc'
+	    	, symmetricPlacementsRNG = symPlc'
+	    	, childPriorsRNG = childP'
+	    	, cumulativeValuationRNG = v + cumulativeValuationRNG t
+	    	, visitCountRNG = 1 + visitCountRNG t
+	    	}
+	pure (v, t')
+	where
+	lk = orderRNG t V.! nextLookaheadRNG t
+	lk' = (nextLookaheadRNG t + 1) `mod` V.length (orderRNG t)
+	(childP', plc', symPlc') = if lk' < nextLookaheadRNG t
+		then (uniformPriors, HM.empty, HM.empty)
+		else (childPriorsRNG t, placementsRNG t, symmetricPlacementsRNG t)
+
+-- | modifies the GameState
+expandMoveTree' :: SearchContext -> MoveTree -> IO (Float, MoveTree)
+expandMoveTree' ctx t = case (maximumOn (\_ -> scoreTree) (childrenMove t), scorePrior <$> unexploredMove t V.!? 0) of
+	(Just (pill, t', score1), Just score2)
+		| score1 < score2 -> explore
+		| otherwise -> exploit pill t'
+	(Just (pill, t', _), Nothing) -> exploit pill t'
+	(Nothing, Just _) -> explore
+	(Nothing, Nothing) -> flip (,) t { visitCountMove = visitCountMove t + 1 } <$> finalReward ctx
+	where
+	scoreTree t' = A0.pucbA0Raw (ctxC_puct ctx) (priorProbabilityRNG t') (visitCountMove t) (visitCountRNG t') (cumulativeValuationRNG t')
+	scorePrior (_, prior) = A0.pucbA0Raw (ctxC_puct ctx) prior (visitCountMove t) 0 0
+
+	explore = let (pill, prior) = V.head (unexploredMove t) in go pill (newRNGTree' ctx prior) t { unexploredMove = V.tail (unexploredMove t) }
+	exploit pill t' = go pill (expandRNGTree' ctx t') t
+	go pill buildTree t' = do
+		before <- readIORef (framesPassed (ctxState ctx))
+		Just results <- chooseMove (ctxState ctx) (pathsMove t HM.! pill) pill
+		after <- readIORef (framesPassed (ctxState ctx))
+		(dv, tNew) <- buildTree
+		pure ( immediateReward ctx results + ctxDiscount ctx (after - before) dv
+		     , t' { childrenMove = HM.insert pill tNew (childrenMove t'), visitCountMove = visitCountMove t' + 1 }
+		     )
+
+withClonedState :: (SearchContext -> a -> IO b) -> SearchContext -> a -> IO b
+withClonedState f ctx a = do
+	gs <- dmClone (ctxState ctx)
+	f ctx { ctxState = gs } a
+
+-- | does not modify the GameState
+expandRNGTree :: SearchContext -> RNGTree -> IO RNGTree
+expandRNGTree ctx t = snd <$> withClonedState expandRNGTree' ctx t
+
+-- | does not modify the GameState
+expandMoveTree :: SearchContext -> MoveTree -> IO MoveTree
+expandMoveTree ctx t = snd <$> withClonedState expandMoveTree' ctx t
+
+ctxDiscount :: SearchContext -> Int -> Float -> Float
+ctxDiscount ctx n v = v * ctxDiscountRate ctx ^ n
+
+ctxRewardClear :: SearchContext -> Shape -> Float
+ctxRewardClear ctx = \case
+	Virus -> ctxRewardVirusClear ctx
+	_ -> ctxRewardOtherClear ctx
+
+immediateReward :: SearchContext -> ClearResults -> Float
+immediateReward ctx = goClear where
+	goClear = \case
+		NoClear -> 0
+		Clear cs dRes -> getSum (foldMap rewardClear cs) + discount clearCost (goDrop dRes)
+	goDrop = \case
+		NoDrop -> 0
+		Drop ds cRes -> discount (getMax (foldMap (Max . fst) ds) * dropCost) (goClear cRes)
+	rewardClear = Sum . ctxRewardClear ctx . oshape
+	discount = ctxDiscount ctx
+
+-- | does not modify the GameState
+finalReward :: SearchContext -> IO Float
+finalReward ctx = do
+	clearedViruses <- readIORef (virusesKilled (ctxState ctx))
+	pure if clearedViruses == originalVirusCount (ctxState ctx)
+		then ctxRewardWin ctx
+		else ctxRewardLoss ctx
 
 allLookaheads :: Vector Lookahead
 -- could use EndpointKey to not have constants 9 and 3 here, but the result is completely unreadable
@@ -517,13 +622,19 @@ dmPlay gs = \case
 yCosts :: V.Vector Int
 yCosts = V.fromList [47 {- TODO -}, 46 {- TODO -}, 44, 42, 41, 41, 39, 39, 37, 37, 35, 35, 33, 34, 34, 34]
 
+dropCost :: Int
+dropCost = 16 -- how long it takes for trash to drop one row
+
+clearCost :: Int
+clearCost = 20 -- how long the clear animation takes
+
 -- TODO: figure out the exact cost model for the NES, then move that into maryodel
 -- TODO: don't count fall time after the last clear
 approximateCostModel :: MidPath -> Pill -> CleanupResults -> Int
 approximateCostModel move pill counts = 0
 	+ yCosts V.! y (bottomLeftPosition pill) -- throwing animation, lock animation, and pause between lock and next throw
 	+ mpPathLength move -- pill maneuvering
-	+ sum [16*n + 20 | n <- rowsFallen counts] -- fall time + clear animation
+	+ sum [dropCost*n + clearCost | n <- rowsFallen counts] -- fall time + clear animation
 
 dmPreprocess :: SearchConfiguration -> Procedure NetInput NetOutput -> GenIO -> GameState -> Tree Statistics Move -> IO (Statistics, Tree Statistics Move)
 dmPreprocess config eval gen gs t
