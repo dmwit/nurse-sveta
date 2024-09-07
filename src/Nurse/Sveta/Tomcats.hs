@@ -386,15 +386,15 @@ uniformPriors = EM.EndpointMap (foldr (svReplicate . evalGameConstant) (generate
 
 --- begin PP
 ppRNGTree :: String -> RNGTree -> String
-ppRNGTree indent t = indent
+ppRNGTree indent t = ""
 	++ ppPercent (priorProbabilityRNG t) ++ " "
-	++ ppPrecision 2 (cumulativeValuationRNG t) ++ "/" ++ show (round (visitCountRNG t))
-	++ "\n" ++ ppMoveTrees indent (childrenRNG t)
+	++ ppPrecision 2 (cumulativeValuationRNG t) ++ "/" ++ ppVisitCount (visitCountRNG t)
+	++ ppMoveTrees indent (childrenRNG t)
 
 ppRNGTreeDebug :: String -> RNGTree -> String
-ppRNGTreeDebug indent t = indent
+ppRNGTreeDebug indent t = ""
 	++ ppPercent (priorProbabilityRNG t) ++ " "
-	++ ppPrecision 2 (cumulativeValuationRNG t) ++ "/" ++ show (round (visitCountRNG t))
+	++ ppPrecision 2 (cumulativeValuationRNG t) ++ "/" ++ ppVisitCount (visitCountRNG t)
 	++ "\n" ++ indent
 	++ V.ifoldr
 		(\i lk s -> (if i == nextLookaheadRNG t then \content -> "<" ++ content ++ ">" else id) (ppAeson lk) ++ " " ++ s)
@@ -410,32 +410,41 @@ ppRNGTreeDebug indent t = indent
 		else "priors:" ++ "\n" ++ ppEndpointMap ("  " ++ indent) (childPriorsRNG t)
 
 ppMoveTree :: String -> MoveTree -> String
-ppMoveTree indent t = case (children, unexplored) of
-	("", "") -> indent ++ "<empty>"
+ppMoveTree indent t = ppVisitCount (visitCountMove t) ++ case (children, unexplored) of
+	("", "") -> " <empty>"
 	("", _ ) -> labeledUnexplored
-	(_ , "") -> labeledChildren
-	(_ , _ ) -> labeledUnexplored ++ "\n" ++ labeledChildren
+	(_ , "") -> newlinedChildren
+	(_ , _ ) -> labeledUnexplored ++ newlinedChildren
 	where
-	children = ppHashMap ("  " ++ indent) ppPill ppRNGTree (childrenMove t)
+	children = ppHashMapInline' indent ppPill ppRNGTree (childrenMove t)
 	unexplored = ppUnexploredMove (unexploredMove t)
-	labeledChildren = indent ++ "children:\n" ++ children
-	labeledUnexplored = indent ++ "unexplored: " ++ unexplored
+	labeledUnexplored = "\n" ++ indent ++ "unexplored: " ++ elideTo 60 unexplored
+	newlinedChildren = "\n" ++ children
 
 ppMoveTreeDebug :: String -> MoveTree -> String
 ppMoveTreeDebug indent t = ""
+	++ indent ++ "visits: " ++ ppVisitCount (visitCountMove t) ++ "\n"
 	++ (if null unexplored then "" else labeledUnexplored)
 	++ (if null children then "" else labeledChildren)
 	++ indent ++ "paths:\n" ++ ppHashMapInline ("  " ++ indent) ppPill ppAeson (pathsMove t)
 	where
-	children = ppHashMap ("  " ++ indent) ppPill ppRNGTreeDebug (childrenMove t)
+	children = ppHashMapInline' ("  " ++ indent) ppPill ppRNGTreeDebug (childrenMove t)
 	unexplored = ppUnexploredMove (unexploredMove t)
 	labeledChildren = indent ++ "children:\n" ++ children ++ "\n"
 	labeledUnexplored = indent ++ "unexplored: " ++ unexplored ++ "\n"
 
+elideTo :: Int -> String -> String
+elideTo n s = case drop n s of
+	[] -> s
+	_ -> take (n-3) s ++ "..."
+
+ppVisitCount :: Float -> String
+ppVisitCount = show . round
+
 ppMoveTrees :: String -> HashMap Lookahead MoveTree -> String
 ppMoveTrees indent ts = if HM.null ts
-	then indent ++ "(no children)"
-	else ppHashMap ("  " ++ indent) ppAeson ppMoveTree ts
+	then ""
+	else "\n" ++ ppHashMapInline' indent ppAeson ppMoveTree ts
 
 ppLabeledHashMap :: String -> String -> (String -> HashMap k v -> String) -> HashMap k v -> String
 ppLabeledHashMap indent label pp m = indent ++ label ++ ":" ++ if HM.null m
@@ -491,6 +500,12 @@ ppHashMapInline indent ppk ppv m = intercalate "\n"
 	[ indent ++ ppk k ++ " ↦ " ++ ppv v
 	| (k, v) <- HM.toList m
 	]
+
+ppHashMapInline' :: String -> (k -> String) -> (String -> v -> String) -> HashMap k v -> String
+ppHashMapInline' indent ppk ppv m = intercalate "\n"
+	[ indent ++ ppk k ++ ": " ++ ppv deeper v
+	| (k, v) <- HM.toList m
+	] where deeper = "  " ++ indent
 
 ppAeson :: ToJSON a => a -> String
 ppAeson a = case toJSON a of
