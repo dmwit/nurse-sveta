@@ -18,7 +18,6 @@ import Data.Time (UTCTime)
 import Data.Vector (Vector)
 import Dr.Mario.Model
 import GI.Gtk as G
-import Immutable.Shuffle
 import Numeric
 import Nurse.Sveta.Files
 import Nurse.Sveta.STM
@@ -34,6 +33,7 @@ import System.IO.Error
 import System.Mem
 import System.Process
 import System.Random.MWC
+import System.Random.MWC.Distributions
 import Text.Printf
 import Util
 
@@ -925,7 +925,8 @@ loadBatch rng sc dir category batchSize = do
 	    		tes <- fromMaybe V.empty <$> traverse trainingExamples mgd
 	    		(tes:) <$> gameLoadLoop (n + V.length tes)
 	    	else pure []
-	sampleWithoutReplacement batchSize . V.concat =<< gameLoadLoop 0
+	exampless <- gameLoadLoop 0
+	V.take batchSize <$> uniformShuffle (V.concat exampless) rng
 	where
 	gameNamesLoop = readGameNames dir category >>= \case
 		Just nms | len > 0 -> pure (len, nms) where len = S.length nms

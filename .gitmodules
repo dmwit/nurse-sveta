@@ -4,6 +4,3 @@
 [submodule "tomcats"]
 	path = tomcats
 	url = https://github.com/dmwit/tomcats
-[submodule "perfect-vector-shuffle"]
-	path = perfect-vector-shuffle
-	url = https://github.com/dmwit/perfect-vector-shuffle

@@ -130,7 +130,6 @@ executable nurse-sveta
     build-depends:        clock ^>=0.8
                         , process ^>=1.6
                         , time >=1.9 && <1.12
-                        , perfect-vector-shuffle ^>=0.1
 
 executable nurse-sveta-reset-state
     import:             executable
