@@ -93,7 +93,7 @@ replLn :: String -> Repl ()
 replLn = liftIO . putStrLn
 
 commands :: [Command]
-commands = sortOn name [helpC, quitC, boardC, treeC, listC, descendC, mctsC]
+commands = sortOn name [helpC, quitC, boardC, treeC, listC, descendC, mctsC, sampleC]
 
 command_ :: String -> String -> ([String] -> Either String (Repl ())) -> Command
 command_ nm h f = Command
@@ -189,6 +189,9 @@ descendC = commandN "descend" "Usage: descend N\nPlays move N (see also list) an
 		put rs { tree = t' }
 	[s] -> Left $ show s ++ " does not look like a positive number"
 
+moves :: MoveTree -> [Pill]
+moves t = sort (HM.keys (childrenMove t) <> V.toList (fst <$> unexploredMove t))
+
 mctsC :: Command
 mctsC = commandN "mcts" "Usage: mcts [N]\nExpand the tree using N (default 1) iterations of MCTS." [0, 1] \case
 	[] -> Right go
@@ -202,5 +205,27 @@ mctsC = commandN "mcts" "Usage: mcts [N]\nExpand the tree using N (default 1) it
 			Right t -> Right <$> expandMoveTree (context rs) t
 		put rs { tree = t' }
 
-moves :: MoveTree -> [Pill]
-moves t = sort (HM.keys (childrenMove t) <> V.toList (fst <$> unexploredMove t))
+sampleC :: Command
+sampleC = commandN "sample" sampleHelp [0, 1] \case
+	[] -> go sampleMove
+	['b':_] -> go bestMove
+	['s':_] -> go sampleMove
+	['u':_] -> go uniformMove
+	['w':_] -> go weightedMove
+	_ -> Left "METHOD must be one of best, sample, uniform, or weighted"
+	where
+	go f = Right do
+		rs <- State.get
+		case tree rs of
+			Left _ -> replLn . ppAeson =<< liftIO (sampleRNG (context rs))
+			Right t -> liftIO (f (context rs) t) >>= \case
+				Nothing -> replLn "Game's already over!"
+				Just pill -> replLn (ppPill pill)
+	sampleHelp = intercalate "\n" $ tail [undefined
+		, "Usage: sample [METHOD]"
+		, "Choose a move. Available METHODs are:"
+		, "    best        Choose the move that was visited the most times during search."
+		, "    weighted    Sample from available moves weighted by visit count."
+		, "    uniform     Sample from available moves uniformly at random."
+		, "    sample      Choose from among the other methods by flipping a weighted coin."
+		]

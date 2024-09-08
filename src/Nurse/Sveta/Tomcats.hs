@@ -4,6 +4,7 @@ module Nurse.Sveta.Tomcats (
 	newHyperParameters, newRNGTree, newRNGTreeFromSeed, newMoveTree,
 	descendRNGTree, descendMoveTree,
 	expandRNGTree', expandRNGTree, expandMoveTree', expandMoveTree,
+	sampleRNG, bestMove, weightedMove, uniformMove, sampleMove,
 	DMParameters, dmParameters,
 	GameStateSeed(..), initialTree,
 	mcts, descend, unsafeDescend,
@@ -50,7 +51,7 @@ import Nurse.Sveta.STM.BatchProcessor
 import Nurse.Sveta.Torch.Semantics
 import System.Random.MWC
 import System.Random.MWC.Distributions
-import System.Random.Stateful (uniformDouble01M)
+import System.Random.Stateful (uniformDouble01M, uniformFloat01M)
 import System.IO.Unsafe (unsafeInterleaveIO)
 import Tomcats hiding (descend)
 import Tomcats.AlphaZero.Float (Statistics(..))
@@ -205,7 +206,7 @@ data SearchContext = SearchContext
 	}
 
 data HyperParameters = HyperParameters
-	{ hpDiscountRate, hpC_puct, hpDirichlet, hpPriorNoise
+	{ hpDiscountRate, hpC_puct, hpDirichlet, hpPriorNoise, hpMoveNoise
 	, hpRewardVirusClear, hpRewardOtherClear, hpRewardWin, hpRewardLoss
 		:: Float
 	} deriving (Eq, Ord, Read, Show)
@@ -217,15 +218,16 @@ newHyperParameters = HyperParameters
 	, hpC_puct = 0.5
 	, hpDirichlet = 0.25 -- 10/(typical number of moves available=40)
 	, hpPriorNoise = 0.1
+	, hpMoveNoise = 0.2
 	, hpRewardVirusClear = 0.1
 	, hpRewardOtherClear = 0.01
 	, hpRewardWin = 1
 	, hpRewardLoss = -1
 	}
 
-ctxDiscountRate, ctxC_puct, ctxDirichlet, ctxPriorNoise, ctxRewardVirusClear, ctxRewardOtherClear, ctxRewardWin, ctxRewardLoss :: SearchContext -> Float
-[ctxDiscountRate, ctxC_puct, ctxDirichlet, ctxPriorNoise, ctxRewardVirusClear, ctxRewardOtherClear, ctxRewardWin, ctxRewardLoss] = map (. ctxParams)
-	[hpDiscountRate, hpC_puct, hpDirichlet, hpPriorNoise, hpRewardVirusClear, hpRewardOtherClear, hpRewardWin, hpRewardLoss]
+ctxDiscountRate, ctxC_puct, ctxDirichlet, ctxPriorNoise, ctxMoveNoise, ctxRewardVirusClear, ctxRewardOtherClear, ctxRewardWin, ctxRewardLoss :: SearchContext -> Float
+[ctxDiscountRate, ctxC_puct, ctxDirichlet, ctxPriorNoise, ctxMoveNoise, ctxRewardVirusClear, ctxRewardOtherClear, ctxRewardWin, ctxRewardLoss] = map (. ctxParams)
+	[hpDiscountRate, hpC_puct, hpDirichlet, hpPriorNoise, hpMoveNoise, hpRewardVirusClear, hpRewardOtherClear, hpRewardWin, hpRewardLoss]
 
 newRNGTree :: SearchContext -> Float -> IO RNGTree
 newRNGTree ctx prior = snd <$> newRNGTreeFromSeed (ctxEval ctx) (ctxRNG ctx) prior (ctxState ctx)
@@ -374,6 +376,59 @@ expandRNGTree ctx t = snd <$> withClonedState expandRNGTree' ctx t
 -- | does not modify the GameState
 expandMoveTree :: SearchContext -> MoveTree -> IO MoveTree
 expandMoveTree ctx t = snd <$> withClonedState expandMoveTree' ctx t
+
+bestMove, weightedMove, uniformMove, sampleMove :: SearchContext -> MoveTree -> IO (Maybe Pill)
+bestMove ctx = ensureNonEmpty \t -> case bestMoves' (childrenMove t) of
+	BestMoves' pills _ | not (V.null pills) -> uniformV ctx pills
+	_ -> fst <$> uniformV ctx (unexploredMove t)
+
+weightedMove ctx = ensureNonEmpty \t -> let
+	(childMoves, childTs) = V.unzip  . V.fromList . HM.toList $ childrenMove t
+	moves = childMoves <> (fst <$> unexploredMove t)
+	weights = (realToFrac . (1+) . visitCountRNG <$> childTs) <> (1 <$ unexploredMove t)
+	in (moves V.!) <$> categorical weights (ctxRNG ctx)
+
+uniformMove ctx = ensureNonEmpty \t -> uniformV ctx
+	$  V.fromList (HM.keys (childrenMove t))
+	<> fmap fst (unexploredMove t)
+
+-- With probability 1-p, choose the move with the most visits. If that doesn't
+-- happen, with probability 1-p, choose using the visit counts as weights for a
+-- (lightly smoothed) categorical distribution. Otherwise choose completely
+-- uniformly at random.
+sampleMove ctx t = do
+	v <- uniformFloat01M (ctxRNG ctx)
+	case (v < p^2, v < p) of
+		(True, _) -> uniformMove ctx t
+		(_, True) -> weightedMove ctx t
+		_ -> bestMove ctx t
+	where
+	p = ctxMoveNoise ctx
+
+sampleRNG :: SearchContext -> IO Lookahead
+sampleRNG ctx = uniformV ctx allLookaheads
+
+ensureNonEmpty :: (MoveTree -> IO a) -> MoveTree -> IO (Maybe a)
+ensureNonEmpty f t = if HM.null (childrenMove t) && V.null (unexploredMove t)
+	then pure Nothing
+	else Just <$> f t
+
+-- | Caller must ensure the vector is nonempty
+uniformV :: SearchContext -> Vector a -> IO a
+uniformV ctx v = (v V.!) <$> uniformR (0, V.length v - 1) (ctxRNG ctx)
+
+data BestMoves' = BestMoves' (Vector Pill) Float deriving (Eq, Ord, Read, Show)
+
+instance Semigroup BestMoves' where
+	bm@(BestMoves' mvs n) <> bm'@(BestMoves' mvs' n') = case compare n n' of
+		LT -> bm'
+		EQ -> BestMoves' (mvs <> mvs') n
+		GT -> bm
+
+instance Monoid BestMoves' where mempty = BestMoves' V.empty (-1/0)
+
+bestMoves' :: HashMap Pill RNGTree -> BestMoves'
+bestMoves' = HM.foldMapWithKey \pill t -> BestMoves' (V.singleton pill) (visitCountRNG t)
 
 ctxDiscount :: SearchContext -> Int -> Float -> Float
 ctxDiscount ctx n v = v * ctxDiscountRate ctx ^ n
