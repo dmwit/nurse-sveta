@@ -39,12 +39,7 @@ main = do
 			{ ctxRNG = g
 			, ctxState = s
 			, ctxEval = proc
-			, ctxDiscountRate = 0.9998 -- yields a discount of about 0.1 after 3 minutes
-			, ctxC_puct = 0.5
-			, ctxRewardVirusClear = 0.1
-			, ctxRewardOtherClear = 0.01
-			, ctxRewardWin = 1
-			, ctxRewardLoss = -1
+			, ctxParams = newHyperParameters
 			}
 		, tree = Left t
 		}

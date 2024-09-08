@@ -1,7 +1,7 @@
 module Nurse.Sveta.Tomcats (
-	SearchContext(..),
+	SearchContext(..), HyperParameters(..),
 	RNGTree(..), MoveTree(..),
-	newRNGTree, newRNGTreeFromSeed, newMoveTree,
+	newHyperParameters, newRNGTree, newRNGTreeFromSeed, newMoveTree,
 	descendRNGTree, descendMoveTree,
 	expandRNGTree', expandRNGTree, expandMoveTree', expandMoveTree,
 	DMParameters, dmParameters,
@@ -58,6 +58,7 @@ import Tomcats.AlphaZero.Float (Statistics(..))
 import qualified Data.ByteString.Lazy.Char8 as LBS8
 import qualified Data.HashMap.Strict as HM
 import qualified Data.Vector as V
+import qualified Data.Vector.Algorithms.Intro as V
 import qualified Nurse.Sveta.Torch.EndpointMap as EM
 import qualified Data.Text as T
 import qualified Tomcats as T
@@ -200,13 +201,31 @@ data SearchContext = SearchContext
 	{ ctxEval :: Procedure NetInput NetOutput'
 	, ctxRNG :: GenIO
 	, ctxState :: GameState
-	, ctxDiscountRate :: Float
-	, ctxC_puct :: Float
-	, ctxRewardVirusClear :: Float
-	, ctxRewardOtherClear :: Float
-	, ctxRewardWin :: Float
-	, ctxRewardLoss :: Float
+	, ctxParams :: HyperParameters
 	}
+
+data HyperParameters = HyperParameters
+	{ hpDiscountRate, hpC_puct, hpDirichlet, hpPriorNoise
+	, hpRewardVirusClear, hpRewardOtherClear, hpRewardWin, hpRewardLoss
+		:: Float
+	} deriving (Eq, Ord, Read, Show)
+
+-- | Some maybe-not-completely-insane defaults.
+newHyperParameters :: HyperParameters
+newHyperParameters = HyperParameters
+	{ hpDiscountRate = 0.9998 -- yields a discount of about 0.1 after 3 minutes
+	, hpC_puct = 0.5
+	, hpDirichlet = 0.25 -- 10/(typical number of moves available=40)
+	, hpPriorNoise = 0.1
+	, hpRewardVirusClear = 0.1
+	, hpRewardOtherClear = 0.01
+	, hpRewardWin = 1
+	, hpRewardLoss = -1
+	}
+
+ctxDiscountRate, ctxC_puct, ctxDirichlet, ctxPriorNoise, ctxRewardVirusClear, ctxRewardOtherClear, ctxRewardWin, ctxRewardLoss :: SearchContext -> Float
+[ctxDiscountRate, ctxC_puct, ctxDirichlet, ctxPriorNoise, ctxRewardVirusClear, ctxRewardOtherClear, ctxRewardWin, ctxRewardLoss] = map (. ctxParams)
+	[hpDiscountRate, hpC_puct, hpDirichlet, hpPriorNoise, hpRewardVirusClear, hpRewardOtherClear, hpRewardWin, hpRewardLoss]
 
 newRNGTree :: SearchContext -> Float -> IO RNGTree
 newRNGTree ctx prior = snd <$> newRNGTreeFromSeed (ctxEval ctx) (ctxRNG ctx) prior (ctxState ctx)
@@ -245,21 +264,27 @@ newRNGTreeFromSeed eval rng prior seed = do
 	symmetrize moves = HM.fromListWith shorterPath [(placement { mpRotations = mpRotations placement .&. 1 }, path) | (placement, path) <- HM.toList moves]
 
 newMoveTree :: SearchContext -> HashMap MidPlacement MidPath -> EndpointMap Pill CFloat -> Lookahead -> IO MoveTree
-newMoveTree ctx pathCache priors lk = dmFinished (ctxState ctx) <&> \finished -> MoveTree
-	{ childrenMove = HM.empty
-	, unexploredMove = if finished then V.empty else unexplored
-	, pathsMove = if finished then HM.empty else paths
-	, visitCountMove = 0
-	}
+newMoveTree ctx pathCache priors lk = do
+	finished <- dmFinished (ctxState ctx)
+	noise <- if finished || ctxPriorNoise ctx == 0
+		then pure (0 <$ pills)
+		else dirichlet (realToFrac (ctxDirichlet ctx) <$ pills) (ctxRNG ctx)
+	pure MoveTree
+		{ childrenMove = HM.empty
+		, unexploredMove = if finished then V.empty else unexplored noise
+		, pathsMove = if finished then HM.empty else paths
+		, visitCountMove = 0
+		}
 	where
-	unexplored = V.fromList $ sortBy
-		(\(pill, prior) (pill', prior') -> compare prior' prior <> compare pill pill')
-		[(pill, (priors EM.! pill) / A0.unzero normalizationFactor) | pill <- HM.keys paths]
+	pills = V.fromList (HM.keys paths)
+	unexplored = id
+		. V.modify (V.sortBy (\(pill, prior) (pill', prior') -> compare prior' prior <> compare pill pill'))
+		. V.zipWith (\pill noise -> (pill, A0.lerp (ctxPriorNoise ctx) (realToFrac noise) ((priors EM.! pill) / normalizationFactor))) pills
 	paths = HM.fromListWithKey (\pill -> error $ "Two different MidPlacements both got specialized to " ++ show pill ++ ". Original path cache: " ++ show pathCache)
 		[ (mpPill placement lk, path)
 		| (placement, path) <- HM.toList pathCache
 		]
-	Sum normalizationFactor = HM.foldMapWithKey (\pill _ -> Sum (priors EM.! pill)) paths
+	Sum normalizationFactor = A0.unzero <$> HM.foldMapWithKey (\pill _ -> Sum (priors EM.! pill)) paths
 
 -- | modifies the GameState
 descendRNGTree :: SearchContext -> RNGTree -> Lookahead -> IO MoveTree
