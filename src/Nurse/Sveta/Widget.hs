@@ -17,6 +17,10 @@ module Nurse.Sveta.Widget (
 	SearchConfigurationView,
 	newSearchConfigurationView, scvWidget, scvSet,
 
+	-- * Hyperparameters
+	HyperParametersView,
+	newHyperParametersView, hpvWidget, hpvSet,
+
 	-- * Train\/test\/validation split
 	ValidationSplit,
 	newValidationSplit, vsSet, vsGet, vsSample,
@@ -78,7 +82,7 @@ import GI.GLib
 import GI.Gtk as G
 import Nurse.Sveta.Cairo
 import Nurse.Sveta.STM
-import Nurse.Sveta.Tomcats (SearchConfiguration(..))
+import Nurse.Sveta.Tomcats (SearchConfiguration(..), HyperParameters(..))
 import Nurse.Sveta.Util
 import System.IO
 import System.Random.MWC
@@ -297,6 +301,83 @@ scvSet scv scCur = do
 	crvSet (scvTypicalMoves scv) (typicalMoves scCur)
 	crvSet (scvPriorNoise   scv) (priorNoise   scCur)
 	crvSet (scvMoveNoise    scv) (moveNoise    scCur)
+
+data HyperParametersView = HPV
+	{ hpvTop :: Grid
+	, hpvDiscountRate, hpvC_puct, hpvDirichlet, hpvPriorNoise, hpvMoveNoise
+	, hpvRewardVirusClear, hpvRewardOtherClear, hpvRewardWin, hpvRewardLoss
+		:: ConfigurationRequestView Float
+	}
+
+newHyperParametersView :: HyperParameters -> (HyperParameters -> IO ()) -> IO HyperParametersView
+newHyperParametersView hp request = mfix $ \hpv -> do
+	grid <- new Grid crvGridAttributes
+	cache <- newIORef (hp, hp)
+
+	let newFloatCRV field desc check = newConfigurationRequestView (field hp) desc "next time a game starts" InputPurposeNumber \req -> do
+	    	hpOld <- hpvRequest hpv
+	    	let (valid, hpNew) = check hpOld req
+	    	valid <$ when valid (request hpNew)
+	crvC_puct       <- newFloatCRV hpC_puct           "c_puct"                      \hp' c_puct -> (True, hp' { hpC_puct = c_puct })
+	crvDirichlet    <- newFloatCRV hpDirichlet        "priors noise's uniformity"   \hp' alpha  -> (0 < alpha, hp' { hpDirichlet = alpha })
+	crvPriorNoise   <- newFloatCRV hpPriorNoise       "noisiness of priors"         \hp' noise  -> (0 <= noise && noise <= 1, hp' { hpPriorNoise = noise })
+	crvMoveNoise    <- newFloatCRV hpMoveNoise        "noisiness of move selection" \hp' noise  -> (0 <= noise && noise <= 1, hp' { hpMoveNoise = noise })
+	crvDiscountRate <- newFloatCRV hpDiscountRate     "discount factor (per frame)" \hp' rate   -> (0 <= rate && rate <= 1, hp' { hpDiscountRate = rate })
+	crvVirusClear   <- newFloatCRV hpRewardVirusClear "clearing a virus"            \hp' reward -> (True, hp' { hpRewardVirusClear = reward })
+	crvOtherClear   <- newFloatCRV hpRewardOtherClear "clearing a non-virus"        \hp' reward -> (True, hp' { hpRewardOtherClear = reward })
+	crvWin          <- newFloatCRV hpRewardWin        "winning the game"            \hp' reward -> (True, hp' { hpRewardWin        = reward })
+	crvLoss         <- newFloatCRV hpRewardLoss       "losing the game"             \hp' reward -> (True, hp' { hpRewardLoss       = reward })
+
+	#setMarkup (crvDescription crvC_puct) "c<sub>puct</sub>"
+	crvAttach crvC_puct grid 0
+	crvAttach crvDirichlet grid 1
+	crvAttach crvPriorNoise grid 2
+	crvAttach crvMoveNoise grid 3
+	crvAttach crvDiscountRate grid 4
+	crvAttach crvVirusClear grid 5
+	crvAttach crvOtherClear grid 6
+	crvAttach crvWin grid 7
+	crvAttach crvLoss grid 8
+
+	pure HPV
+		{ hpvTop = grid
+		, hpvC_puct           = crvC_puct
+		, hpvDirichlet        = crvDirichlet
+		, hpvPriorNoise       = crvPriorNoise
+		, hpvMoveNoise        = crvMoveNoise
+		, hpvDiscountRate     = crvDiscountRate
+		, hpvRewardVirusClear = crvVirusClear
+		, hpvRewardOtherClear = crvOtherClear
+		, hpvRewardWin        = crvWin
+		, hpvRewardLoss       = crvLoss
+		}
+
+hpvWidget :: HyperParametersView -> IO Widget
+hpvWidget = toWidget . hpvTop
+
+hpvRequest :: HyperParametersView -> IO HyperParameters
+hpvRequest hpv = pure HyperParameters
+	<*> crvRequest (hpvDiscountRate     hpv)
+	<*> crvRequest (hpvC_puct           hpv)
+	<*> crvRequest (hpvDirichlet        hpv)
+	<*> crvRequest (hpvPriorNoise       hpv)
+	<*> crvRequest (hpvMoveNoise        hpv)
+	<*> crvRequest (hpvRewardVirusClear hpv)
+	<*> crvRequest (hpvRewardOtherClear hpv)
+	<*> crvRequest (hpvRewardWin        hpv)
+	<*> crvRequest (hpvRewardLoss       hpv)
+
+hpvSet :: HyperParametersView -> HyperParameters -> IO ()
+hpvSet hpv hpCur = do
+	crvSet (hpvDiscountRate     hpv) (hpDiscountRate     hpCur)
+	crvSet (hpvC_puct           hpv) (hpC_puct           hpCur)
+	crvSet (hpvDirichlet        hpv) (hpDirichlet        hpCur)
+	crvSet (hpvPriorNoise       hpv) (hpPriorNoise       hpCur)
+	crvSet (hpvMoveNoise        hpv) (hpMoveNoise        hpCur)
+	crvSet (hpvRewardVirusClear hpv) (hpRewardVirusClear hpCur)
+	crvSet (hpvRewardOtherClear hpv) (hpRewardOtherClear hpCur)
+	crvSet (hpvRewardWin        hpv) (hpRewardWin        hpCur)
+	crvSet (hpvRewardLoss       hpv) (hpRewardLoss       hpCur)
 
 data ConfigurationRequestView a = CRV
 	{ crvDescription :: Label

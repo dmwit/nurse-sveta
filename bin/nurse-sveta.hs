@@ -55,6 +55,8 @@ import qualified Data.Vector as V
 -- ││       │╰─────╯│       ││
 -- ││       │╭╴trn╶╮│       ││
 -- ││       │╰─────╯│       ││
+-- ││       │╭╴hyp╶╮│       ││
+-- ││       │╰─────╯│       ││
 -- ││       │╭╴log╶╮│       ││
 -- ││       │╰─────╯│       ││
 -- ││       ╰───────╯       ││
@@ -67,6 +69,7 @@ main = do
 	on app #activate $ do
 		inferenceProcedure <- newProcedure 100
 		loggingProcedure <- newProcedure 10000
+		paramsRef <- newEmptyMVar
 		bureaucracyLock <- newMVar newBureaucracyGlobalState
 		netUpdate <- newTVarIO Nothing
 		mainRef <- newIORef Nothing
@@ -74,20 +77,23 @@ main = do
 		top <- new Box [#orientation := OrientationHorizontal, #spacing := 10]
 		txt <- new Box [#orientation := OrientationVertical]
 
-		gen <- newThreadManager "generation" Green (generationThreadView inferenceProcedure)
+		gen <- newThreadManager "generation" Green (generationThreadView inferenceProcedure paramsRef)
 		inf <- newThreadManager "inference" OS (inferenceThreadView inferenceProcedure netUpdate)
 		bur <- newThreadManager "bureaucracy" Green (bureaucracyThreadView loggingProcedure bureaucracyLock)
 		trn <- newThreadManager "training" OS (trainingThreadView loggingProcedure netUpdate)
+		hyp <- newThreadManager "hyperparameters" Green (hyperParametersThreadView paramsRef)
 		log <- newThreadManager "logging" Green (loggingThreadView loggingProcedure)
 		replicateM_ 15 (tmStartThread gen)
 		tmStartThread inf
 		tmStartThread bur
 		tmStartThread trn
+		tmStartThread hyp
 		tmStartThread log
 		tmWidget gen >>= #append top
 		tmWidget inf >>= #append txt
 		tmWidget bur >>= #append txt
 		tmWidget trn >>= #append txt
+		tmWidget hyp >>= #append txt
 		tmWidget log >>= #append txt
 		#append top txt
 
@@ -109,11 +115,12 @@ main = do
 					    	Just ([_]:tms:tmss) -> writeIORef mainRef (Just (tms:tmss)) >> traverse_ (\tm -> tm `tmDieThen` quitIfAppropriate) tms
 					    	Just ((_:tms):tmss) -> writeIORef mainRef (Just (tms:tmss))
 					-- dependencies reified here:
-					-- * generation threads may block if inference threads die too early
+					-- * generation threads may block if inference or
+					--   hyperparameter threads die too early
 					-- * training threads may block if logging threads die too early
 					-- the undefined looks scary, but it's just to kick off the
 					-- recursion, it's completely ignored
-					writeIORef mainRef (Just [[undefined], [gen, trn], [inf, log, bur]])
+					writeIORef mainRef (Just [[undefined], [gen, trn], [inf, hyp, log, bur]])
 					quitIfAppropriate
 					pure True
 			]
@@ -176,8 +183,8 @@ acceptConfiguration gts = gts { currentConfiguration = sTrySet (requestedConfigu
 -- │       │╰─────╯││
 -- │       ╰───────╯│
 -- ╰────────────────╯
-generationThreadView :: Procedure NetInput NetOutput -> IO ThreadView
-generationThreadView eval = do
+generationThreadView :: Procedure NetInput NetOutput -> MVar HyperParameters -> IO ThreadView
+generationThreadView eval hpRef = do
 	genRef <- newTVarIO (newGenerationThreadState newSearchConfiguration)
 
 	psv <- newPlayerStateView (PSM (emptyBoard 8 16) Nothing [])
@@ -200,7 +207,7 @@ generationThreadView eval = do
 	    	tWhenUpdated psvTracker (rootPosition (summary gts)) (psvSet psv)
 	    	tWhenUpdated scvTracker (currentConfiguration gts) (scvSet scv)
 
-	tvNew top refresh (generationThread eval genRef)
+	tvNew top refresh (generationThread eval hpRef genRef)
 
 renderSpeeds :: Grid -> [(T.Text, SearchSpeed)] -> IO ()
 renderSpeeds spd sss = do
@@ -215,8 +222,8 @@ renderSpeeds spd sss = do
 	where
 	updateLabel n t = gridUpdateLabelAt spd n 0 t (numericLabel t)
 
-generationThread :: Procedure NetInput NetOutput -> TVar GenerationThreadState -> StatusCheck -> IO ()
-generationThread eval genRef sc = do
+generationThread :: Procedure NetInput NetOutput -> MVar HyperParameters -> TVar GenerationThreadState -> StatusCheck -> IO ()
+generationThread eval hpRef genRef sc = do
 	g <- createSystemRandom
 	threadSpeed <- newSearchSpeed
 	gameLoop g threadSpeed
@@ -296,6 +303,100 @@ recordGame gs steps = do
 	rand <- BS.foldr (\w s -> printf "%02x" w ++ s) "" <$> withFile "/dev/urandom" ReadMode (\h -> BS.hGet h 8)
 	path <- relPrepareFile GamesPending $ show now ++ "-" ++ rand <.> "json"
 	encodeFile path ((b, originalSensitive gs, speed gs), reverse steps)
+
+data HyperParametersThreadState = HPTS
+	{ threadServed :: SearchSpeed
+	, configServed :: SearchSpeed
+	, currentlyServing :: Bool
+	, requestedHyperParameters :: HyperParameters
+	, currentHyperParameters :: Stable HyperParameters
+	} deriving (Eq, Ord, Read, Show)
+
+newHyperParametersThreadState :: IO HyperParametersThreadState
+newHyperParametersThreadState = do
+	thread <- newSearchSpeed
+	config <- newSearchSpeed
+	pure HPTS
+		{ threadServed = thread
+		, configServed = config
+		, currentlyServing = False
+		, requestedHyperParameters = newHyperParameters
+		, currentHyperParameters = newStable newHyperParameters
+		}
+
+-- ╭╴w╶─────╮
+-- │╭╴act╶─╮│
+-- │╰──────╯│
+-- │╭╴hpv╶─╮│
+-- │╰──────╯│
+-- │╭╴srv╶─╮│
+-- │╰──────╯│
+-- ╰────────╯
+hyperParametersThreadView :: MVar HyperParameters -> IO ThreadView
+hyperParametersThreadView hpRef = do
+	tsRef <- newTVarIO =<< newHyperParametersThreadState
+
+	top <- new Box [#orientation := OrientationVertical]
+	act <- new CheckButton [#label := "Active"]
+	hpv <- newHyperParametersView newHyperParameters \req -> atomically $ modifyTVar tsRef \hpts -> hpts { requestedHyperParameters = req }
+	srv <- new Grid []
+
+	srvTracker <- newTracker
+	hpvTracker <- newTracker
+
+	#append top act
+	#append top =<< hpvWidget hpv
+	#append top srv
+
+	on act #toggled do
+		active <- G.get act #active
+		atomically (modifyTVar tsRef \hpts -> hpts { currentlyServing = active })
+
+	let refresh = do
+	    	hpts <- readTVarIO tsRef
+	    	tWhenUpdated hpvTracker (currentHyperParameters hpts) (hpvSet hpv)
+	    	renderSpeeds srv $ tail [undefined
+	    		, ("games served (thread)", threadServed hpts)
+	    		, ("games served (config)", configServed hpts)
+	    		]
+
+	tvNew top refresh (hyperParametersThread tsRef hpRef)
+
+hyperParametersThread :: TVar HyperParametersThreadState -> MVar HyperParameters -> StatusCheck -> IO ()
+hyperParametersThread tsRef hpRef sc = do
+	-- We've gone to a lot of trouble to support a cooperative threading setup,
+	-- now use it to switch back to pre-emptive threading lol
+	tid <- forkIO $ hyperParametersBlockingThread tsRef hpRef
+	atomically (scSTM sc)
+	killThread tid
+	scIO_ sc
+
+hyperParametersBlockingThread :: TVar HyperParametersThreadState -> MVar HyperParameters -> IO ()
+hyperParametersBlockingThread tsRef hpRef = do
+	hpts <- readTVarIO tsRef
+	handle diePeacefully . go $ requestedHyperParameters hpts
+	where
+	go hp = do
+		hp' <- atomically do
+			hpts@(HPTS { currentlyServing = True }) <- readTVar tsRef
+			writeTVar tsRef hpts { currentHyperParameters = sTrySet (requestedHyperParameters hpts) (currentHyperParameters hpts) }
+			pure (requestedHyperParameters hpts)
+		when (hp /= hp') do
+			ssCfg <- newSearchSpeed
+			atomically (modifyTVar tsRef \hpts -> hpts { configServed = ssCfg })
+		putMVar hpRef hp'
+		atomically do
+			hpts <- readTVar tsRef
+			writeTVar tsRef hpts
+				{ threadServed = ssInc (threadServed hpts)
+				, configServed = ssInc (configServed hpts)
+				}
+		go hp'
+
+	-- not strictly speaking needed, but prevents a message from going to stderr
+	diePeacefully = \case
+		ThreadKilled -> pure ()
+		other -> throw other
 
 data InferenceThreadState = InferenceThreadState
 	{ itsThreadBatches :: SearchSpeed
