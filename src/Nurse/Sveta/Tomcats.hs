@@ -155,6 +155,7 @@ freezeGameState gs = do
 		, iLookbehind = lk
 		, iOriginalVirusCount = originalVirusCount gs
 		, iSensitive = originalSensitive gs /= (fp .&. 1 == 1)
+		, iSpeed = speed gs
 		}
 
 playRNG :: GameState -> Lookahead -> IO ()
