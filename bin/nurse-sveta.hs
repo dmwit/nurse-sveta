@@ -137,75 +137,37 @@ commaSeparatedNumber = T.pack . flip go "" where
 
 -- this generation is in the sense of creation
 data GenerationThreadState = GenerationThreadState
-	{ summary :: SearchSummary
-	, requestedConfiguration :: SearchConfiguration
-	, currentConfiguration :: Stable SearchConfiguration
-	} deriving Show
+	{ rootPosition :: Stable PlayerStateModel
+	, speeds :: [(T.Text, SearchSpeed)]
+	} deriving (Eq, Ord, Read, Show)
 
-newGenerationThreadState :: SearchConfiguration -> GenerationThreadState
-newGenerationThreadState cfg = GenerationThreadState
-	{ summary = SearchSummary
-		{ rootPosition = newStable (PSM (emptyBoard 8 16) Nothing [])
-		, speeds = []
-		}
-	, requestedConfiguration = cfg
-	, currentConfiguration = newStable cfg
+newGenerationThreadState :: GenerationThreadState
+newGenerationThreadState = GenerationThreadState
+	{ rootPosition = newStable (PSM (emptyBoard 8 16) Nothing [])
+	, speeds = []
 	}
 
-onRootPosition :: (Stable PlayerStateModel -> Stable PlayerStateModel) -> GenerationThreadState -> GenerationThreadState
-onRootPosition f gts = gts { summary = s { rootPosition = f (rootPosition s) } } where
-	s = summary gts
-
-onSpeeds :: ([(T.Text, SearchSpeed)] -> [(T.Text, SearchSpeed)]) -> GenerationThreadState -> GenerationThreadState
-onSpeeds f gts = gts { summary = s { speeds = f (speeds s) } } where
-	s = summary gts
-
-newSearchConfiguration :: SearchConfiguration
-newSearchConfiguration = SearchConfiguration
-	{ c_puct = 1 -- no idea what A0 did here
-	, iterations = 200
-	, typicalMoves = 25
-	, priorNoise = 0.1
-	, moveNoise = 0.2
-	}
-
-requestConfiguration :: SearchConfiguration -> GenerationThreadState -> GenerationThreadState
-requestConfiguration sc gts = gts { requestedConfiguration = sc }
-
-acceptConfiguration :: GenerationThreadState -> GenerationThreadState
-acceptConfiguration gts = gts { currentConfiguration = sTrySet (requestedConfiguration gts) (currentConfiguration gts) }
-
--- ╭╴top╶───────────╮
--- │╭╴psv╶╮╭╴nfo╶──╮│
--- │╰─────╯│╭╴scv╶╮││
--- │       │╰─────╯││
--- │       │╭╴spd╶╮││
--- │       │╰─────╯││
--- │       ╰───────╯│
--- ╰────────────────╯
-generationThreadView :: Procedure NetInput NetOutput -> MVar HyperParameters -> IO ThreadView
+-- ╭╴top╶─────────╮
+-- │╭╴psv╶╮╭╴spd╶╮│
+-- │╰─────╯╰─────╯│
+-- ╰──────────────╯
+generationThreadView :: Procedure NetInput NetOutput' -> MVar HyperParameters -> IO ThreadView
 generationThreadView eval hpRef = do
-	genRef <- newTVarIO (newGenerationThreadState newSearchConfiguration)
+	genRef <- newTVarIO newGenerationThreadState
 
 	psv <- newPlayerStateView (PSM (emptyBoard 8 16) Nothing [])
-	scv <- newSearchConfigurationView newSearchConfiguration (atomically . modifyTVar genRef . requestConfiguration)
 	spd <- new Grid []
-	nfo <- new Box [#orientation := OrientationVertical]
-	top <- new Box [#orientation := OrientationHorizontal]
+	top <- new Box [#orientation := OrientationHorizontal, #heightRequest := 256]
 
 	psvTracker <- newTracker
-	scvTracker <- newTracker
 
 	psvWidget psv >>= #append top
-	scvWidget scv >>= #append nfo
-	#append nfo spd
-	#append top nfo
+	#append top spd
 
 	let refresh = do
 	    	gts <- readTVarIO genRef
-	    	renderSpeeds spd (speeds (summary gts))
-	    	tWhenUpdated psvTracker (rootPosition (summary gts)) (psvSet psv)
-	    	tWhenUpdated scvTracker (currentConfiguration gts) (scvSet scv)
+	    	renderSpeeds spd (speeds gts)
+	    	tWhenUpdated psvTracker (rootPosition gts) (psvSet psv)
 
 	tvNew top refresh (generationThread eval hpRef genRef)
 
@@ -222,77 +184,68 @@ renderSpeeds spd sss = do
 	where
 	updateLabel n t = gridUpdateLabelAt spd n 0 t (numericLabel t)
 
-generationThread :: Procedure NetInput NetOutput -> MVar HyperParameters -> TVar GenerationThreadState -> StatusCheck -> IO ()
+generationThread :: Procedure NetInput NetOutput' -> MVar HyperParameters -> TVar GenerationThreadState -> StatusCheck -> IO ()
 generationThread eval hpRef genRef sc = do
 	g <- createSystemRandom
 	threadSpeed <- newSearchSpeed
 	gameLoop g threadSpeed
 	where
 	gameLoop g threadSpeed = do
-		config <- atomically . stateTVar genRef $ \gts -> (requestedConfiguration gts, acceptConfiguration gts)
-		let params = dmParameters config eval g
-		(s0, t) <- initialTree params g
-		s <- clone params s0
+		(s0, t) <- newRNGTreeFromSeed eval g 0 g
 		gameSpeed <- newSearchSpeed
-		moveLoop g config params threadSpeed gameSpeed s0 [] s t
+		ctx <- pure (SearchContext eval g) <*> dmClone s0 <*> takeMVar hpRef
+		moveLoop ctx threadSpeed gameSpeed s0 [] t
 
-	moveLoop g config params threadSpeed gameSpeed s0 history s t = do
-		[l, r] <- map toEnum <$> replicateM 2 (uniformR (0, 2) g)
-		t' <- unsafeDescend params (RNG l r) s t
-		let gs = GameStep (RNG l r) mempty mempty
-		boardSnapshot <- mfreeze (board s)
-		atomically $ modifyTVar genRef (onRootPosition (sSet (PSM boardSnapshot (Just (Lookahead l r)) [])))
+	moveLoop ctx threadSpeed gameSpeed s0 history t = do
+		lk <- sampleRNG ctx
+		t' <- descendRNGTree ctx t lk
+		boardSnapshot <- mfreeze (board (ctxState ctx))
+		let psm = PSM boardSnapshot (Just lk) []
+		atomically $ modifyTVar genRef \gts -> gts { rootPosition = sSet psm (rootPosition gts) }
 		moveSpeed <- newSearchSpeed
-		searchLoop g config params s0 (gs:history) s threadSpeed gameSpeed moveSpeed t' (iterations config)
+		searchLoop ctx s0 lk history threadSpeed gameSpeed moveSpeed t' (ctxIterations ctx)
 
-	searchLoop g config params s0 history s = innerLoop where
-		innerLoop threadSpeed gameSpeed moveSpeed t 0 = descend g config params s t >>= \case
-			Nothing -> recordGame s0 history >> gameLoop g threadSpeed
-			Just (m, t') -> do
+	searchLoop ctx s0 lk history = innerLoop where
+		innerLoop threadSpeed gameSpeed moveSpeed t 0 = sampleMove ctx t >>= \case
+			Nothing -> finish threadSpeed -- should never happen
+			Just pill -> do
 				-- it's important that we allow game trees to get garbage
 				-- collected, so these `evaluate`s are about making sure we
 				-- aren't holding a reference to a full game tree
 				--
 				-- in particular, HashMap's fmap doesn't do the thing
-				stats <- evaluate (statistics t)
-				childStats <- traverse (evaluate . statistics) (children t)
-				unexploredStats <- traverse evaluate (unexplored t)
-				let gs = GameStep m stats (childStats `HM.union` unexploredStats)
-				moveLoop g config params threadSpeed gameSpeed s0 (gs:history) s t'
+				visitsChildren <- traverse (evaluate . round . visitCountRNG) (childrenMove t)
+				visitsUnexplored <- HM.fromList . V.toList . fmap (\(pill, _) -> (pill, 0)) <$> evaluate (unexploredMove t)
+				let gs = GameStep' lk (pathsMove t HM.! pill) pill (visitsChildren `HM.union` visitsUnexplored)
+				t' <- descendMoveTree ctx t pill
+				moveLoop ctx threadSpeed gameSpeed s0 (gs:history) t'
 
 		innerLoop threadSpeed gameSpeed moveSpeed t n = do
-			-- Sometimes we'll produce trees that have visit counts lower than
-			-- the number of iterations we've done. See the comment inside
-			-- dmExpand for more on why.
-			--
-			-- This whole setup is very messy. At some point we should really
-			-- revisit the mcts design from the ground up and try to make
-			-- something a bit cleaner.
-			t' <- mcts params s t
-			let topMoves = sortOn (negate . snd)
-			    	[ (p, visitCount (statistics child))
-			    	| (Placement _ p, child) <- HM.toList (children t')
-			    	]
+			t' <- expandMoveTree ctx t
+			let topMoves = sortOn (negate . visitCountRNG . snd) (HM.toList (childrenMove t'))
 			    overlay = zip (fst <$> topMoves) [0.4, 0.1, 0.1]
-			-- if mcts has thrown an error somewhere that matters, force it
-			-- before we get into the critical section
+			-- if expandMoveTree has thrown an error somewhere that matters,
+			-- force it before we get into the critical section
 			evaluate (last (show overlay))
 
 			let [threadSpeed', gameSpeed', moveSpeed'] = ssInc <$> [threadSpeed, gameSpeed, moveSpeed]
 			    speeds' = [("thread", threadSpeed), ("game", gameSpeed), ("move", moveSpeed)]
 
-			gts <- atomically . modifyTVar genRef $ id
-				. onSpeeds (const speeds')
-				. onRootPosition (sOnSubterm psmOverlayL (sSet overlay))
+			gts <- atomically $ modifyTVar genRef \gts -> GenerationThreadState
+				{ speeds = speeds'
+				, rootPosition = sOnSubterm psmOverlayL (sSet overlay) (rootPosition gts)
+				}
 
 			scIO_ sc
-			case HM.size (children t') of
-				0 -> recordGame s0 history >> gameLoop g threadSpeed
+			case HM.size (childrenMove t') of
+				0 -> finish threadSpeed'
 				_ -> innerLoop threadSpeed' gameSpeed' moveSpeed' t' (n-1)
 
+		finish threadSpeed = recordGame s0 history lk >> gameLoop (ctxRNG ctx) threadSpeed
+
 -- [PORT] /dev/urandom
-recordGame :: GameState -> [GameStep] -> IO ()
-recordGame gs steps = do
+recordGame :: GameState -> [GameStep'] -> Lookahead -> IO ()
+recordGame gs steps lk = do
 	b <- mfreeze (board gs)
 	now <- Time.getCurrentTime
 	-- The clever version uses BS.foldr (printf "%02x%s"). The mundane version
@@ -302,7 +255,7 @@ recordGame gs steps = do
 	-- copy, leading to quadratic time.
 	rand <- BS.foldr (\w s -> printf "%02x" w ++ s) "" <$> withFile "/dev/urandom" ReadMode (\h -> BS.hGet h 8)
 	path <- relPrepareFile GamesPending $ show now ++ "-" ++ rand <.> "json"
-	encodeFile path ((b, originalSensitive gs, speed gs), reverse steps)
+	encodeFile path ((b, originalSensitive gs, speed gs), reverse steps, lk)
 
 data HyperParametersThreadState = HPTS
 	{ threadServed :: SearchSpeed
@@ -414,7 +367,7 @@ itsNewNet its = \case
 		Nothing -> True
 		Just (n', _) -> n /= n'
 
-inferenceThreadView :: Procedure NetInput NetOutput -> TVar (Maybe Integer) -> IO ThreadView
+inferenceThreadView :: Procedure NetInput NetOutput' -> TVar (Maybe Integer) -> IO ThreadView
 inferenceThreadView eval netUpdate = do
 	top <- new Box [#orientation := OrientationVertical]
 	lbl <- descriptionLabel "<initializing net>"
@@ -471,7 +424,7 @@ data InferenceThreadStep
 	| ITSProgress (IO Int)
 	| ITSDie
 
-inferenceThread :: Procedure NetInput NetOutput -> TVar (Maybe Integer) -> TVar InferenceThreadState -> StatusCheck -> IO ()
+inferenceThread :: Procedure NetInput NetOutput' -> TVar (Maybe Integer) -> TVar InferenceThreadState -> StatusCheck -> IO ()
 inferenceThread eval netUpdate itsRef sc = forever $ do
 	step <- atomically $ do
 		its <- readTVar itsRef
@@ -479,9 +432,9 @@ inferenceThread eval netUpdate itsRef sc = forever $ do
 			, ITSDie <$ scSTM sc
 			, ITSLoadNet <$> (readTVar netUpdate >>= ensure (itsNewNet its))
 			, case (itsUseNet its, sPayload (itsNet its)) of
-				(True, Just (_, net)) -> liftEvaluation (netEvaluation net)
+				(True, Just (_, net)) -> liftEvaluation (netEvaluationNext net)
 				(True, _) -> retry
-				_ -> liftEvaluation (traverse dumbEvaluation)
+				_ -> liftEvaluation (traverse dumbEvaluation')
 			]
 	case step of
 		ITSProgress ion -> ion >>= \n -> atomically $ do
@@ -504,7 +457,7 @@ inferenceThread eval netUpdate itsRef sc = forever $ do
 				writeTVar itsRef its' { itsNet = sSet net (itsNet its) }
 		ITSDie -> scIO_ sc
 	where
-	liftEvaluation :: (V.Vector NetInput -> IO (V.Vector NetOutput)) -> STM InferenceThreadStep
+	liftEvaluation :: (V.Vector NetInput -> IO (V.Vector NetOutput')) -> STM InferenceThreadStep
 	liftEvaluation f = ITSProgress <$> serviceCallsSTM eval (fmap (\answers -> (answers, V.length answers)) . f)
 
 inferenceThreadLoadLatestNet :: IO (Maybe (Integer, Net))
@@ -517,7 +470,7 @@ inferenceThreadLoadNet :: Integer -> IO (Integer, Net)
 inferenceThreadLoadNet tensor = do
 	dir <- nsDataDir
 	-- [N]urse [S]veta [n]et
-	net <- netLoadForInference (absFileName dir Weights (show tensor <.> "nsn"))
+	net <- netLoadForInferenceNext (absFileName dir Weights (show tensor <.> "nsn"))
 	pure (tensor, net)
 
 data BureaucracyGlobalState = BureaucracyGlobalState
@@ -1130,8 +1083,3 @@ ssInc ss = ss { searchIterations = searchIterations ss + 1 }
 
 ssIncBy :: SearchSpeed -> Int -> SearchSpeed
 ssIncBy ss n = ss { searchIterations = searchIterations ss + n }
-
-data SearchSummary = SearchSummary
-	{ rootPosition :: Stable PlayerStateModel
-	, speeds :: [(T.Text, SearchSpeed)]
-	} deriving (Eq, Ord, Read, Show)

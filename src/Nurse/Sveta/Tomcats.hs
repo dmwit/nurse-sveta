@@ -5,13 +5,17 @@ module Nurse.Sveta.Tomcats (
 	descendRNGTree, descendMoveTree,
 	expandRNGTree', expandRNGTree, expandMoveTree', expandMoveTree,
 	sampleRNG, bestMove, weightedMove, uniformMove, sampleMove,
+	ctxIterations, ctxDiscountRate, ctxC_puct, ctxDirichlet, ctxPriorNoise,
+	ctxRewardVirusClear, ctxRewardOtherClear, ctxRewardWin, ctxRewardLoss,
 	DMParameters, dmParameters,
 	GameStateSeed(..), initialTree,
 	mcts, descend, unsafeDescend,
 	evaluateFinalState, netInput, dumbEvaluation,
-	dmFinished, dmPlay, approximateCostModel,
+	dumbEvaluation',
+	dmFinished, dmPlay, dmClone, approximateCostModel,
 	SearchConfiguration(..),
 	Move(..),
+	MidPath(..),
 	GameState(..),
 	Statistics(..),
 	Tree(..),
@@ -209,6 +213,7 @@ data HyperParameters = HyperParameters
 	{ hpDiscountRate, hpC_puct, hpDirichlet, hpPriorNoise, hpMoveNoise
 	, hpRewardVirusClear, hpRewardOtherClear, hpRewardWin, hpRewardLoss
 		:: Float
+	, hpIterations :: Int
 	} deriving (Eq, Ord, Read, Show)
 
 -- | Some maybe-not-completely-insane defaults.
@@ -223,11 +228,15 @@ newHyperParameters = HyperParameters
 	, hpRewardOtherClear = 0.01
 	, hpRewardWin = 1
 	, hpRewardLoss = -1
+	, hpIterations = 200
 	}
 
 ctxDiscountRate, ctxC_puct, ctxDirichlet, ctxPriorNoise, ctxMoveNoise, ctxRewardVirusClear, ctxRewardOtherClear, ctxRewardWin, ctxRewardLoss :: SearchContext -> Float
 [ctxDiscountRate, ctxC_puct, ctxDirichlet, ctxPriorNoise, ctxMoveNoise, ctxRewardVirusClear, ctxRewardOtherClear, ctxRewardWin, ctxRewardLoss] = map (. ctxParams)
 	[hpDiscountRate, hpC_puct, hpDirichlet, hpPriorNoise, hpMoveNoise, hpRewardVirusClear, hpRewardOtherClear, hpRewardWin, hpRewardLoss]
+
+ctxIterations :: SearchContext -> Int
+ctxIterations = hpIterations . ctxParams
 
 newRNGTree :: SearchContext -> Float -> IO RNGTree
 newRNGTree ctx prior = snd <$> newRNGTreeFromSeed (ctxEval ctx) (ctxRNG ctx) prior (ctxState ctx)
@@ -825,6 +834,12 @@ dumbEvaluation = \ni -> pure NetOutput
 		, x <- [0..case o of Horizontal -> 6; _ -> 7]
 		, y <- [0..15]
 		]
+
+dumbEvaluation' :: NetInput -> IO NetOutput'
+dumbEvaluation' ni = pure NetOutput'
+	{ noPriors' = uniformPriors
+	, noValuation' = 0
+	}
 
 -- With probability p, choose the move with the most visits. If that doesn't
 -- happen, with probability p, choose using the visit counts as weights for a

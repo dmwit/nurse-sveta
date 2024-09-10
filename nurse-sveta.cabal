@@ -49,6 +49,7 @@ common shared
                         , MultiWayIf
                         , OverloadedLabels
                         , OverloadedStrings
+                        , PartialTypeSignatures
                         , QuantifiedConstraints
                         , RankNTypes
                         , ScopedTypeVariables
@@ -64,7 +65,7 @@ common shared
                           AllowAmbiguousTypes
                         -- introduces too much extra stuff at the type/kind level
                         , DataKinds
-    ghc-options:        -Wno-tabs
+    ghc-options:        -Wno-tabs -Wno-partial-type-signatures
     if flag(debug)
         ghc-options:    -g
     else

@@ -2,9 +2,9 @@ module Nurse.Sveta.Torch (
 	Net, Optimizer,
 	netSample, netLoadForInference, netLoadForTraining,
 	netEvaluation, netLossComponents, netActivations, netGradients, netTrain,
-	netSampleNext, netEvaluationNext,
+	netSampleNext, netEvaluationNext, netLoadForTrainingNext, netLoadForInferenceNext,
 	netSave, netWeights,
-	TrainingExample(..), GameDetails, GameStep(..),
+	TrainingExample(..), GameDetails, GameStep(..), GameDetails', GameStep'(..),
 	trainingExamples,
 	NetInput(..), NetOutput(..), NetOutput'(..), GroundTruth(..), LossScaling(..),
 	netSample', netLoadForInference', netLoadForTraining',
@@ -37,11 +37,22 @@ data GameStep = GameStep
 instance ToJSON GameStep where toJSON gs = toJSON (gsMove gs, gsRoot gs, HM.toList (gsChildren gs))
 instance FromJSON GameStep where parseJSON v = parseJSON v <&> \(m, r, c) -> GameStep m r (HM.fromList c)
 
+data GameStep' = GameStep'
+	{ gsRNG :: Lookahead
+	, gsPath :: MidPath
+	, gsPill :: Pill
+	, gsVisits :: HashMap Pill Int
+	} deriving (Eq, Ord, Read, Show)
+
+instance ToJSON GameStep' where toJSON gs = toJSON (gsRNG gs, gsPath gs, gsPill gs, gsVisits gs)
+instance FromJSON GameStep' where parseJSON v = parseJSON v <&> \(r, p, m, v) -> GameStep' r p m v
+
 -- TODO: could consider varying the cost model, gravity speed, NES vs SNES pill
 -- distribution, NES vs SNES (vs other?) pathfinding, and then passing info on
 -- which choice was made into the net
 
 type GameDetails = ((Board, Bool, CoarseSpeed), [GameStep])
+type GameDetails' = ((Board, Bool, CoarseSpeed), [GameStep'], Lookahead)
 
 foreign import ccall "sample_net" cxx_sample_net :: Ptr CStructure -> Ptr CStructure -> Ptr (Ptr Net) -> Ptr (Ptr Optimizer) -> IO ()
 foreign import ccall "load_net" cxx_load_net :: CString -> Ptr CStructure -> Ptr CStructure -> Ptr (Ptr Net) -> Ptr (Ptr Optimizer) -> IO ()
@@ -146,8 +157,14 @@ netSampleNext = withNetIO' netSample'
 netLoadForInference :: FilePath -> IO Net
 netLoadForInference = withNetIO . netLoadForInference'
 
+netLoadForInferenceNext :: FilePath -> IO Net
+netLoadForInferenceNext = withNetIO' . netLoadForInference'
+
 netLoadForTraining :: FilePath -> IO (Net, Optimizer)
 netLoadForTraining = withNetIO . netLoadForTraining'
+
+netLoadForTrainingNext :: FilePath -> IO (Net, Optimizer)
+netLoadForTrainingNext = withNetIO' . netLoadForTraining'
 
 netSave :: Net -> Optimizer -> FilePath -> IO ()
 netSave net_ optim_ path_ = withUnwrapped (WCS path_, (net_, optim_)) \(path, (net, optim)) ->
