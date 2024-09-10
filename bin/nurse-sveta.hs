@@ -241,11 +241,11 @@ generationThread eval hpRef genRef sc = do
 				0 -> finish threadSpeed'
 				_ -> innerLoop threadSpeed' gameSpeed' moveSpeed' t' (n-1)
 
-		finish threadSpeed = recordGame s0 history lk >> gameLoop (ctxRNG ctx) threadSpeed
+		finish threadSpeed = recordGame s0 history lk (ctxParams ctx) >> gameLoop (ctxRNG ctx) threadSpeed
 
 -- [PORT] /dev/urandom
-recordGame :: GameState -> [GameStep'] -> Lookahead -> IO ()
-recordGame gs steps lk = do
+recordGame :: GameState -> [GameStep'] -> Lookahead -> HyperParameters -> IO ()
+recordGame gs steps lk hp = do
 	b <- mfreeze (board gs)
 	now <- Time.getCurrentTime
 	-- The clever version uses BS.foldr (printf "%02x%s"). The mundane version
@@ -255,7 +255,7 @@ recordGame gs steps lk = do
 	-- copy, leading to quadratic time.
 	rand <- BS.foldr (\w s -> printf "%02x" w ++ s) "" <$> withFile "/dev/urandom" ReadMode (\h -> BS.hGet h 8)
 	path <- relPrepareFile GamesPending $ show now ++ "-" ++ rand <.> "json"
-	encodeFile path ((b, originalSensitive gs, speed gs), reverse steps, lk)
+	encodeFile path ((b, originalSensitive gs, speed gs), reverse steps, lk, hp)
 
 data HyperParametersThreadState = HPTS
 	{ threadServed :: SearchSpeed
@@ -583,7 +583,7 @@ processGameFile log status dir fp = recallGame dir fp >>= \case
 				{ bgsLastGame = Just fp
 				}
 			}
-	GDSuccess (seed, steps) -> do
+	GDSuccess (seed, steps, lk, _hp) -> do
 		bts <- sPayload <$> readTVarIO status
 		categoryT <- vsSample (btsCurrentSplit bts)
 		let categoryS = T.unpack categoryT
@@ -600,13 +600,13 @@ processGameFile log status dir fp = recallGame dir fp >>= \case
 			, pure newCategoryMetadata
 			]
 
-		gs <- initialState seed
-		traverse_ (dmPlay gs . gsMove) steps
-		kills <- readIORef (virusesKilled gs)
-		pills <- readIORef (pillsUsed gs)
-		frames <- readIORef (framesPassed gs)
-		let viruses = originalVirusCount gs
-		    meta = cmInsert fp viruses kills frames meta_
+		IGameState
+			{ iVirusesKilled = kills
+			, iPillsUsed = pills
+			, iFramesPassed = frames
+			, iOriginalVirusCount = viruses
+			} <- fullReplay seed steps lk id (\_ _ _ s -> s)
+		let meta = cmInsert fp viruses kills frames meta_
 		    -- TODO: make 10000 configurable
 		    gameNames = S.take 10000 (T.pack fp S.:<| gameNames_)
 		    processedDir = absDirectoryName dir (GamesProcessed category)
@@ -670,7 +670,7 @@ processGameFile log status dir fp = recallGame dir fp >>= \case
 data GameDecodingResult
 	= GDParseError
 	| GDStillWriting
-	| GDSuccess GameDetails
+	| GDSuccess GameDetails'
 
 recallGame :: FilePath -> FilePath -> IO GameDecodingResult
 recallGame dir fp = handle (\e -> if isAlreadyInUseError e then pure GDStillWriting else throwIO e) $ do
@@ -960,10 +960,10 @@ trainingThreadLoadLatestNet = do
 	mn <- absDecodeFileLoop dir Weights latestFilename
 	case mn of
 		Nothing -> do
-			netOptim <- netSample
+			netOptim <- netSampleNext
 			pure (0, netOptim)
 		Just n -> do
-			netOptim <- netLoadForTraining (absFileName dir Weights (show n <.> "nsn"))
+			netOptim <- netLoadForTrainingNext (absFileName dir Weights (show n <.> "nsn"))
 			pure (n, netOptim)
 
 -- This doesn't choose training positions uniformly at random from among all

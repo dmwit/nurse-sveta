@@ -5,7 +5,7 @@ module Nurse.Sveta.Torch (
 	netSampleNext, netEvaluationNext, netLoadForTrainingNext, netLoadForInferenceNext,
 	netSave, netWeights,
 	TrainingExample(..), GameDetails, GameStep(..), GameDetails', GameStep'(..),
-	trainingExamples,
+	fullReplay, fullReplayV, trainingExamples,
 	NetInput(..), NetOutput(..), NetOutput'(..), GroundTruth(..), LossScaling(..),
 	netSample', netLoadForInference', netLoadForTraining',
 	netEvaluation', netLossComponents', netActivations', netGradients', netTrain',
@@ -52,7 +52,7 @@ instance FromJSON GameStep' where parseJSON v = parseJSON v <&> \(r, p, m, v) ->
 -- which choice was made into the net
 
 type GameDetails = ((Board, Bool, CoarseSpeed), [GameStep])
-type GameDetails' = ((Board, Bool, CoarseSpeed), [GameStep'], Lookahead)
+type GameDetails' = ((Board, Bool, CoarseSpeed), [GameStep'], Lookahead, HyperParameters)
 
 foreign import ccall "sample_net" cxx_sample_net :: Ptr CStructure -> Ptr CStructure -> Ptr (Ptr Net) -> Ptr (Ptr Optimizer) -> IO ()
 foreign import ccall "load_net" cxx_load_net :: CString -> Ptr CStructure -> Ptr CStructure -> Ptr (Ptr Net) -> Ptr (Ptr Optimizer) -> IO ()
@@ -205,37 +205,41 @@ netWeights net_ = withUnwrapped net_ (cxx_net_weights >=> gcEndpoint >=> hsEndpo
 netGradients :: Net -> LossScaling -> Vector TrainingExample -> IO Endpoint
 netGradients net scaling batch = netGradients' net (lsEndpoint scaling) (toEndpoint batch)
 
-trainingExamples :: GameDetails -> IO (Vector TrainingExample)
-trainingExamples (b0, steps) = do
-	currentState <- initialState b0
-	-- gonna play through the whole game real quick to evaluate the final
-	-- board, so make a fresh clone of the state
-	tmpState <- initialState b0
-	valuation <- mapM (dmPlay tmpState . gsMove) steps >> evaluateFinalState tmpState
-	let numPlacements = length [() | GameStep { gsMove = Placement{} } <- steps]
-	    loop (gs:gss) = case gsMove gs of
-	    	-- subtlety: dmPlay records the lookbehind
-	    	RNG{} -> dmPlay currentState (gsMove gs) >> loop gss
-	    	Placement{} -> do
-	    		frames <- readIORef (framesPassed currentState)
-	    		board <- mfreeze (board currentState)
-	    		lookbehind <- readIORef (lookbehind currentState)
+fullReplay :: (GameStateSeed a, Show a) => a -> [GameStep'] -> Lookahead -> (IGameState -> s) -> (GameStep' -> IGameState -> ClearResults -> s -> s) -> IO s
+fullReplay seed steps0 lk fDone fStep = initialState seed >>= go steps0 where
+	go [] gs = do
+		chooseRNG gs lk
+		igs <- freezeGameState gs
+		pure (fDone igs)
+	go (step:steps) gs = do
+		chooseRNG gs (gsRNG step)
+		igs <- freezeGameState gs
+		chooseMove gs (gsPath step) (gsPill step) >>= \case
+			Nothing -> fail $ ""
+				++ "illegal move in game record; seed=" ++ show seed
+				++ ", steps=" ++ show steps0
+				++ ", steps remaining=" ++ show (length (step:steps))
+			Just res -> fStep step igs res <$> go steps gs
 
-	    		-- TODO: why is the root's visit count always one bigger than the sum of the children's visit counts?
-	    		let scaling = recip . max 1 . visitCount $ gsRoot gs
-	    		    priors = HM.fromList [(pill, scaling * visitCount stats) | (Placement _ pill, stats) <- HM.toList (gsChildren gs)]
-	    		    te = TrainingExample
-	    		    	{ teInput = NetInput
-	    		    		{ niBoard = board
-	    		    		, niFrames = frames
-	    		    		, niOriginalVirusCount = originalVirusCount currentState
-	    		    		}
-	    		    	, teTruth = GroundTruth
-	    		    		{ gtPriors = priors
-	    		    		, gtLookahead = lookbehind
-	    		    		, gtValuation = valuation
-	    		    		}
-	    		    	}
-	    		(te, gss) <$ dmPlay currentState (gsMove gs)
+fullReplayV :: (GameStateSeed a, Show a) => a -> [GameStep'] -> Lookahead -> (IGameState -> s) -> (GameStep' -> IGameState -> ClearResults -> s -> (s, v)) -> IO (Vector v)
+fullReplayV seed steps lk fDone fStep = V.fromList . snd <$> fullReplay seed steps lk
+	(\igs -> (fDone igs, []))
+	(\step igs res (s, vs) -> (:vs) <$> fStep step igs res s)
 
-	V.unfoldrExactNM numPlacements loop steps
+trainingExamples :: GameDetails' -> IO (Vector TrainingExample)
+trainingExamples (seed, steps, lk, hp) = fullReplayV seed steps lk (\igs -> (ihpFinalReward hp igs, iFramesPassed igs)) \step igs res (value, frames) -> let
+	value' = hpImmediateReward hp res + hpDiscount hp (frames - frames') value
+	frames' = iFramesPassed igs
+	scaling = recip . fromIntegral . max 1 . sum $ gsVisits step
+	te = TrainingExample
+		{ teInput = NetInput
+			{ niBoard = iBoard igs
+			, niFrames = frames'
+			, niOriginalVirusCount = iOriginalVirusCount igs
+			}
+		, teTruth = GroundTruth
+			{ gtPriors = gsVisits step <&> \n -> scaling * fromIntegral n
+			, gtValuation = value'
+			}
+		}
+	in ((value', frames'), te)

@@ -5,8 +5,11 @@ module Nurse.Sveta.Tomcats (
 	descendRNGTree, descendMoveTree,
 	expandRNGTree', expandRNGTree, expandMoveTree', expandMoveTree,
 	sampleRNG, bestMove, weightedMove, uniformMove, sampleMove,
+	hpDiscount, hpImmediateReward, hpFinalReward, ihpFinalReward,
+	ctxDiscount, ctxImmediateReward, ctxFinalReward,
 	ctxIterations, ctxDiscountRate, ctxC_puct, ctxDirichlet, ctxPriorNoise,
 	ctxRewardVirusClear, ctxRewardOtherClear, ctxRewardWin, ctxRewardLoss,
+	chooseRNG, chooseMove,
 	DMParameters, dmParameters,
 	GameStateSeed(..), initialTree,
 	mcts, descend, unsafeDescend,
@@ -16,7 +19,7 @@ module Nurse.Sveta.Tomcats (
 	SearchConfiguration(..),
 	Move(..),
 	MidPath(..),
-	GameState(..),
+	GameState(..), IGameState(..), freezeGameState,
 	Statistics(..),
 	Tree(..),
 	clone,
@@ -38,6 +41,7 @@ import Control.Concurrent
 import Control.Concurrent.MVar
 import Control.Monad
 import Data.Aeson
+import Data.Aeson.Types
 import Data.Bits
 import Data.Foldable
 import Data.Functor
@@ -126,6 +130,32 @@ data GameState = GameState
 
 uninitializedLookbehind :: IO (IORef Lookahead)
 uninitializedLookbehind = newIORef (error "asked what pill was last launched before any pill was launched")
+
+data IGameState = IGameState
+	{ iBoard :: Board
+	, iVirusesKilled, iPillsUsed, iFramesPassed :: Int
+	, iLookbehind :: Lookahead
+	, iOriginalVirusCount :: Int
+	, iSensitive :: Bool
+	, iSpeed :: CoarseSpeed
+	} deriving (Eq, Ord, Read, Show)
+
+freezeGameState :: GameState -> IO IGameState
+freezeGameState gs = do
+	b <- mfreeze (board gs)
+	vk <- readIORef (virusesKilled gs)
+	pu <- readIORef (pillsUsed gs)
+	fp <- readIORef (framesPassed gs)
+	lk <- readIORef (lookbehind gs)
+	pure IGameState
+		{ iBoard = b
+		, iVirusesKilled = vk
+		, iPillsUsed = pu
+		, iFramesPassed = fp
+		, iLookbehind = lk
+		, iOriginalVirusCount = originalVirusCount gs
+		, iSensitive = originalSensitive gs /= (fp .&. 1 == 1)
+		}
 
 chooseRNG :: GameState -> Lookahead -> IO ()
 chooseRNG = writeIORef . lookbehind
@@ -216,6 +246,30 @@ data HyperParameters = HyperParameters
 	, hpIterations :: Int
 	} deriving (Eq, Ord, Read, Show)
 
+instance ToJSON HyperParameters where
+	toJSON hp = toJSON
+		$ fromIntegral (hpIterations hp)
+		: sequence [hpDiscountRate, hpC_puct, hpDirichlet, hpPriorNoise, hpMoveNoise, hpRewardVirusClear, hpRewardOtherClear, hpRewardWin, hpRewardLoss] hp
+	toEncoding hp = toEncoding
+		$ fromIntegral (hpIterations hp)
+		: sequence [hpDiscountRate, hpC_puct, hpDirichlet, hpPriorNoise, hpMoveNoise, hpRewardVirusClear, hpRewardOtherClear, hpRewardWin, hpRewardLoss] hp
+
+instance FromJSON HyperParameters where
+	parseJSON v = parseJSON v >>= \case
+		[i, dr, c, d, pn, mn, rvc, roc, rw, rl] -> pure HyperParameters
+			{ hpIterations = round i
+			, hpDiscountRate = dr
+			, hpC_puct = c
+			, hpDirichlet = d
+			, hpPriorNoise = pn
+			, hpMoveNoise = mn
+			, hpRewardVirusClear = rvc
+			, hpRewardOtherClear = roc
+			, hpRewardWin = rw
+			, hpRewardLoss = rl
+			}
+		_ -> typeMismatch "HyperParameters" v
+
 -- | Some maybe-not-completely-insane defaults.
 newHyperParameters :: HyperParameters
 newHyperParameters = HyperParameters
@@ -231,12 +285,47 @@ newHyperParameters = HyperParameters
 	, hpIterations = 200
 	}
 
+hpDiscount :: HyperParameters -> Int -> Float -> Float
+hpDiscount hp n v = v * hpDiscountRate hp ^ n
+
+hpRewardClear :: HyperParameters -> Shape -> Float
+hpRewardClear hp = \case
+	Virus -> hpRewardVirusClear hp
+	_ -> hpRewardOtherClear hp
+
+hpImmediateReward :: HyperParameters -> ClearResults -> Float
+hpImmediateReward hp = goClear where
+	goClear = \case
+		NoClear -> 0
+		Clear cs dRes -> getSum (foldMap rewardClear cs) + discount clearCost (goDrop dRes)
+	goDrop = \case
+		NoDrop -> 0
+		Drop ds cRes -> discount (getMax (foldMap (Max . fst) ds) * dropCost) (goClear cRes)
+	rewardClear = Sum . hpRewardClear hp . oshape
+	discount = hpDiscount hp
+
+-- | does not modify the GameState
+hpFinalReward :: HyperParameters -> GameState -> IO Float
+hpFinalReward hp gs = do
+	clearedViruses <- readIORef (virusesKilled gs)
+	pure if clearedViruses == originalVirusCount gs
+		then hpRewardWin hp
+		else hpRewardLoss hp
+
+ihpFinalReward :: HyperParameters -> IGameState -> Float
+ihpFinalReward hp igs = if iVirusesKilled igs == iOriginalVirusCount igs
+	then hpRewardWin hp
+	else hpRewardLoss hp
+
 ctxDiscountRate, ctxC_puct, ctxDirichlet, ctxPriorNoise, ctxMoveNoise, ctxRewardVirusClear, ctxRewardOtherClear, ctxRewardWin, ctxRewardLoss :: SearchContext -> Float
 [ctxDiscountRate, ctxC_puct, ctxDirichlet, ctxPriorNoise, ctxMoveNoise, ctxRewardVirusClear, ctxRewardOtherClear, ctxRewardWin, ctxRewardLoss] = map (. ctxParams)
 	[hpDiscountRate, hpC_puct, hpDirichlet, hpPriorNoise, hpMoveNoise, hpRewardVirusClear, hpRewardOtherClear, hpRewardWin, hpRewardLoss]
 
 ctxIterations :: SearchContext -> Int
 ctxIterations = hpIterations . ctxParams
+
+ctxDiscount :: SearchContext -> Int -> Float -> Float
+ctxDiscount = hpDiscount . ctxParams
 
 newRNGTree :: SearchContext -> Float -> IO RNGTree
 newRNGTree ctx prior = snd <$> newRNGTreeFromSeed (ctxEval ctx) (ctxRNG ctx) prior (ctxState ctx)
@@ -357,7 +446,7 @@ expandMoveTree' ctx t = case (maximumOn (\_ -> scoreTree) (childrenMove t), scor
 		| otherwise -> exploit pill t'
 	(Just (pill, t', _), Nothing) -> exploit pill t'
 	(Nothing, Just _) -> explore
-	(Nothing, Nothing) -> flip (,) t { visitCountMove = visitCountMove t + 1 } <$> finalReward ctx
+	(Nothing, Nothing) -> flip (,) t { visitCountMove = visitCountMove t + 1 } <$> ctxFinalReward ctx
 	where
 	scoreTree t' = A0.pucbA0Raw (ctxC_puct ctx) (priorProbabilityRNG t') (visitCountMove t) (visitCountRNG t') (cumulativeValuationRNG t')
 	scorePrior (_, prior) = A0.pucbA0Raw (ctxC_puct ctx) prior (visitCountMove t) 0 0
@@ -369,7 +458,7 @@ expandMoveTree' ctx t = case (maximumOn (\_ -> scoreTree) (childrenMove t), scor
 		Just results <- chooseMove (ctxState ctx) (pathsMove t HM.! pill) pill
 		after <- readIORef (framesPassed (ctxState ctx))
 		(dv, tNew) <- buildTree
-		pure ( immediateReward ctx results + ctxDiscount ctx (after - before) dv
+		pure ( ctxImmediateReward ctx results + ctxDiscount ctx (after - before) dv
 		     , t' { childrenMove = HM.insert pill tNew (childrenMove t'), visitCountMove = visitCountMove t' + 1 }
 		     )
 
@@ -439,32 +528,12 @@ instance Monoid BestMoves' where mempty = BestMoves' V.empty (-1/0)
 bestMoves' :: HashMap Pill RNGTree -> BestMoves'
 bestMoves' = HM.foldMapWithKey \pill t -> BestMoves' (V.singleton pill) (visitCountRNG t)
 
-ctxDiscount :: SearchContext -> Int -> Float -> Float
-ctxDiscount ctx n v = v * ctxDiscountRate ctx ^ n
-
-ctxRewardClear :: SearchContext -> Shape -> Float
-ctxRewardClear ctx = \case
-	Virus -> ctxRewardVirusClear ctx
-	_ -> ctxRewardOtherClear ctx
-
-immediateReward :: SearchContext -> ClearResults -> Float
-immediateReward ctx = goClear where
-	goClear = \case
-		NoClear -> 0
-		Clear cs dRes -> getSum (foldMap rewardClear cs) + discount clearCost (goDrop dRes)
-	goDrop = \case
-		NoDrop -> 0
-		Drop ds cRes -> discount (getMax (foldMap (Max . fst) ds) * dropCost) (goClear cRes)
-	rewardClear = Sum . ctxRewardClear ctx . oshape
-	discount = ctxDiscount ctx
+ctxImmediateReward :: SearchContext -> ClearResults -> Float
+ctxImmediateReward = hpImmediateReward . ctxParams
 
 -- | does not modify the GameState
-finalReward :: SearchContext -> IO Float
-finalReward ctx = do
-	clearedViruses <- readIORef (virusesKilled (ctxState ctx))
-	pure if clearedViruses == originalVirusCount (ctxState ctx)
-		then ctxRewardWin ctx
-		else ctxRewardLoss ctx
+ctxFinalReward :: SearchContext -> IO Float
+ctxFinalReward ctx = hpFinalReward (ctxParams ctx) (ctxState ctx)
 
 allLookaheads :: Vector Lookahead
 -- could use EndpointKey to not have constants 9 and 3 here, but the result is completely unreadable

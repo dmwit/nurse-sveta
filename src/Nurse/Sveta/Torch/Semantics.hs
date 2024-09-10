@@ -240,14 +240,13 @@ instance ToEndpoint NetInput where
 
 data GroundTruth = GroundTruth
 	{ gtPriors :: HashMap Pill Float
-	, gtLookahead :: Lookahead
 	, gtValuation :: Float
 	} deriving (Eq, Ord, Read, Show)
 
 instance ToEndpoint GroundTruth where
 	toEndpoint = toEndpointRecord
 		$   "priors" :=: NoDefault . gtPriors
-		:&: "valuation" :=: \gt -> NoDefault (HM.singleton (gtLookahead gt) (gtValuation gt))
+		:&: "valuation" :=: gtValuation
 
 data NetOutput = NetOutput
 	{ noPriors :: HashMap Pill Float
