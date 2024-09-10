@@ -713,7 +713,7 @@ torch::Tensor leaf_loss(leaf_type loss_ty, const torch::Tensor &net_output, cons
 			torch::Tensor clamped_output = net_output.clamp(EPSILON, 1-EPSILON);
 			if(CHECK_NO_CLAMPING && !clamped_output.equal(net_output))
 				std::cerr << "WARNING: net output a probability so confident that it was clamped" << std::endl;
-			torch::Tensor first_cross_entropy_term = ((ground_truth - 1) * (1 - clamped_output).log());
+			torch::Tensor first_cross_entropy_term = (ground_truth - 1) * (1 - clamped_output).log();
 			if(mask.defined()) first_cross_entropy_term *= mask;
 			return first_cross_entropy_term - ground_truth * clamped_output.log();
 			}
