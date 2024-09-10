@@ -9,7 +9,7 @@ module Nurse.Sveta.Tomcats (
 	ctxDiscount, ctxImmediateReward, ctxFinalReward,
 	ctxIterations, ctxDiscountRate, ctxC_puct, ctxDirichlet, ctxPriorNoise,
 	ctxRewardVirusClear, ctxRewardOtherClear, ctxRewardWin, ctxRewardLoss,
-	chooseRNG, chooseMove,
+	playRNG, playMove,
 	DMParameters, dmParameters,
 	GameStateSeed(..), initialTree,
 	mcts, descend, unsafeDescend,
@@ -157,11 +157,11 @@ freezeGameState gs = do
 		, iSensitive = originalSensitive gs /= (fp .&. 1 == 1)
 		}
 
-chooseRNG :: GameState -> Lookahead -> IO ()
-chooseRNG = writeIORef . lookbehind
+playRNG :: GameState -> Lookahead -> IO ()
+playRNG = writeIORef . lookbehind
 
-chooseMove :: GameState -> MidPath -> Pill -> IO (Maybe ClearResults)
-chooseMove gs path pill = do
+playMove :: GameState -> MidPath -> Pill -> IO (Maybe ClearResults)
+playMove gs path pill = do
 	mres <- mplaceDetails (board gs) pill
 	mres <$ for_ mres \results -> do
 		let counts = summarizeClearResults results
@@ -389,7 +389,7 @@ newMoveTree ctx pathCache priors lk = do
 -- | modifies the GameState
 descendRNGTree :: SearchContext -> RNGTree -> Lookahead -> IO MoveTree
 descendRNGTree ctx t lk = do
-	chooseRNG (ctxState ctx) lk
+	playRNG (ctxState ctx) lk
 	case HM.lookup lk (childrenRNG t) of
 		Nothing -> newMoveTree ctx (placements t) (childPriorsRNG t) lk
 		Just t' -> pure t'
@@ -401,7 +401,7 @@ descendRNGTree ctx t lk = do
 descendMoveTree :: SearchContext -> MoveTree -> Pill -> IO RNGTree
 descendMoveTree ctx t pill = case HM.lookup pill (pathsMove t) of
 	Nothing -> die True False "Illegal play (no path)"
-	Just path -> chooseMove (ctxState ctx) path pill >>= \case
+	Just path -> playMove (ctxState ctx) path pill >>= \case
 		Nothing -> die False False "Illegal play (occupied or out-of-bounds placement)"
 		Just _ -> case HM.lookup pill (childrenMove t) of
 			Just t' -> pure t'
@@ -455,7 +455,7 @@ expandMoveTree' ctx t = case (maximumOn (\_ -> scoreTree) (childrenMove t), scor
 	exploit pill t' = go pill (expandRNGTree' ctx t') t
 	go pill buildTree t' = do
 		before <- readIORef (framesPassed (ctxState ctx))
-		Just results <- chooseMove (ctxState ctx) (pathsMove t HM.! pill) pill
+		Just results <- playMove (ctxState ctx) (pathsMove t HM.! pill) pill
 		after <- readIORef (framesPassed (ctxState ctx))
 		(dv, tNew) <- buildTree
 		pure ( ctxImmediateReward ctx results + ctxDiscount ctx (after - before) dv
@@ -789,8 +789,8 @@ cloneBoard = mfreeze >=> thaw
 
 dmPlay :: GameState -> Move -> IO ()
 dmPlay gs = \case
-	RNG l r -> chooseRNG gs (Lookahead l r)
-	Placement path pill -> () <$ chooseMove gs path pill
+	RNG l r -> playRNG gs (Lookahead l r)
+	Placement path pill -> () <$ playMove gs path pill
 
 yCosts :: V.Vector Int
 yCosts = V.fromList [47 {- TODO -}, 46 {- TODO -}, 44, 42, 41, 41, 39, 39, 37, 37, 35, 35, 33, 34, 34, 34]

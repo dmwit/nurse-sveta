@@ -208,13 +208,13 @@ netGradients net scaling batch = netGradients' net (lsEndpoint scaling) (toEndpo
 fullReplay :: (GameStateSeed a, Show a) => a -> [GameStep'] -> Lookahead -> (IGameState -> s) -> (GameStep' -> IGameState -> ClearResults -> s -> s) -> IO s
 fullReplay seed steps0 lk fDone fStep = initialState seed >>= go steps0 where
 	go [] gs = do
-		chooseRNG gs lk
+		playRNG gs lk
 		igs <- freezeGameState gs
 		pure (fDone igs)
 	go (step:steps) gs = do
-		chooseRNG gs (gsRNG step)
+		playRNG gs (gsRNG step)
 		igs <- freezeGameState gs
-		chooseMove gs (gsPath step) (gsPill step) >>= \case
+		playMove gs (gsPath step) (gsPill step) >>= \case
 			Nothing -> fail $ ""
 				++ "illegal move in game record; seed=" ++ show seed
 				++ ", steps=" ++ show steps0
