@@ -31,7 +31,7 @@ main :: IO ()
 main = do
 	torchPlusGtkFix
 	app <- new Application []
-	netRef <- newIORef . Just . fst =<< netSample
+	netRef <- newIORef . Just . fst =<< netSampleNext
 	inpRef <- newIORef Nothing
 
 	on app #activate $ do
@@ -70,7 +70,7 @@ main = do
 
 		fsOnUnload nnw (writeIORef netRef Nothing >> updateView)
 		fsOnLoad nnw \fp -> do
-			(net, _optim) <- netLoadForTraining fp
+			(net, _optim) <- netLoadForTrainingNext fp
 			writeIORef netRef (Just net)
 			True <$ updateView
 
@@ -86,7 +86,7 @@ main = do
 	args <- getArgs
 	() <$ #run app (Just args)
 
-setupEndpointView :: IORef (Maybe Net) -> IORef (Maybe GameDetails) -> IORef GraphsState -> IORef SelectionState -> IO ()
+setupEndpointView :: IORef (Maybe Net) -> IORef (Maybe GameDetails') -> IORef GraphsState -> IORef SelectionState -> IO ()
 setupEndpointView netRef inpRef gsRef ssRef = do
 	mnet <- readIORef netRef
 	minp <- readIORef inpRef
@@ -94,7 +94,7 @@ setupEndpointView netRef inpRef gsRef ssRef = do
 		(Nothing, Nothing) -> pure defaultResidue
 		(Just net, Nothing) -> liftM2 newResidue (netWeights net) (pure V.empty)
 		(Nothing, Just inp) -> trainingExamples inp <&> \tes ->
-			newResidue (toEndpoint tes) (teBackground <$> tes)
+			newResidue (toEndpoint tes) (backgroundsFor tes inp)
 		(Just net, Just inp) -> do
 				tes <- trainingExamples inp
 				let tesE@(EDictionary [("input", ni), ("ground truth", gt)]) = toEndpoint tes
@@ -112,7 +112,7 @@ setupEndpointView netRef inpRef gsRef ssRef = do
 				    	, ("gradients", ng)
 				    	, ("ground truth", gt)
 				    	]
-				pure (newResidue combinedEndpoint (teBackground <$> tes))
+				pure (newResidue combinedEndpoint (backgroundsFor tes inp))
 	resetSelection gsRef ssRef res
 
 data GraphsState = GraphsState
@@ -366,11 +366,12 @@ data Background = Background
 	, bgLookahead :: Lookahead
 	} deriving (Eq, Ord, Read, Show)
 
-teBackground :: TrainingExample -> Background
-teBackground te = Background
-	{ bgBoard = niBoard (teInput te)
-	, bgLookahead = gtLookahead (teTruth te)
-	}
+backgroundsFor :: Vector TrainingExample -> GameDetails' -> Vector Background
+backgroundsFor tes (_, steps, _, _) | V.length tes == length steps = V.zipWith combine tes (V.fromList steps) where
+	combine te gs = Background
+		{ bgBoard = niBoard (teInput te)
+		, bgLookahead = gsRNG gs
+		}
 
 data BatchSelection = NotYetSelected | Pending Int | Selected deriving (Eq, Ord, Read, Show)
 data Residue = Residue
