@@ -689,15 +689,15 @@ torch::Tensor leaf_loss(leaf_type loss_ty, const torch::Tensor &net_output, cons
 		case type_unit: [[fallthrough]];
 		case type_positive:
 			return mask.defined() ?
-				(ground_truth - net_output).square() :
-				(ground_truth - net_output * mask).square();
+				(ground_truth - net_output * mask).square() :
+				(ground_truth - net_output).square();
 		case type_categorical: {
 			std::vector<int64_t> sum_dimensions; sum_dimensions.reserve(ground_truth.dim() - 1);
 			for(int i = 1; i < ground_truth.dim(); ++i) sum_dimensions.push_back(i);
 			torch::Tensor normalization =
 				mask.defined() ?
-				net_output.sum(sum_dimensions, true) :
-				(net_output * mask).sum(sum_dimensions, true);
+				(net_output * mask).sum(sum_dimensions, true) :
+				net_output.sum(sum_dimensions, true);
 
 			// ground_truth can have zeros (e.g. everywhere the mask is zero), which
 			// leads to -inf's after the log, which leads to nan's in the gradients. We
