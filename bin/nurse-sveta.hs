@@ -151,7 +151,7 @@ newGenerationThreadState = GenerationThreadState
 -- │╭╴psv╶╮╭╴spd╶╮│
 -- │╰─────╯╰─────╯│
 -- ╰──────────────╯
-generationThreadView :: Procedure NetInput NetOutput' -> MVar HyperParameters -> IO ThreadView
+generationThreadView :: Procedure NetInput NetOutput -> MVar HyperParameters -> IO ThreadView
 generationThreadView eval hpRef = do
 	genRef <- newTVarIO newGenerationThreadState
 
@@ -184,7 +184,7 @@ renderSpeeds spd sss = do
 	where
 	updateLabel n t = gridUpdateLabelAt spd n 0 t (numericLabel t)
 
-generationThread :: Procedure NetInput NetOutput' -> MVar HyperParameters -> TVar GenerationThreadState -> StatusCheck -> IO ()
+generationThread :: Procedure NetInput NetOutput -> MVar HyperParameters -> TVar GenerationThreadState -> StatusCheck -> IO ()
 generationThread eval hpRef genRef sc = do
 	g <- createSystemRandom
 	threadSpeed <- newSearchSpeed
@@ -193,7 +193,7 @@ generationThread eval hpRef genRef sc = do
 	gameLoop g threadSpeed = do
 		(s0, t) <- newRNGTreeFromSeed eval g 0 g
 		gameSpeed <- newSearchSpeed
-		ctx <- pure (SearchContext eval g) <*> dmClone s0 <*> takeMVar hpRef
+		ctx <- pure (SearchContext eval g) <*> cloneGameState s0 <*> takeMVar hpRef
 		moveLoop ctx threadSpeed gameSpeed s0 [] t
 
 	moveLoop ctx threadSpeed gameSpeed s0 history t = do
@@ -216,7 +216,7 @@ generationThread eval hpRef genRef sc = do
 				-- in particular, HashMap's fmap doesn't do the thing
 				visitsChildren <- traverse (evaluate . round . visitCountRNG) (childrenMove t)
 				visitsUnexplored <- HM.fromList . V.toList . fmap (\(pill, _) -> (pill, 0)) <$> evaluate (unexploredMove t)
-				let gs = GameStep' lk (pathsMove t HM.! pill) pill (visitsChildren `HM.union` visitsUnexplored)
+				let gs = GameStep lk (pathsMove t HM.! pill) pill (visitsChildren `HM.union` visitsUnexplored)
 				t' <- descendMoveTree ctx t pill
 				moveLoop ctx threadSpeed gameSpeed s0 (gs:history) t'
 
@@ -244,7 +244,7 @@ generationThread eval hpRef genRef sc = do
 		finish threadSpeed = recordGame s0 history lk (ctxParams ctx) >> gameLoop (ctxRNG ctx) threadSpeed
 
 -- [PORT] /dev/urandom
-recordGame :: GameState -> [GameStep'] -> Lookahead -> HyperParameters -> IO ()
+recordGame :: GameState -> [GameStep] -> Lookahead -> HyperParameters -> IO ()
 recordGame gs steps lk hp = do
 	b <- mfreeze (board gs)
 	now <- Time.getCurrentTime
@@ -367,7 +367,7 @@ itsNewNet its = \case
 		Nothing -> True
 		Just (n', _) -> n /= n'
 
-inferenceThreadView :: Procedure NetInput NetOutput' -> TVar (Maybe Integer) -> IO ThreadView
+inferenceThreadView :: Procedure NetInput NetOutput -> TVar (Maybe Integer) -> IO ThreadView
 inferenceThreadView eval netUpdate = do
 	top <- new Box [#orientation := OrientationVertical]
 	lbl <- descriptionLabel "<initializing net>"
@@ -424,7 +424,7 @@ data InferenceThreadStep
 	| ITSProgress (IO Int)
 	| ITSDie
 
-inferenceThread :: Procedure NetInput NetOutput' -> TVar (Maybe Integer) -> TVar InferenceThreadState -> StatusCheck -> IO ()
+inferenceThread :: Procedure NetInput NetOutput -> TVar (Maybe Integer) -> TVar InferenceThreadState -> StatusCheck -> IO ()
 inferenceThread eval netUpdate itsRef sc = forever $ do
 	step <- atomically $ do
 		its <- readTVar itsRef
@@ -432,9 +432,9 @@ inferenceThread eval netUpdate itsRef sc = forever $ do
 			, ITSDie <$ scSTM sc
 			, ITSLoadNet <$> (readTVar netUpdate >>= ensure (itsNewNet its))
 			, case (itsUseNet its, sPayload (itsNet its)) of
-				(True, Just (_, net)) -> liftEvaluation (netEvaluationNext net)
+				(True, Just (_, net)) -> liftEvaluation (netEvaluation net)
 				(True, _) -> retry
-				_ -> liftEvaluation (traverse dumbEvaluation')
+				_ -> liftEvaluation (traverse dumbEvaluation)
 			]
 	case step of
 		ITSProgress ion -> ion >>= \n -> atomically $ do
@@ -457,7 +457,7 @@ inferenceThread eval netUpdate itsRef sc = forever $ do
 				writeTVar itsRef its' { itsNet = sSet net (itsNet its) }
 		ITSDie -> scIO_ sc
 	where
-	liftEvaluation :: (V.Vector NetInput -> IO (V.Vector NetOutput')) -> STM InferenceThreadStep
+	liftEvaluation :: (V.Vector NetInput -> IO (V.Vector NetOutput)) -> STM InferenceThreadStep
 	liftEvaluation f = ITSProgress <$> serviceCallsSTM eval (fmap (\answers -> (answers, V.length answers)) . f)
 
 inferenceThreadLoadLatestNet :: IO (Maybe (Integer, Net))
@@ -470,7 +470,7 @@ inferenceThreadLoadNet :: Integer -> IO (Integer, Net)
 inferenceThreadLoadNet tensor = do
 	dir <- nsDataDir
 	-- [N]urse [S]veta [n]et
-	net <- netLoadForInferenceNext (absFileName dir Weights (show tensor <.> "nsn"))
+	net <- netLoadForInference (absFileName dir Weights (show tensor <.> "nsn"))
 	pure (tensor, net)
 
 data BureaucracyGlobalState = BureaucracyGlobalState
@@ -670,7 +670,7 @@ processGameFile log status dir fp = recallGame dir fp >>= \case
 data GameDecodingResult
 	= GDParseError
 	| GDStillWriting
-	| GDSuccess GameDetails'
+	| GDSuccess GameDetails
 
 recallGame :: FilePath -> FilePath -> IO GameDecodingResult
 recallGame dir fp = handle (\e -> if isAlreadyInUseError e then pure GDStillWriting else throwIO e) $ do
@@ -960,10 +960,10 @@ trainingThreadLoadLatestNet = do
 	mn <- absDecodeFileLoop dir Weights latestFilename
 	case mn of
 		Nothing -> do
-			netOptim <- netSampleNext
+			netOptim <- netSample
 			pure (0, netOptim)
 		Just n -> do
-			netOptim <- netLoadForTrainingNext (absFileName dir Weights (show n <.> "nsn"))
+			netOptim <- netLoadForTraining (absFileName dir Weights (show n <.> "nsn"))
 			pure (n, netOptim)
 
 -- This doesn't choose training positions uniformly at random from among all

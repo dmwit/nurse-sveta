@@ -12,7 +12,7 @@ import Data.Tree
 import Dr.Mario.Model
 import GHC.IO.Exception
 import Nurse.Sveta.Files
-import Nurse.Sveta.Tomcats (dmPlay, initialState, GameState(..), Move(..))
+import Nurse.Sveta.Tomcats hiding (Tree)
 import Nurse.Sveta.Torch
 import System.Environment
 import System.IO
@@ -78,22 +78,19 @@ processAsFile parent fp = decodeFileStrict' fp' >>= \case
 	fp' = parent </> fp
 	produce res = Node (fp, False, res) []
 
+data Pending = LossPending Int | ClearPending Int deriving (Eq, Ord, Read, Show)
+
+finish :: Pending -> IGameState -> Result -> Result
+finish pending igs result = case pending of
+	LossPending pu -> result { lossDistribution = MS.singleton (pu - iPillsUsed igs) }
+	ClearPending pu -> result { clearDistribution = MS.insert (pu - iPillsUsed igs) (clearDistribution result) }
+
 processGame :: GameDetails -> IO Result
-processGame (seed, gss0) = do
-	state <- initialState seed
-	let go vk pu [] = do
-	    	vk' <- readIORef (virusesKilled state)
-	    	pure $ if vk' == originalVirusCount state
-	    		then mempty { clearDistribution = MS.singleton pu }
-	    		else mempty { lossDistribution = MS.singleton pu }
-	    go vk pu (gs:gss) = do
-	    	dmPlay state (gsMove gs)
-	    	vk' <- readIORef (virusesKilled state)
-	    	case (vk == vk', gsMove gs) of
-	    		(True, RNG{}) -> go vk pu gss
-	    		(True, Placement{}) -> go vk (pu+1) gss
-	    		(False, _) -> (mempty { clearDistribution = MS.singleton pu } <>) <$> go vk' 0 gss
-	go 0 0 gss0
+processGame (seed, steps, lk, _) = snd <$> fullReplay seed steps lk
+	(\igs -> if iVirusesKilled igs == iOriginalVirusCount igs then (ClearPending (iPillsUsed igs), mempty) else (LossPending (iPillsUsed igs), mempty))
+	\_step igs clearRes v@(pending, result) -> if 0 == clears (summarizeClearResults clearRes) || 0 /= iPillsUsed igs
+		then v
+		else (ClearPending (iPillsUsed igs), finish pending igs result)
 
 ppResults :: Int -> Tree (FilePath, Result) -> IO ()
 ppResults n (Node (fp, res) children) = do

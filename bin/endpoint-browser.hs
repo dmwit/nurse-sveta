@@ -31,7 +31,7 @@ main :: IO ()
 main = do
 	torchPlusGtkFix
 	app <- new Application []
-	netRef <- newIORef . Just . fst =<< netSampleNext
+	netRef <- newIORef . Just . fst =<< netSample
 	inpRef <- newIORef Nothing
 
 	on app #activate $ do
@@ -70,7 +70,7 @@ main = do
 
 		fsOnUnload nnw (writeIORef netRef Nothing >> updateView)
 		fsOnLoad nnw \fp -> do
-			(net, _optim) <- netLoadForTrainingNext fp
+			(net, _optim) <- netLoadForTraining fp
 			writeIORef netRef (Just net)
 			True <$ updateView
 
@@ -86,7 +86,7 @@ main = do
 	args <- getArgs
 	() <$ #run app (Just args)
 
-setupEndpointView :: IORef (Maybe Net) -> IORef (Maybe GameDetails') -> IORef GraphsState -> IORef SelectionState -> IO ()
+setupEndpointView :: IORef (Maybe Net) -> IORef (Maybe GameDetails) -> IORef GraphsState -> IORef SelectionState -> IO ()
 setupEndpointView netRef inpRef gsRef ssRef = do
 	mnet <- readIORef netRef
 	minp <- readIORef inpRef
@@ -366,7 +366,7 @@ data Background = Background
 	, bgLookahead :: Lookahead
 	} deriving (Eq, Ord, Read, Show)
 
-backgroundsFor :: Vector TrainingExample -> GameDetails' -> Vector Background
+backgroundsFor :: Vector TrainingExample -> GameDetails -> Vector Background
 backgroundsFor tes (_, steps, _, _) | V.length tes == length steps = V.zipWith combine tes (V.fromList steps) where
 	combine te gs = Background
 		{ bgBoard = niBoard (teInput te)

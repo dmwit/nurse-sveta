@@ -4,7 +4,6 @@ module Nurse.Sveta.Torch.Semantics (
 	module Nurse.Sveta.Torch.Endpoint,
 	-- * Neural net interface
 	NetInput(..), NetOutput(..), LossScaling(..), GroundTruth(..), TrainingExample(..),
-	NetOutput'(..),
 	lsEndpoint,
 	-- * ToEndpoint
 	ToEndpoint(..),
@@ -249,34 +248,18 @@ instance ToEndpoint GroundTruth where
 		:&: "valuation" :=: gtValuation
 
 data NetOutput = NetOutput
-	{ noPriors :: HashMap Pill Float
-	, noValuation :: HashMap Lookahead Float
+	{ noPriors :: EndpointMap Pill CFloat
+	, noValuation :: Float
 	} deriving (Eq, Ord, Read, Show)
 
 instance Structured NetOutput where
 	structure = SDictionary $ tail [undefined
 		, ("priors", STensor Categorical (indexCounts @Pill))
-		, ("valuation", STensor Unit (indexCounts @Lookahead))
+		, ("valuation", STensor Unbounded [])
 		]
 
 instance FromEndpoint NetOutput where
 	endpointIndex = endpointIndexRecord $ pure NetOutput
-		<*> field "priors"
-		<*> field "valuation"
-
-data NetOutput' = NetOutput'
-	{ noPriors' :: EndpointMap Pill CFloat
-	, noValuation' :: Float
-	} deriving (Eq, Ord, Read, Show)
-
-instance Structured NetOutput' where
-	structure = SDictionary $ tail [undefined
-		, ("priors", STensor Categorical (indexCounts @Pill))
-		, ("valuation", STensor Unbounded [])
-		]
-
-instance FromEndpoint NetOutput' where
-	endpointIndex = endpointIndexRecord $ pure NetOutput'
 		<*> field "priors"
 		<*> field "valuation"
 

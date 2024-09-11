@@ -2,11 +2,10 @@ module Nurse.Sveta.Torch (
 	Net, Optimizer,
 	netSample, netLoadForInference, netLoadForTraining,
 	netEvaluation, netLossComponents, netActivations, netGradients, netTrain,
-	netSampleNext, netEvaluationNext, netLoadForTrainingNext, netLoadForInferenceNext,
 	netSave, netWeights,
-	TrainingExample(..), GameDetails, GameStep(..), GameDetails', GameStep'(..),
+	TrainingExample(..), GameDetails, GameStep(..),
 	fullReplay, fullReplayV, trainingExamples,
-	NetInput(..), NetOutput(..), NetOutput'(..), GroundTruth(..), LossScaling(..),
+	NetInput(..), NetOutput(..), GroundTruth(..), LossScaling(..),
 	netSample', netLoadForInference', netLoadForTraining',
 	netEvaluation', netLossComponents', netActivations', netGradients', netTrain',
 	)
@@ -16,7 +15,6 @@ import Control.Monad
 import Data.Aeson
 import Data.Functor
 import Data.HashMap.Strict (HashMap)
-import Data.IORef
 import Data.Vector (Vector)
 import Dr.Mario.Model
 import Nurse.Sveta.Tomcats
@@ -25,34 +23,23 @@ import Nurse.Sveta.Torch.Semantics
 import Foreign
 import Foreign.C
 
-import qualified Data.HashMap.Strict as HM
 import qualified Data.Vector as V
 
 data GameStep = GameStep
-	{ gsMove :: Move
-	, gsRoot :: Statistics
-	, gsChildren :: HashMap Move Statistics
-	} deriving (Eq, Ord, Read, Show)
-
-instance ToJSON GameStep where toJSON gs = toJSON (gsMove gs, gsRoot gs, HM.toList (gsChildren gs))
-instance FromJSON GameStep where parseJSON v = parseJSON v <&> \(m, r, c) -> GameStep m r (HM.fromList c)
-
-data GameStep' = GameStep'
 	{ gsRNG :: Lookahead
 	, gsPath :: MidPath
 	, gsPill :: Pill
 	, gsVisits :: HashMap Pill Int
 	} deriving (Eq, Ord, Read, Show)
 
-instance ToJSON GameStep' where toJSON gs = toJSON (gsRNG gs, gsPath gs, gsPill gs, gsVisits gs)
-instance FromJSON GameStep' where parseJSON v = parseJSON v <&> \(r, p, m, v) -> GameStep' r p m v
+instance ToJSON GameStep where toJSON gs = toJSON (gsRNG gs, gsPath gs, gsPill gs, gsVisits gs)
+instance FromJSON GameStep where parseJSON v = parseJSON v <&> \(r, p, m, v) -> GameStep r p m v
 
 -- TODO: could consider varying the cost model, gravity speed, NES vs SNES pill
 -- distribution, NES vs SNES (vs other?) pathfinding, and then passing info on
 -- which choice was made into the net
 
-type GameDetails = ((Board, Bool, CoarseSpeed), [GameStep])
-type GameDetails' = ((Board, Bool, CoarseSpeed), [GameStep'], Lookahead, HyperParameters)
+type GameDetails = ((Board, Bool, CoarseSpeed), [GameStep], Lookahead, HyperParameters)
 
 foreign import ccall "sample_net" cxx_sample_net :: Ptr CStructure -> Ptr CStructure -> Ptr (Ptr Net) -> Ptr (Ptr Optimizer) -> IO ()
 foreign import ccall "load_net" cxx_load_net :: CString -> Ptr CStructure -> Ptr CStructure -> Ptr (Ptr Net) -> Ptr (Ptr Optimizer) -> IO ()
@@ -145,26 +132,14 @@ netGradients' net_ scaling_ batch_ = do
 withNetIO :: (Structure -> Structure -> a) -> a
 withNetIO f = f (structure @NetInput) (structure @NetOutput)
 
-withNetIO' :: (Structure -> Structure -> a) -> a
-withNetIO' f = f (structure @NetInput) (structure @NetOutput')
-
 netSample :: IO (Net, Optimizer)
 netSample = withNetIO netSample'
-
-netSampleNext :: IO (Net, Optimizer)
-netSampleNext = withNetIO' netSample'
 
 netLoadForInference :: FilePath -> IO Net
 netLoadForInference = withNetIO . netLoadForInference'
 
-netLoadForInferenceNext :: FilePath -> IO Net
-netLoadForInferenceNext = withNetIO' . netLoadForInference'
-
 netLoadForTraining :: FilePath -> IO (Net, Optimizer)
 netLoadForTraining = withNetIO . netLoadForTraining'
-
-netLoadForTrainingNext :: FilePath -> IO (Net, Optimizer)
-netLoadForTrainingNext = withNetIO' . netLoadForTraining'
 
 netSave :: Net -> Optimizer -> FilePath -> IO ()
 netSave net_ optim_ path_ = withUnwrapped (WCS path_, (net_, optim_)) \(path, (net, optim)) ->
@@ -172,9 +147,6 @@ netSave net_ optim_ path_ = withUnwrapped (WCS path_, (net_, optim_)) \(path, (n
 
 netEvaluation :: Net -> Vector NetInput -> IO (Vector NetOutput)
 netEvaluation net is = fromEndpoint <$> netEvaluation' net (toEndpoint is)
-
-netEvaluationNext :: Net -> Vector NetInput -> IO (Vector NetOutput')
-netEvaluationNext net is = fromEndpoint <$> netEvaluation' net (toEndpoint is)
 
 netActivations :: Net -> Vector NetInput -> IO Endpoint
 netActivations net is = netActivations' net (toEndpoint is)
@@ -205,7 +177,7 @@ netWeights net_ = withUnwrapped net_ (cxx_net_weights >=> gcEndpoint >=> hsEndpo
 netGradients :: Net -> LossScaling -> Vector TrainingExample -> IO Endpoint
 netGradients net scaling batch = netGradients' net (lsEndpoint scaling) (toEndpoint batch)
 
-fullReplay :: (GameStateSeed a, Show a) => a -> [GameStep'] -> Lookahead -> (IGameState -> s) -> (GameStep' -> IGameState -> ClearResults -> s -> s) -> IO s
+fullReplay :: (GameStateSeed a, Show a) => a -> [GameStep] -> Lookahead -> (IGameState -> s) -> (GameStep -> IGameState -> ClearResults -> s -> s) -> IO s
 fullReplay seed steps0 lk fDone fStep = initialState seed >>= go steps0 where
 	go [] gs = do
 		playRNG gs lk
@@ -221,12 +193,12 @@ fullReplay seed steps0 lk fDone fStep = initialState seed >>= go steps0 where
 				++ ", steps remaining=" ++ show (length (step:steps))
 			Just res -> fStep step igs res <$> go steps gs
 
-fullReplayV :: (GameStateSeed a, Show a) => a -> [GameStep'] -> Lookahead -> (IGameState -> s) -> (GameStep' -> IGameState -> ClearResults -> s -> (s, v)) -> IO (Vector v)
+fullReplayV :: (GameStateSeed a, Show a) => a -> [GameStep] -> Lookahead -> (IGameState -> s) -> (GameStep -> IGameState -> ClearResults -> s -> (s, v)) -> IO (Vector v)
 fullReplayV seed steps lk fDone fStep = V.fromList . snd <$> fullReplay seed steps lk
 	(\igs -> (fDone igs, []))
 	(\step igs res (s, vs) -> (:vs) <$> fStep step igs res s)
 
-trainingExamples :: GameDetails' -> IO (Vector TrainingExample)
+trainingExamples :: GameDetails -> IO (Vector TrainingExample)
 trainingExamples (seed, steps, lk, hp) = fullReplayV seed steps lk (\igs -> (ihpFinalReward hp igs, iFramesPassed igs)) \step igs res (value, frames) -> let
 	value' = hpImmediateReward hp res + hpDiscount hp (frames - frames') value
 	frames' = iFramesPassed igs

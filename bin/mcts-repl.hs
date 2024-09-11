@@ -30,8 +30,8 @@ import qualified Data.Vector as V
 main :: IO ()
 main = do
 	proc <- newProcedure 100
-	(net, _optim) <- netSampleNext
-	forkIO $ forever (serviceCalls_ proc (netEvaluationNext net))
+	(net, _optim) <- netSample
+	forkIO $ forever (serviceCalls_ proc (netEvaluation net))
 	g <- createSystemRandom
 	(s, t) <- newRNGTreeFromSeed proc g 0 g
 	evalStateT repl ReplState

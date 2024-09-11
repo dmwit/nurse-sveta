@@ -10,47 +10,27 @@ module Nurse.Sveta.Tomcats (
 	ctxIterations, ctxDiscountRate, ctxC_puct, ctxDirichlet, ctxPriorNoise,
 	ctxRewardVirusClear, ctxRewardOtherClear, ctxRewardWin, ctxRewardLoss,
 	playRNG, playMove,
-	DMParameters, dmParameters,
-	GameStateSeed(..), initialTree,
-	mcts, descend, unsafeDescend,
-	evaluateFinalState, netInput, dumbEvaluation,
-	dumbEvaluation',
-	dmFinished, dmPlay, dmClone, approximateCostModel,
-	SearchConfiguration(..),
-	Move(..),
+	GameStateSeed(..),
+	dumbEvaluation,
 	MidPath(..),
-	GameState(..), IGameState(..), freezeGameState,
-	Statistics(..),
-	Tree(..),
-	clone,
-	maximumOn, BestMoves(..), bestMoves,
-	ppTreeIO, ppTreeSparseIO,
+	GameState(..), IGameState(..), cloneGameState, freezeGameState,
 	ppRNGTree, ppRNGTreeDebug, ppMoveTree, ppMoveTreeDebug,
 	ppMoveTrees, ppPlacements, ppEndpointMap, ppUnexploredMove,
 	ppAeson,
-	ppTreeSparse, ppTreesSparse, ppTree, ppTrees,
-	ppStats, ppStatss, ppCache,
-	ppMove,
 	ppPill, ppContent, ppOrientation, ppColor,
 	ppPosition,
 	ppPercent, ppPrecision,
 	) where
 
-import Control.Applicative
-import Control.Concurrent
-import Control.Concurrent.MVar
 import Control.Monad
 import Data.Aeson
 import Data.Aeson.Types
 import Data.Bits
 import Data.Foldable
-import Data.Functor
-import Data.Hashable
 import Data.HashMap.Strict (HashMap)
 import Data.IORef
 import Data.List
 import Data.Semigroup
-import Data.Traversable
 import Data.Vector (Vector)
 import Dr.Mario.Model
 import Dr.Mario.Pathfinding
@@ -59,10 +39,7 @@ import Nurse.Sveta.STM.BatchProcessor
 import Nurse.Sveta.Torch.Semantics
 import System.Random.MWC
 import System.Random.MWC.Distributions
-import System.Random.Stateful (uniformDouble01M, uniformFloat01M)
-import System.IO.Unsafe (unsafeInterleaveIO)
-import Tomcats hiding (descend)
-import Tomcats.AlphaZero.Float (Statistics(..))
+import System.Random.Stateful (uniformFloat01M)
 
 import qualified Data.ByteString.Lazy.Char8 as LBS8
 import qualified Data.HashMap.Strict as HM
@@ -70,54 +47,11 @@ import qualified Data.Vector as V
 import qualified Data.Vector.Algorithms.Intro as V
 import qualified Nurse.Sveta.Torch.EndpointMap as EM
 import qualified Data.Text as T
-import qualified Tomcats as T
-import qualified Tomcats.AlphaZero.Float as A0
 
 -- TODO:
 -- 	* board/pill generation options like MWC vs LFSR, Algorithm X vs NES' algo,
 -- 	  128 pre-determined pills vs on-the-fly, maybe SNES vs NES distro?
 -- 	* neural net vs. not
-data SearchConfiguration = SearchConfiguration
-	{ c_puct :: Float
-	, iterations :: Int
-	, typicalMoves :: Float
-	, priorNoise :: Float
-	, moveNoise :: Double -- ^ probability of not choosing the best move
-	} deriving (Eq, Ord, Read, Show)
-
--- | The 'MidPath' is ignored for 'Eq', 'Ord', and 'Hashable'.
-data Move = RNG Color Color | Placement MidPath Pill deriving (Show, Read)
-
-instance Eq Move where
-	RNG l0 r0 == RNG l1 r1 = l0 == l1 && r0 == r1
-	Placement _ l == Placement _ r = l == r
-	_ == _ = False
-
-instance Ord Move where
-	compare (RNG l0 l1) (RNG r0 r1) = compare l0 r0 <> compare l1 r1
-	compare (Placement _ l) (Placement _ r) = compare l r
-	compare RNG{} _ = LT
-	compare Placement{} _ = GT
-
-instance Hashable Move where
-	hashWithSalt s = \case
-		RNG c c'         ->            s `hashWithSalt` c `hashWithSalt` c'
-		Placement _ pill -> complement s `hashWithSalt` pill
-
-instance ToJSON Move where
-	toJSON = \case
-		RNG l r -> toJSON [l, r]
-		Placement m p -> toJSON (m, p)
-	toEncoding = \case
-		RNG l r -> toEncoding [l, r]
-		Placement m p -> toEncoding (m, p)
-
-instance FromJSON Move where
-	parseJSON v = parseRNG <|> parsePlacement where
-		parseRNG = do
-			[l, r] <- parseJSON v
-			pure (RNG l r)
-		parsePlacement = uncurry Placement <$> parseJSON v
 
 data GameState = GameState
 	{ board :: IOBoard
@@ -172,8 +106,6 @@ playMove gs path pill = do
 		modifyIORef' (virusesKilled gs) (clears counts +)
 		modifyIORef' (pillsUsed gs) succ
 		modifyIORef' (framesPassed gs) (approximateCostModel path pill counts +)
-
-type DMParameters = Parameters IO Float Statistics Move GameState
 
 class GameStateSeed a where initialState :: a -> IO GameState
 
@@ -234,7 +166,7 @@ data MoveTree = MoveTree
 	} deriving (Eq, Ord, Read, Show)
 
 data SearchContext = SearchContext
-	{ ctxEval :: Procedure NetInput NetOutput'
+	{ ctxEval :: Procedure NetInput NetOutput
 	, ctxRNG :: GenIO
 	, ctxState :: GameState
 	, ctxParams :: HyperParameters
@@ -335,7 +267,7 @@ newRNGTree' :: SearchContext -> Float -> IO (Float, RNGTree)
 newRNGTree' ctx prior = (\t -> (cumulativeValuationRNG t, t)) <$> newRNGTree ctx prior
 
 -- TODO: could return an IO (GameState, IO RNGTree) to let the caller choose when to wait on the net evaluation
-newRNGTreeFromSeed :: GameStateSeed a => Procedure NetInput NetOutput' -> GenIO -> Float -> a -> IO (GameState, RNGTree)
+newRNGTreeFromSeed :: GameStateSeed a => Procedure NetInput NetOutput -> GenIO -> Float -> a -> IO (GameState, RNGTree)
 newRNGTreeFromSeed eval rng prior seed = do
 	gs <- initialState seed
 	future <- schedule eval =<< netInput gs
@@ -353,9 +285,9 @@ newRNGTreeFromSeed eval rng prior seed = do
 	    	, nextLookaheadRNG = 0
 	    	, placementsRNG = placements
 	    	, symmetricPlacementsRNG = symmetrize placements
-	    	, childPriorsRNG = noPriors' no
+	    	, childPriorsRNG = noPriors no
 	    	, priorProbabilityRNG = prior
-	    	, cumulativeValuationRNG = noValuation' no
+	    	, cumulativeValuationRNG = noValuation no
 	    	, visitCountRNG = 1
 	    	}
 
@@ -366,26 +298,26 @@ newRNGTreeFromSeed eval rng prior seed = do
 
 newMoveTree :: SearchContext -> HashMap MidPlacement MidPath -> EndpointMap Pill CFloat -> Lookahead -> IO MoveTree
 newMoveTree ctx pathCache priors lk = do
-	finished <- dmFinished (ctxState ctx)
-	noise <- if finished || ctxPriorNoise ctx == 0
+	done <- finished (ctxState ctx)
+	noise <- if done || ctxPriorNoise ctx == 0
 		then pure (0 <$ pills)
 		else dirichlet (realToFrac (ctxDirichlet ctx) <$ pills) (ctxRNG ctx)
 	pure MoveTree
 		{ childrenMove = HM.empty
-		, unexploredMove = if finished then V.empty else unexplored noise
-		, pathsMove = if finished then HM.empty else paths
+		, unexploredMove = if done then V.empty else unexplored noise
+		, pathsMove = if done then HM.empty else paths
 		, visitCountMove = 0
 		}
 	where
 	pills = V.fromList (HM.keys paths)
 	unexplored = id
 		. V.modify (V.sortBy (\(pill, prior) (pill', prior') -> compare prior' prior <> compare pill pill'))
-		. V.zipWith (\pill noise -> (pill, A0.lerp (ctxPriorNoise ctx) (realToFrac noise) ((priors EM.! pill) / normalizationFactor))) pills
+		. V.zipWith (\pill noise -> (pill, lerp (ctxPriorNoise ctx) (realToFrac noise) ((priors EM.! pill) / normalizationFactor))) pills
 	paths = HM.fromListWithKey (\pill -> error $ "Two different MidPlacements both got specialized to " ++ show pill ++ ". Original path cache: " ++ show pathCache)
 		[ (mpPill placement lk, path)
 		| (placement, path) <- HM.toList pathCache
 		]
-	Sum normalizationFactor = A0.unzero <$> HM.foldMapWithKey (\pill _ -> Sum (priors EM.! pill)) paths
+	Sum normalizationFactor = unzero <$> HM.foldMapWithKey (\pill _ -> Sum (priors EM.! pill)) paths
 
 -- | modifies the GameState
 descendRNGTree :: SearchContext -> RNGTree -> Lookahead -> IO MoveTree
@@ -449,8 +381,8 @@ expandMoveTree' ctx t = case (maximumOn (\_ -> scoreTree) (childrenMove t), scor
 	(Nothing, Just _) -> explore
 	(Nothing, Nothing) -> flip (,) t { visitCountMove = visitCountMove t + 1 } <$> ctxFinalReward ctx
 	where
-	scoreTree t' = A0.pucbA0Raw (ctxC_puct ctx) (priorProbabilityRNG t') (visitCountMove t) (visitCountRNG t') (cumulativeValuationRNG t')
-	scorePrior (_, prior) = A0.pucbA0Raw (ctxC_puct ctx) prior (visitCountMove t) 0 0
+	scoreTree t' = pucb (ctxC_puct ctx) (priorProbabilityRNG t') (visitCountMove t) (visitCountRNG t') (cumulativeValuationRNG t')
+	scorePrior (_, prior) = pucb (ctxC_puct ctx) prior (visitCountMove t) 0 0
 
 	explore = let (pill, prior) = V.head (unexploredMove t) in go pill (newRNGTree' ctx prior) t { unexploredMove = V.tail (unexploredMove t) }
 	exploit pill t' = go pill (expandRNGTree' ctx t') t
@@ -465,7 +397,7 @@ expandMoveTree' ctx t = case (maximumOn (\_ -> scoreTree) (childrenMove t), scor
 
 withClonedState :: (SearchContext -> a -> IO b) -> SearchContext -> a -> IO b
 withClonedState f ctx a = do
-	gs <- dmClone (ctxState ctx)
+	gs <- cloneGameState (ctxState ctx)
 	f ctx { ctxState = gs } a
 
 -- | does not modify the GameState
@@ -543,7 +475,96 @@ allLookaheads = V.generate (product (indexCounts' @Lookahead)) fromIndex
 uniformPriors :: EndpointMap Pill CFloat
 uniformPriors = EM.EndpointMap (foldr (svReplicate . evalGameConstant) (generate [] \_ -> 1) (indexCounts @Pill))
 
---- begin PP
+finished :: GameState -> IO Bool
+finished gs = do
+	cellL <- mget (board gs) startingBottomLeftPosition
+	cellR <- mget (board gs) startingOtherPosition
+	remaining <- (originalVirusCount gs-) <$> readIORef (virusesKilled gs)
+	pure $ cellL /= Just Empty || cellR /= Just Empty || remaining <= 0
+
+cloneGameState :: GameState -> IO GameState
+cloneGameState gs = pure GameState
+	<*> cloneBoard (board gs)
+	<*> cloneIORef (virusesKilled gs)
+	<*> cloneIORef (pillsUsed gs)
+	<*> cloneIORef (framesPassed gs)
+	<*> cloneIORef (lookbehind gs)
+	<*> pure (originalVirusCount gs)
+	<*> pure (originalSensitive gs)
+	<*> pure (speed gs)
+
+cloneIORef :: IORef a -> IO (IORef a)
+cloneIORef = readIORef >=> newIORef
+
+cloneBoard :: IOBoard -> IO (IOBoard)
+cloneBoard = mfreeze >=> thaw
+
+yCosts :: V.Vector Int
+yCosts = V.fromList [47 {- TODO -}, 46 {- TODO -}, 44, 42, 41, 41, 39, 39, 37, 37, 35, 35, 33, 34, 34, 34]
+
+dropCost :: Int
+dropCost = 16 -- how long it takes for trash to drop one row
+
+clearCost :: Int
+clearCost = 20 -- how long the clear animation takes
+
+-- TODO: figure out the exact cost model for the NES, then move that into maryodel
+-- TODO: don't count fall time after the last clear
+approximateCostModel :: MidPath -> Pill -> CleanupResults -> Int
+approximateCostModel move pill counts = 0
+	+ yCosts V.! y (bottomLeftPosition pill) -- throwing animation, lock animation, and pause between lock and next throw
+	+ mpPathLength move -- pill maneuvering
+	+ sum [dropCost*n + clearCost | n <- rowsFallen counts] -- fall time + clear animation
+
+-- TODO: perhaps one day we should think about how to fuse this with toEndpoint
+netInput :: GameState -> IO NetInput
+netInput s = pure NetInput
+	<*> mfreeze (board s)
+	<*> readIORef (framesPassed s)
+	<*> pure (originalVirusCount s)
+
+dumbEvaluation :: NetInput -> IO NetOutput
+dumbEvaluation ni = pure NetOutput
+	{ noPriors = uniformPriors
+	, noValuation = 0
+	}
+
+-- | @lerp alpha x y@ linearly interpolates between @x@ (when @alpha@ is @1@) and @y@ (when @alpha@ is @0@).
+lerp :: Float -> Float -> Float -> Float
+lerp alpha x y = alpha*x + (1-alpha)*y
+
+-- | @\case 0 -> 1; v -> v@
+unzero :: Float -> Float
+unzero = \case 0 -> 1; v -> v
+
+-- | Compute the AlphaZero variant of the predictor-biased upper confidence
+-- bound score.
+--
+-- The first argument is a parameter that controls exploration, called c_{puct}
+-- in Mastering the Game of Go Without Human Knowledge; larger values bias the
+-- search more and more towards prior probabilities. Setting it to something
+-- negative probably isn't sensible; it would cause the search to actively
+-- avoid moves with high prior probabilities.
+--
+-- The remaining arguments are a prior probability for the current node, a
+-- visit count for the parent node (n in the literature), a visit count for the
+-- current node (n_i in the literature), and a cumulative utility achieved by
+-- children of the current node (Q_i in the literature). The utility of
+-- individual leaves should be in the range [0, 1] (so that 0 <= Q_i <= n_i).
+pucb :: Float -> Float -> Float -> Float -> Float -> Float
+pucb c_puct p n 0 _ = c_puct * p * sqrt n
+pucb c_puct p n n_i q_i = q_i/n_i + c_puct * p * sqrt n / (1 + n_i)
+
+maximumOn :: Ord a => (k -> v -> a) -> HashMap k v -> Maybe (k, v, a)
+-- checking for emptiness once at the beginning is cheaper than re-checking on
+-- every iteration, as you would have to do if you folded with a Maybe
+maximumOn f m = case HM.toList m of
+	[] -> Nothing
+	(k,v):_ -> Just $ HM.foldlWithKey'
+		(\old@(k,v,a) k' v' -> let a' = f k' v' in if a' > a then (k',v',a') else old)
+		(k, v, f k v)
+		m
+
 ppRNGTree :: String -> RNGTree -> String
 ppRNGTree indent t = ""
 	++ ppPercent (priorProbabilityRNG t) ++ " "
@@ -671,344 +692,7 @@ ppAeson a = case toJSON a of
 	String t -> T.unpack t
 	other -> LBS8.unpack (encode other)
 
-padr :: Int -> String -> String
-padr n s = s ++ replicate (n - length s) ' '
-
---- end PP
-
-initialTree :: GameStateSeed a => DMParameters -> a -> IO (GameState, Tree Statistics Move)
-initialTree params g = do
-	s <- initialState g
-	(_, t) <- Tomcats.initialize params s >>= preprocess params s
-	pure (s, t)
-
-dmParameters :: SearchConfiguration -> Procedure NetInput NetOutput -> GenIO -> DMParameters
-dmParameters config eval gen = Parameters
-	{ score = dmScore config
-	, expand = dmExpand gen
-	, clone = dmClone
-	, play = dmPlay
-	, preprocess = dmPreprocess config eval gen
-	}
-
-dmScore :: SearchConfiguration -> Move -> Statistics -> Statistics -> Float
--- We should probably avoid looking at RNG moves in the same order every time,
--- as that could introduce a bias. In dmExpand, we put a bit of randomness
--- into the priors, which we can use to break ordering ties here.
-dmScore _ RNG{} _ stats = priorProbability stats - visitCount stats
-dmScore config _ parent child = A0.pucbA0Raw (c_puct config) (priorProbability child) (visitCount parent) (visitCount child) (cumulativeValuation child)
-
-dmFinished :: GameState -> IO Bool
-dmFinished gs = do
-	cellL <- mget (board gs) startingBottomLeftPosition
-	cellR <- mget (board gs) startingOtherPosition
-	remaining <- (originalVirusCount gs-) <$> readIORef (virusesKilled gs)
-	pure $ cellL /= Just Empty || cellR /= Just Empty || remaining <= 0
-
--- score: 0 or  1/3 for finishing
---        up to 1/3 for each virus cleared; want the bot to learn early that clearing is good, so reward heavily for the first few viruses
---        up to 1/3 for clearing quickly if you win; the quicker you get, the harder it is to get quicker, so increase the reward more quickly when it's fast
-baseWinningValuation :: Int -> Int -> Float
-baseWinningValuation frames_ ogViruses = 1 - sqrt (min 1 (frames / maxFrames)) / 3 where
-	frames = fromIntegral (max 1 frames_)
-	maxFrames = fromIntegral (shiftL ogViruses 9)
-
-winningValuation :: GameState -> IO Float
-winningValuation gs = do
-	frames <- readIORef (framesPassed gs)
-	pure $ baseWinningValuation frames (originalVirusCount gs)
-
-baseLosingValuation :: Int -> Int -> Float
-baseLosingValuation cleared original = sqrt (fromIntegral cleared / fromIntegral original) / 3
-
-losingValuation :: GameState -> IO Float
-losingValuation gs = do
-	clearedViruses <- readIORef (virusesKilled gs)
-	pure $ baseLosingValuation clearedViruses (originalVirusCount gs)
-
-evaluateFinalState :: GameState -> IO Float
-evaluateFinalState gs = do
-	clearedViruses <- readIORef (virusesKilled gs)
-	if clearedViruses == originalVirusCount gs
-		then winningValuation gs
-		else losingValuation gs
-
-niEvaluateFinalState :: NetInput -> Float
-niEvaluateFinalState ni = if remaining == 0
-	then baseWinningValuation (niFrames ni) orig
-	else baseLosingValuation (orig - remaining) orig
-	where
-	orig = niOriginalVirusCount ni
-	Sum remaining = ofoldMap isVirus (niBoard ni)
-	isVirus = \case
-		Occupied _ Virus -> 1
-		_ -> 0
-
--- We should probably avoid looking at RNG moves in the same order every time,
--- as that could introduce a bias. So we toss a tiny tiny bit of randomness
--- into the priors.
---
--- Because of the way the preprocessor is set up -- to always convert all
--- unexplored RNG nodes to child RNG nodes immediately with a shared
--- pathfinding result -- this expansion is only ever called right after we
--- place a pill, so we can always produce RNG moves.
-dmExpand :: GenIO -> GameState -> IO (Statistics, HashMap Move Statistics)
-dmExpand = \gen gs -> dmFinished gs >>= \case
-	False -> do
-		perm <- uniformPermutation n gen
-		let mk i [l, r] = (RNG l r, Statistics 0 (1/fromIntegral n + fromIntegral (perm V.! i - halfn) * 1e-8) 0)
-		-- The neural net takes the lookahead pill as part of its input. Since
-		-- we haven't decided on that yet, we can't actually report back its
-		-- evaluation of the current state here. So we report zero visits and
-		-- zero value, and fix this up in the preprocessor once we actually
-		-- choose a next pill. Often we will descend into the same part of the
-		-- tree in the next iteration or two, and fix it up fairly promptly --
-		-- though that's not guaranteed!
-		pure (mempty, HM.fromList (zipWith mk [0..] (replicateM 2 colors)))
-	True -> evaluateFinalState gs <&> \score -> (Statistics 1 0 score, HM.empty)
-	where
-	n = length colors^2
-	halfn = n `div` 2
-	colors = [minBound..maxBound :: Color]
-
-dmClone :: GameState -> IO GameState
-dmClone gs = pure GameState
-	<*> cloneBoard (board gs)
-	<*> cloneIORef (virusesKilled gs)
-	<*> cloneIORef (pillsUsed gs)
-	<*> cloneIORef (framesPassed gs)
-	<*> cloneIORef (lookbehind gs)
-	<*> pure (originalVirusCount gs)
-	<*> pure (originalSensitive gs)
-	<*> pure (speed gs)
-
-cloneIORef :: IORef a -> IO (IORef a)
-cloneIORef = readIORef >=> newIORef
-
-cloneBoard :: IOBoard -> IO (IOBoard)
-cloneBoard = mfreeze >=> thaw
-
-dmPlay :: GameState -> Move -> IO ()
-dmPlay gs = \case
-	RNG l r -> playRNG gs (Lookahead l r)
-	Placement path pill -> () <$ playMove gs path pill
-
-yCosts :: V.Vector Int
-yCosts = V.fromList [47 {- TODO -}, 46 {- TODO -}, 44, 42, 41, 41, 39, 39, 37, 37, 35, 35, 33, 34, 34, 34]
-
-dropCost :: Int
-dropCost = 16 -- how long it takes for trash to drop one row
-
-clearCost :: Int
-clearCost = 20 -- how long the clear animation takes
-
--- TODO: figure out the exact cost model for the NES, then move that into maryodel
--- TODO: don't count fall time after the last clear
-approximateCostModel :: MidPath -> Pill -> CleanupResults -> Int
-approximateCostModel move pill counts = 0
-	+ yCosts V.! y (bottomLeftPosition pill) -- throwing animation, lock animation, and pause between lock and next throw
-	+ mpPathLength move -- pill maneuvering
-	+ sum [dropCost*n + clearCost | n <- rowsFallen counts] -- fall time + clear animation
-
-dmPreprocess :: SearchConfiguration -> Procedure NetInput NetOutput -> GenIO -> GameState -> Tree Statistics Move -> IO (Statistics, Tree Statistics Move)
-dmPreprocess config eval gen gs t
-	| HM.null (children t)
-	, RNG{}:_ <- HM.keys (unexplored t) = do
-		future <- schedule eval =<< netInput gs
-		fp <- readIORef (framesPassed gs)
-		pu <- readIORef (pillsUsed gs)
-		movesHM <- mapproxReachable (board gs) (fp .&. 1 /= fromEnum (originalSensitive gs)) (gravity (speed gs) pu)
-		let symmetricMovesHM = HM.fromListWith shorterPath [(placement { mpRotations = mpRotations placement .&. 1 }, path) | (placement, path) <- moves]
-		    moves = HM.toList movesHM
-		    symmetricMoves = HM.toList symmetricMovesHM
-		allNoise <- sequence
-			[ fmap ((,) lk) . A0.dirichlet (10/A0.unzero (typicalMoves config)) const gen $ HM.fromListWithKey deduplicationError
-				[ (Placement path pill, ())
-				| (placement, path) <- if l == r then symmetricMoves else moves
-				, let pill = mpPill placement lk
-				]
-			| l <- [minBound .. maxBound]
-			, r <- [minBound .. maxBound]
-			, let lk = Lookahead l r
-			]
-		no <- future
-		let cs = HM.fromList
-		    	[ (,) mv Tree
-		    		{ statistics = (unexplored t HM.! mv)
-		    			{ visitCount = 1
-		    			, cumulativeValuation = noValuation no HM.! lk
-		    			}
-		    		, children = HM.empty
-		    		, unexplored = lerpNoise . A0.normalizeStatistics $ flip HM.mapWithKey lkNoise \(Placement path pill) noise ->
-		    			Statistics
-		    				{ visitCount = 0
-		    				, priorProbability = noPriors no HM.! pill
-		    				-- we smuggle the noise out through cumulativeValuation
-		    				-- lerpNoise will mix this noise with the normalized prior, then zero out the cumulativeValuation
-		    				, cumulativeValuation = noise
-		    				}
-		    		, cachedEvaluation = Nothing
-		    		}
-		    	| (lk@(Lookahead l r), lkNoise) <- allNoise
-		    	, let mv = RNG l r
-		    	]
-		    stats = (foldMap' statistics cs) { priorProbability = 0 }
-		pure (stats, Tree
-			{ statistics = stats <> statistics t
-			, children = cs
-			, unexplored = HM.empty
-			, cachedEvaluation = Nothing
-			})
-	| otherwise = pure (mempty, t)
-	where
-	deduplicationError k p1 p2 = error . unwords $ tail [undefined
-		, "dmPreprocess: found duplicate paths (there is a deduplication phase that should have already ruled this out);"
-		, "guru meditation"
-		, show (k, p1, p2)
-		]
-	lerpNoise = fmap \stats -> stats
-		{ priorProbability = A0.lerp (priorNoise config) (cumulativeValuation stats) (priorProbability stats)
-		, cumulativeValuation = 0
-		}
-
--- TODO: perhaps one day we should think about how to fuse this with toEndpoint
-netInput :: GameState -> IO NetInput
-netInput s = pure NetInput
-	<*> mfreeze (board s)
-	<*> readIORef (framesPassed s)
-	<*> pure (originalVirusCount s)
-
-dumbEvaluation :: NetInput -> IO NetOutput
-dumbEvaluation = \ni -> pure NetOutput
-	{ noPriors = uniformPriors
-	, noValuation = niEvaluateFinalState ni <$ zeroValuation
-	} where
-	zeroValuation = HM.fromList
-		[ (Lookahead { leftColor = l , rightColor = r }, 0)
-		| l <- [minBound .. maxBound]
-		, r <- [minBound .. maxBound]
-		]
-	uniformPriors = HM.fromList
-		[(,) Pill
-			{ content = PillContent
-				{ bottomLeftColor = bl
-				, otherColor = oc
-				, orientation = o
-				}
-			, bottomLeftPosition = Position x y
-			}
-			1
-		| bl <- [minBound .. maxBound]
-		, oc <- [minBound .. maxBound]
-		, o <- [minBound .. maxBound]
-		, x <- [0..case o of Horizontal -> 6; _ -> 7]
-		, y <- [0..15]
-		]
-
-dumbEvaluation' :: NetInput -> IO NetOutput'
-dumbEvaluation' ni = pure NetOutput'
-	{ noPriors' = uniformPriors
-	, noValuation' = 0
-	}
-
--- With probability p, choose the move with the most visits. If that doesn't
--- happen, with probability p, choose using the visit counts as weights for a
--- (lightly smoothed) categorical distribution. Otherwise choose completely
--- uniformly at random.
---
--- All the complicated bits are just about handling edge cases gracefully.
-descend :: GenIO -> SearchConfiguration -> DMParameters -> GameState -> Tree Statistics Move -> IO (Maybe (Move, Tree Statistics Move))
-descend g config params s t = do
-	v <- uniformDouble01M g
-	mmove <- case (moves, v < moveNoise config^2, v < moveNoise config) of
-		([], _    , _    ) -> pure Nothing
-		(_ , True , _    ) -> Just . (moves!!) <$> uniformR (0, length moves - 1) g
-		(_ , _    , True ) -> Just . (moves!!) <$> categorical (V.fromList weights) g
-		_ -> case bestMoves t of
-			BestMoves _ ms | V.length ms == 0 -> Just . (moves!!) <$> uniformR (0, length moves - 1) g
-			               | otherwise        -> Just . (ms  V.!) <$> uniformR (0, V.length ms - 1) g
-	for mmove \move -> do
-		play params s move
-		case HM.lookup move (children t) of
-			Just t' -> pure (move, t')
-			Nothing -> (,) move . snd <$> initialTree params s
-	where
-	weight = realToFrac . (1+) . visitCount
-	(moves, weights) = unzip . HM.toList $
-		(weight . statistics <$> children t) `HM.union`
-		(weight <$> unexplored t)
-
-data BestMoves = BestMoves Float (Vector Move) deriving (Eq, Ord, Read, Show)
-
-instance Semigroup BestMoves where
-	bm@(BestMoves n mvs) <> bm'@(BestMoves n' mvs') = case compare n n' of
-		LT -> bm'
-		EQ -> BestMoves n (mvs <> mvs')
-		GT -> bm
-
-instance Monoid BestMoves where mempty = BestMoves (-1/0) V.empty
-
-injBestMoves :: Move -> Tree Statistics Move -> BestMoves
-injBestMoves mv t = BestMoves (visitCount (statistics t)) (V.singleton mv)
-
-bestMoves :: Tree Statistics Move -> BestMoves
-bestMoves = HM.foldMapWithKey injBestMoves . children
-
 -- all the rest of this stuff is just for debugging
-
-ppTreeSparseIO :: Tree Statistics Move -> IO ()
-ppTreeSparseIO = putStrLn . ppTreeSparse ""
-
-ppTreeIO :: Tree Statistics Move -> IO ()
-ppTreeIO = putStrLn . ppTree ""
-
-ppTreeSparse :: String -> Tree Statistics Move -> String
-ppTreeSparse indent (Tree stats cs un cache) = ""
-	++ ppStats stats ++ "{"
-	++ case ppTreesSparse ('\t':indent) cs of
-	   	"" -> ""
-	   	s -> "\n" ++ s ++ indent
-	++ "}" ++ ppCache cache
-
-ppTreesSparse :: String -> HashMap Move (Tree Statistics Move) -> String
-ppTreesSparse indent ts = concat
-	[ indent ++ ppMove move ++ "↦" ++ ppTreeSparse indent t ++ ",\n"
-	| (move, t) <- HM.toList ts
-	, visitCount (statistics t) > 0
-	]
-
-ppTree :: String -> Tree Statistics Move -> String
-ppTree indent (Tree stats cs un cache) = ppStats stats ++ "{" ++ rec ++ "}" ++ ppCache cache
-	where
-	indent' = '\t':indent
-	rec = case (ppTrees indent' cs, ppStatss un) of
-		("", "") -> ""
-		(s, "") -> "\n" ++ s ++ indent
-		(s, s') -> "\n" ++ s ++ indent' ++ s' ++ "\n" ++ indent
-
-ppStats :: Statistics -> String
-ppStats (Statistics visits prob val) = ppPercent prob ++ " " ++ ppPrecision 2 val ++ "/" ++ show (round visits)
-
-ppTrees :: String -> HashMap Move (Tree Statistics Move) -> String
-ppTrees indent ts = concat
-	[ indent ++ ppMove move ++ "↦" ++ ppTree indent t ++ ",\n"
-	| (move, t) <- HM.toList ts
-	]
-
-ppStatss :: HashMap Move Statistics -> String
-ppStatss ss = concat
-	[ ppMove move ++ "⇨" ++ ppStats stats ++ ", "
-	| (move, stats) <- HM.toList ss
-	]
-
-ppCache :: Maybe Statistics -> String
-ppCache Nothing = ""
-ppCache (Just stats) = "~" ++ ppPrecision 2 (cumulativeValuation stats)
-
-ppMove :: Move -> String
-ppMove (RNG l r) = [ppColor l, ppColor r]
-ppMove (Placement bm pill) = ppPill pill
-
 ppPill :: Pill -> String
 ppPill p = ppContent (content p) ++ "@" ++ ppPosition (bottomLeftPosition p)
 
@@ -1033,3 +717,6 @@ ppPercent p = (if isNaN p then "nan" else show (round (100*p))) ++ "%"
 ppPrecision :: Int -> Float -> String
 ppPrecision p n = if isNaN n then "nan" else showFFloat Nothing (fromInteger (round (pow*n))/pow) ""
 	where pow = 10^p
+
+padr :: Int -> String -> String
+padr n s = s ++ replicate (n - length s) ' '

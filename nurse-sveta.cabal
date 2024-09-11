@@ -102,7 +102,6 @@ library
                         , haskell-gi-base ^>=0.26
                         , primitive >=0.7 && <0.10
                         , stm ^>=2.5.1
-                        , tomcats ^>=0.1
                         , vector-algorithms ^>=0.9
     cxx-sources:          cxxbits/adapter.cpp
                         , cxxbits/constants.cpp

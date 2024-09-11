@@ -13,10 +13,6 @@ module Nurse.Sveta.Widget (
 	psvGet, psvSet,
 	psvModifyM, psvModifyM_, psvModify, psvModify_,
 
-	-- * Search configuration
-	SearchConfigurationView,
-	newSearchConfigurationView, scvWidget, scvSet,
-
 	-- * Hyperparameters
 	HyperParametersView,
 	newHyperParametersView, hpvWidget, hpvSet,
@@ -82,7 +78,7 @@ import GI.GLib
 import GI.Gtk as G
 import Nurse.Sveta.Cairo
 import Nurse.Sveta.STM
-import Nurse.Sveta.Tomcats (SearchConfiguration(..), HyperParameters(..))
+import Nurse.Sveta.Tomcats (HyperParameters(..))
 import Nurse.Sveta.Util
 import System.IO
 import System.Random.MWC
@@ -239,68 +235,6 @@ psvModify_ psv f = do
 	#queueDraw psv
 
 instance (MonadIO m, a ~ m ()) => Overload.IsLabel "queueDraw" (PlayerStateView -> a) where fromLabel = #queueDraw . psvCanvas
-
-data SearchConfigurationView = SCV
-	{ scvTop :: Grid
-	, scvC_puct :: ConfigurationRequestView Float
-	, scvIterations :: ConfigurationRequestView Int
-	, scvTypicalMoves :: ConfigurationRequestView Float
-	, scvPriorNoise :: ConfigurationRequestView Float
-	, scvMoveNoise :: ConfigurationRequestView Double
-	}
-
-newSearchConfigurationView :: SearchConfiguration -> (SearchConfiguration -> IO ()) -> IO SearchConfigurationView
-newSearchConfigurationView sc request = mfix $ \scv -> do
-	grid <- new Grid crvGridAttributes
-	cache <- newIORef (sc, sc)
-
-	let period = "next game"
-	    validate :: (SearchConfiguration -> a -> (Bool, SearchConfiguration)) -> a -> IO Bool
-	    validate f req = do
-	    	scReq <- scvRequest scv
-	    	let (valid, scReq') = f scReq req
-	    	when valid (request scReq')
-	    	pure valid
-	crvC_puct       <- newConfigurationRequestView (c_puct       sc) "c_puct"                        period InputPurposeNumber . validate $ \scReq c_puctReq -> (True, scReq { c_puct = c_puctReq })
-	crvIterations   <- newConfigurationRequestView (iterations   sc) "iterations per move"           period InputPurposeDigits . validate $ \scReq itReq     -> (itReq >= 0, scReq { iterations = itReq })
-	crvTypicalMoves <- newConfigurationRequestView (typicalMoves sc) "typical number of legal moves" period InputPurposeDigits . validate $ \scReq typReq    -> (typReq > 0, scReq { typicalMoves = typReq })
-	crvPriorNoise   <- newConfigurationRequestView (priorNoise   sc) "noisiness of priors"           period InputPurposeNumber . validate $ \scReq noiseReq  -> (0 <= noiseReq && noiseReq <= 1, scReq { priorNoise = noiseReq })
-	crvMoveNoise    <- newConfigurationRequestView (moveNoise    sc) "noisiness of move selection"   period InputPurposeNumber . validate $ \scReq noiseReq  -> (0 <= noiseReq && noiseReq <= 1, scReq { moveNoise = noiseReq })
-
-	#setMarkup (crvDescription crvC_puct) "c<sub>puct</sub>"
-	crvAttach crvC_puct grid 0
-	crvAttach crvIterations grid 1
-	crvAttach crvTypicalMoves grid 2
-	crvAttach crvPriorNoise grid 3
-	crvAttach crvMoveNoise grid 4
-
-	pure SCV
-		{ scvTop = grid
-		, scvC_puct       = crvC_puct
-		, scvIterations   = crvIterations
-		, scvTypicalMoves = crvTypicalMoves
-		, scvPriorNoise   = crvPriorNoise
-		, scvMoveNoise    = crvMoveNoise
-		}
-
-scvWidget :: SearchConfigurationView -> IO Widget
-scvWidget = toWidget . scvTop
-
-scvRequest :: SearchConfigurationView -> IO SearchConfiguration
-scvRequest scv = pure SearchConfiguration
-	<*> crvRequest (scvC_puct       scv)
-	<*> crvRequest (scvIterations   scv)
-	<*> crvRequest (scvTypicalMoves scv)
-	<*> crvRequest (scvPriorNoise   scv)
-	<*> crvRequest (scvMoveNoise    scv)
-
-scvSet :: SearchConfigurationView -> SearchConfiguration -> IO ()
-scvSet scv scCur = do
-	crvSet (scvC_puct       scv) (c_puct       scCur)
-	crvSet (scvIterations   scv) (iterations   scCur)
-	crvSet (scvTypicalMoves scv) (typicalMoves scCur)
-	crvSet (scvPriorNoise   scv) (priorNoise   scCur)
-	crvSet (scvMoveNoise    scv) (moveNoise    scCur)
 
 data HyperParametersView = HPV
 	{ hpvTop :: Grid
