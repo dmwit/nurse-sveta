@@ -238,7 +238,7 @@ instance (MonadIO m, a ~ m ()) => Overload.IsLabel "queueDraw" (PlayerStateView 
 
 data HyperParametersView = HPV
 	{ hpvTop :: Grid
-	, hpvIterations :: ConfigurationRequestView Int
+	, hpvIterations, hpvMaxLevel :: ConfigurationRequestView Int
 	, hpvDiscountRate, hpvC_puct, hpvDirichlet, hpvPriorNoise, hpvMoveNoise
 	, hpvRewardVirusClear, hpvRewardOtherClear, hpvRewardWin, hpvRewardLoss
 		:: ConfigurationRequestView Float
@@ -257,6 +257,7 @@ newHyperParametersView hp request = mfix $ \hpv -> do
 	    newFloatCRV = newCRV InputPurposeNumber
 	    newIntCRV = newCRV InputPurposeDigits
 	crvIterations   <- newIntCRV   hpIterations       "iterations"                  \hp' n      -> (0 <= n, hp' { hpIterations = n })
+	crvMaxLevel     <- newIntCRV   hpMaxLevel         "max level"                   \hp' n      -> (0 <= n && n <= 20, hp' { hpMaxLevel = n })
 	crvC_puct       <- newFloatCRV hpC_puct           "c_puct"                      \hp' c_puct -> (True, hp' { hpC_puct = c_puct })
 	crvDirichlet    <- newFloatCRV hpDirichlet        "priors noise's uniformity"   \hp' alpha  -> (0 < alpha, hp' { hpDirichlet = alpha })
 	crvPriorNoise   <- newFloatCRV hpPriorNoise       "noisiness of priors"         \hp' noise  -> (0 <= noise && noise <= 1, hp' { hpPriorNoise = noise })
@@ -271,6 +272,7 @@ newHyperParametersView hp request = mfix $ \hpv -> do
 
 	iRef <- newIORef 0
 	let i = readIORef iRef >>= \n -> n <$ writeIORef iRef (n+1)
+	crvAttach crvMaxLevel grid =<< i
 	crvAttach crvIterations grid =<< i
 	crvAttach crvC_puct grid =<< i
 	crvAttach crvDirichlet grid =<< i
@@ -285,6 +287,7 @@ newHyperParametersView hp request = mfix $ \hpv -> do
 	pure HPV
 		{ hpvTop = grid
 		, hpvIterations       = crvIterations
+		, hpvMaxLevel         = crvMaxLevel
 		, hpvC_puct           = crvC_puct
 		, hpvDirichlet        = crvDirichlet
 		, hpvPriorNoise       = crvPriorNoise
@@ -311,10 +314,12 @@ hpvRequest hpv = pure HyperParameters
 	<*> crvRequest (hpvRewardWin        hpv)
 	<*> crvRequest (hpvRewardLoss       hpv)
 	<*> crvRequest (hpvIterations       hpv)
+	<*> crvRequest (hpvMaxLevel         hpv)
 
 hpvSet :: HyperParametersView -> HyperParameters -> IO ()
 hpvSet hpv hpCur = do
 	crvSet (hpvIterations       hpv) (hpIterations       hpCur)
+	crvSet (hpvMaxLevel         hpv) (hpMaxLevel         hpCur)
 	crvSet (hpvDiscountRate     hpv) (hpDiscountRate     hpCur)
 	crvSet (hpvC_puct           hpv) (hpC_puct           hpCur)
 	crvSet (hpvDirichlet        hpv) (hpDirichlet        hpCur)

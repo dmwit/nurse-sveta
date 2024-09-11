@@ -7,7 +7,8 @@ module Nurse.Sveta.Tomcats (
 	sampleRNG, bestMove, weightedMove, uniformMove, sampleMove,
 	hpDiscount, hpImmediateReward, hpFinalReward, ihpFinalReward,
 	ctxDiscount, ctxImmediateReward, ctxFinalReward,
-	ctxIterations, ctxDiscountRate, ctxC_puct, ctxDirichlet, ctxPriorNoise,
+	ctxIterations, ctxMaxLevel,
+	ctxDiscountRate, ctxC_puct, ctxDirichlet, ctxPriorNoise,
 	ctxRewardVirusClear, ctxRewardOtherClear, ctxRewardWin, ctxRewardLoss,
 	playRNG, playMove,
 	GameStateSeed(..),
@@ -110,10 +111,13 @@ playMove gs path pill = do
 class GameStateSeed a where initialState :: a -> IO GameState
 
 instance Gen a ~ GenIO => GameStateSeed (Gen a) where
+	initialState g = initialState (g, 20)
+
+instance (a ~ GenIO, b ~ Int) => GameStateSeed (a, b) where
 	-- note to self: when the NES does it, it generates the pill sequence first,
 	-- then the board
-	initialState g = do
-		level <- uniformRM (0, 20) g
+	initialState (g, maxLevel_) = do
+		level <- uniformRM (0, maxLevel) g
 		seed <- uniformRM (2, maxBound) g
 		b <- mrandomBoard seed level
 		frameParity <- uniformM g
@@ -132,6 +136,7 @@ instance Gen a ~ GenIO => GameStateSeed (Gen a) where
 			, originalSensitive = frameParity
 			, speed = coarseSpeed
 			}
+		where maxLevel = min 20 . max 0 $ maxLevel_
 
 instance (a ~ Board, b ~ Bool, c ~ CoarseSpeed) => GameStateSeed (a, b, c) where
 	initialState (b, sensitive, speed) = pure GameState
@@ -176,21 +181,22 @@ data HyperParameters = HyperParameters
 	{ hpDiscountRate, hpC_puct, hpDirichlet, hpPriorNoise, hpMoveNoise
 	, hpRewardVirusClear, hpRewardOtherClear, hpRewardWin, hpRewardLoss
 		:: Float
-	, hpIterations :: Int
+	, hpIterations, hpMaxLevel :: Int
 	} deriving (Eq, Ord, Read, Show)
 
 instance ToJSON HyperParameters where
 	toJSON hp = toJSON
-		$ fromIntegral (hpIterations hp)
-		: sequence [hpDiscountRate, hpC_puct, hpDirichlet, hpPriorNoise, hpMoveNoise, hpRewardVirusClear, hpRewardOtherClear, hpRewardWin, hpRewardLoss] hp
+		$  traverse (fromIntegral.) [hpIterations, hpMaxLevel] hp
+		++ sequence [hpDiscountRate, hpC_puct, hpDirichlet, hpPriorNoise, hpMoveNoise, hpRewardVirusClear, hpRewardOtherClear, hpRewardWin, hpRewardLoss] hp
 	toEncoding hp = toEncoding
-		$ fromIntegral (hpIterations hp)
-		: sequence [hpDiscountRate, hpC_puct, hpDirichlet, hpPriorNoise, hpMoveNoise, hpRewardVirusClear, hpRewardOtherClear, hpRewardWin, hpRewardLoss] hp
+		$  traverse (fromIntegral.) [hpIterations, hpMaxLevel] hp
+		++ sequence [hpDiscountRate, hpC_puct, hpDirichlet, hpPriorNoise, hpMoveNoise, hpRewardVirusClear, hpRewardOtherClear, hpRewardWin, hpRewardLoss] hp
 
 instance FromJSON HyperParameters where
 	parseJSON v = parseJSON v >>= \case
-		[i, dr, c, d, pn, mn, rvc, roc, rw, rl] -> pure HyperParameters
+		[i, mv, dr, c, d, pn, mn, rvc, roc, rw, rl] -> pure HyperParameters
 			{ hpIterations = round i
+			, hpMaxLevel = round mv
 			, hpDiscountRate = dr
 			, hpC_puct = c
 			, hpDirichlet = d
@@ -216,6 +222,7 @@ newHyperParameters = HyperParameters
 	, hpRewardWin = 1
 	, hpRewardLoss = -1
 	, hpIterations = 200
+	, hpMaxLevel = 0
 	}
 
 hpDiscount :: HyperParameters -> Int -> Float -> Float
@@ -254,8 +261,8 @@ ctxDiscountRate, ctxC_puct, ctxDirichlet, ctxPriorNoise, ctxMoveNoise, ctxReward
 [ctxDiscountRate, ctxC_puct, ctxDirichlet, ctxPriorNoise, ctxMoveNoise, ctxRewardVirusClear, ctxRewardOtherClear, ctxRewardWin, ctxRewardLoss] = map (. ctxParams)
 	[hpDiscountRate, hpC_puct, hpDirichlet, hpPriorNoise, hpMoveNoise, hpRewardVirusClear, hpRewardOtherClear, hpRewardWin, hpRewardLoss]
 
-ctxIterations :: SearchContext -> Int
-ctxIterations = hpIterations . ctxParams
+ctxIterations, ctxMaxLevel :: SearchContext -> Int
+[ctxIterations, ctxMaxLevel] = map (.ctxParams) [hpIterations, hpMaxLevel]
 
 ctxDiscount :: SearchContext -> Int -> Float -> Float
 ctxDiscount = hpDiscount . ctxParams

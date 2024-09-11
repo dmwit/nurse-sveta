@@ -191,10 +191,11 @@ generationThread eval hpRef genRef sc = do
 	gameLoop g threadSpeed
 	where
 	gameLoop g threadSpeed = do
-		(s0, t) <- newRNGTreeFromSeed eval g 0 g
+		hp <- takeMVar hpRef
+		(s0, t) <- newRNGTreeFromSeed eval g 0 (g, hpMaxLevel hp)
 		gameSpeed <- newSearchSpeed
-		ctx <- pure (SearchContext eval g) <*> cloneGameState s0 <*> takeMVar hpRef
-		moveLoop ctx threadSpeed gameSpeed s0 [] t
+		s <- cloneGameState s0
+		moveLoop (SearchContext eval g s hp) threadSpeed gameSpeed s0 [] t
 
 	moveLoop ctx threadSpeed gameSpeed s0 history t = do
 		lk <- sampleRNG ctx
