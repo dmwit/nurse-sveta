@@ -4,8 +4,8 @@
 
 const int64_t CELLS = BOARD_WIDTH * BOARD_HEIGHT;
 
-const int64_t FILTERS = 64;
-const int64_t RESIDUAL_BLOCKS = 20;
+const int64_t FILTERS = 4; // 64
+const int64_t RESIDUAL_BLOCKS = 2; // 20
 const float LEAKAGE = 0.01;
 
 const int64_t BODY_SIZE = FILTERS * CELLS;
