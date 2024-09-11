@@ -728,7 +728,7 @@ newTrainingConfiguration = TrainingConfiguration
 	-- TODO: make this configurable
 	, tcLossScaling = LossScaling
 		{ lsPriors = 0.1
-		, lsValuation = 1000
+		, lsValuation = 10
 		}
 	}
 
