@@ -624,10 +624,12 @@ processGameFile log status dir fp = recallGame dir fp >>= \case
 		                   [cmVirusesKilled, cmFramesToWin, cmFramesToLoss]
 		    logAggregations = zip ["best", "latest" :: String]
 		                          [cmBest, cmLatest]
-		    logAccumulations = zip3 ["viruses", "frames", "days" :: String]
-		                            [cmVirusesKilled, cmFrames, cmFrames]
-		                            [1, 1, fps*60*60*24]
+		    -- the speedup calculation is completed inside the logger
+		    logAccumulations = zip3 ["viruses", "frames", "days", "clear rate", "speedup" :: String]
+		                            [cmVirusesKilled, cmFrames, cmFrames, cmFrames, cmFrames]
+		                            [1, 1, fps*60*60*24, max 1 (accumulate cmVirusesKilled)*fps, fps]
 		    fps = 60.0988
+		    accumulate f = lmFloat . foldr (lmSum . foldr1 lmSum . f . cmCumulative) (LevelMetric 0 "") . bgsMetadata $ btsLatestGlobal bts
 
 		traverse_ (schedule log)
 			[ Metric (printf "%s/%s/%02d" k a viruses) (lmFloat lm)
@@ -645,9 +647,8 @@ processGameFile log status dir fp = recallGame dir fp >>= \case
 			, IM.keys im == [4,8..84]
 			]
 		traverse_ (schedule log)
-			[ Metric (printf "cumulative/%s" k) (lmFloat lm / denominator)
+			[ Metric (printf "cumulative/%s" k) (accumulate f / denominator)
 			| (k, f, denominator) <- logAccumulations
-			, let lm = foldr (lmSum . foldr1 lmSum . f . cmCumulative) (LevelMetric 0 "") (bgsMetadata (btsLatestGlobal bts))
 			]
 		traverse_ (schedule log)
 			[ Metric ("clear rate/" ++ k) (fromIntegral f / (fps * fromIntegral v))
@@ -1018,6 +1019,11 @@ loggingThread log sc = do
 
 	start <- getTime Monotonic
 	let go = \case
+	    	Metric k@"cumulative/speedup" v -> do
+	    		now <- getTime Monotonic
+	    		hPrint h (previousRuntime + round (now - start))
+	    		hPutStrLn h k
+	    		hPrint h (v / (fromIntegral previousRuntime + realToFrac (now - start)))
 	    	Metric    k v -> reportMetric k (show v)
 	    	ImagePath k v -> reportMetric k case v of
 	    		'!':_ -> "!./" ++ v
