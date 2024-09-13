@@ -213,13 +213,20 @@ instance FromJSON HyperParameters where
 -- | Some maybe-not-completely-insane defaults.
 newHyperParameters :: HyperParameters
 newHyperParameters = HyperParameters
-	{ hpDiscountRate = 0.9998 -- yields a discount of about 0.1 after 3 minutes
+	{ hpDiscountRate = 0.998 -- yields a discount of about 0.1 after 20s, i.e. about 20 moves, so a virus kill in the next 20 moves is better than a pill clear now
 	, hpC_puct = 0.5
 	, hpDirichlet = 0.25 -- 10/(typical number of moves available=40)
 	, hpPriorNoise = 0.1
 	, hpMoveNoise = 0.2
 	, hpRewardVirusClear = 0.1
-	, hpRewardOtherClear = 0.01
+	-- I want clearing a virus to be about ten times as valuable as making a
+	-- non-virus clear. A typical early-learning virus clear will have one
+	-- virus and three non-viruses, while a typical early-learning non-virus
+	-- clear will have four non-viruses. So we want 0.1+3r = 10*4r, i.e.
+	-- 0.1 = 37r. Later on, as the ratio of viruses to non-viruses in a clear
+	-- increases, the reward ratios will be even more in favor of clearing
+	-- viruses than that, which seems fine.
+	, hpRewardOtherClear = 0.1/37
 	, hpRewardWin = 1
 	, hpRewardLoss = -1
 	, hpIterations = 200
