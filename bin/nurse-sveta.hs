@@ -720,7 +720,7 @@ data TrainingConfiguration = TrainingConfiguration
 
 newTrainingConfiguration :: TrainingConfiguration
 newTrainingConfiguration = TrainingConfiguration
-	{ tcDutyCycle = newStable 1 -- 0.01
+	{ tcDutyCycle = newStable 0.1
 	, tcHoursPerSave = 1
 	, tcHoursPerDetailReport = 0.1
 	, tcBatchSizeTrain = 2000 -- TODO: optimize this choice (empirically, maxing out GPU memory is not the fastest choice)
