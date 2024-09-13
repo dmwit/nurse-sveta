@@ -303,9 +303,6 @@ boardHeatmapRange lo hi = boardHeatmapWith (heatmapOptionsRange lo hi)
 -- here.
 boardHeatmapWith :: HeatmapOptions -> Board -> PillContent -> [(Position, Float)] -> Render ()
 boardHeatmapWith ho b pc heat = do
-	rectangle 0 0 w h
-	neutral
-	fill
 	save
 	translate 1 1
 	heatmapGrid ho heat
@@ -353,9 +350,6 @@ labeledHeatmapRange lo hi = labeledHeatmapWith (heatmapOptionsRange lo hi)
 
 labeledHeatmapWith :: HeatmapOptions -> Int -> Int -> [(Position, Float)] -> Render ()
 labeledHeatmapWith ho w_ h_ heat = do
-	rectangle 0 0 w h
-	neutral
-	fill
 	heatmapGrid ho heat
 	heatmapLabels ho w h
 	where
