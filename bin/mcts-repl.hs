@@ -5,17 +5,21 @@ import Control.Exception
 import Control.Monad
 import Control.Monad.State as State
 import Data.Aeson
+import Data.Char
 import Data.Foldable
 import Data.IORef
 import Data.List
 import Data.Ord
 import Data.Vector (Vector)
 import Dr.Mario.Model
+import Nurse.Sveta.Files
+import Nurse.Sveta.STM
 import Nurse.Sveta.STM.BatchProcessor
 import Nurse.Sveta.Tomcats
 import Nurse.Sveta.Torch
 import Nurse.Sveta.Torch.Semantics
 import Nurse.Sveta.Util
+import System.Directory
 import System.IO
 import System.Random.MWC
 import System.Random.MWC.Distributions
@@ -30,8 +34,9 @@ import qualified Data.Vector as V
 main :: IO ()
 main = do
 	proc <- newProcedure 100
-	(net, _optim) <- netSample
-	forkIO $ forever (serviceCalls_ proc (netEvaluation net))
+	(net0, _optim) <- netSample
+	netRef <- newTVarIO net0
+	forkIO $ forever (serviceCalls_ proc . netEvaluation =<< readTVarIO netRef)
 	g <- createSystemRandom
 	(s, t) <- newRNGTreeFromSeed proc g 0 g
 	evalStateT repl ReplState
@@ -42,11 +47,13 @@ main = do
 			, ctxParams = newHyperParameters
 			}
 		, tree = Left t
+		, net = netRef
 		}
 
 data ReplState = ReplState
 	{ context :: SearchContext
 	, tree :: Either RNGTree MoveTree
+	, net :: TVar Net
 	}
 
 type Repl = StateT ReplState IO
@@ -93,7 +100,7 @@ replLn :: String -> Repl ()
 replLn = liftIO . putStrLn
 
 commands :: [Command]
-commands = sortOn name [helpC, quitC, boardC, treeC, listC, descendC, mctsC, sampleC]
+commands = sortOn name [helpC, quitC, boardC, treeC, listC, descendC, mctsC, sampleC, weightsC, rngC]
 
 command_ :: String -> String -> ([String] -> Either String (Repl ())) -> Command
 command_ nm h f = Command
@@ -217,10 +224,14 @@ sampleC = commandN "sample" sampleHelp [0, 1] \case
 	go f = Right do
 		rs <- State.get
 		case tree rs of
-			Left _ -> replLn . ppAeson =<< liftIO (sampleRNG (context rs))
+			Left _ -> do
+				lk <- liftIO (sampleRNG (context rs))
+				replLn $ ppAeson lk ++ " (" ++ show (toIndex lk) ++ ")"
 			Right t -> liftIO (f (context rs) t) >>= \case
 				Nothing -> replLn "Game's already over!"
-				Just pill -> replLn (ppPill pill)
+				Just pill -> replLn (ppPill pill ++ " " ++ ppIndex (findIndex (pill==) (moves t)))
+	ppIndex Nothing = "(??)"
+	ppIndex (Just n) = "(" ++ show n ++ ")"
 	sampleHelp = intercalate "\n" $ tail [undefined
 		, "Usage: sample [METHOD]"
 		, "Choose a move. Available METHODs are:"
@@ -229,3 +240,42 @@ sampleC = commandN "sample" sampleHelp [0, 1] \case
 		, "    uniform     Sample from available moves uniformly at random."
 		, "    sample      Choose from among the other methods by flipping a weighted coin."
 		]
+
+weightsC :: Command
+weightsC = commandNR "weights" weightsHelp [0,1] \case
+	[] -> liftIO nsDataDir >>= listAvailable
+	[file] -> do
+		root <- liftIO nsDataDir
+		let fullFile = absFileName root Weights file
+		liftIO (doesFileExist fullFile) >>= \case
+			True -> do
+				netRef <- gets net
+				liftIO (netLoadForInference fullFile >>= atomically . writeTVar netRef)
+				replLn "✓"
+			False -> do
+				replLn "That file doesn't exist. Maybe try one of these:"
+				listAvailable root
+	where
+	listAvailable root = liftIO (traverse_ putStrLn . sortOn numberPrefix =<< listDirectory (absDirectoryName root Weights))
+	weightsHelp = unlines
+		[ "Usage: weights [FILE]"
+		, "Use the given neural net weights for evaluation. Paths are relative to Nurse Sveta's"
+		, "weights directory. If no file is given, list what's available."
+		]
+
+numberPrefix :: String -> (Integer, String)
+numberPrefix s = case span isDigit s of
+	("", _) -> (-1, s)
+	(digits, rest) -> (read digits, rest)
+
+rngC :: Command
+rngC = commandN "rng" "Generate a fresh board and reset the search tree. If an argument is given, use it as the max level." [0,1] \case
+	[] -> Right (go 20)
+	[readMaybe -> Just n] | 0 <= n && n <= 20 -> Right (go n)
+	                      | otherwise -> Left "Max level must be in the range 0-20 inclusive."
+	[_] -> Left "That argument doesn't look like a number!"
+	where
+	go n = do
+		ctx <- gets context
+		(s, t) <- liftIO $ newRNGTreeFromSeed (ctxEval ctx) (ctxRNG ctx) 0 (ctxRNG ctx, n)
+		modify \rs -> rs { context = ctx { ctxState = s }, tree = Left t }

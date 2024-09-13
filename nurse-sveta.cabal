@@ -41,6 +41,7 @@ common shared
                         , DeriveGeneric
                         , DerivingStrategies
                         , DerivingVia
+                        , FlexibleContexts
                         , FlexibleInstances
                         , GADTs
                         , GeneralizedNewtypeDeriving
