@@ -28,6 +28,7 @@ import Data.Aeson
 import Data.Aeson.Types
 import Data.Bits
 import Data.Foldable
+import Data.Functor
 import Data.HashMap.Strict (HashMap)
 import Data.IORef
 import Data.List
@@ -268,10 +269,11 @@ ctxDiscount :: SearchContext -> Int -> Float -> Float
 ctxDiscount = hpDiscount . ctxParams
 
 newRNGTree :: SearchContext -> Float -> IO RNGTree
-newRNGTree ctx prior = snd <$> newRNGTreeFromSeed (ctxEval ctx) (ctxRNG ctx) prior (ctxState ctx)
+newRNGTree ctx prior = snd <$> newRNGTree' ctx prior
 
 newRNGTree' :: SearchContext -> Float -> IO (Float, RNGTree)
-newRNGTree' ctx prior = (\t -> (cumulativeValuationRNG t, t)) <$> newRNGTree ctx prior
+newRNGTree' ctx prior = newRNGTreeFromSeed (ctxEval ctx) (ctxRNG ctx) prior (ctxState ctx) <&>
+	\(_, t) -> (cumulativeValuationRNG t, t { cumulativeValuationRNG = 0 })
 
 -- TODO: could return an IO (GameState, IO RNGTree) to let the caller choose when to wait on the net evaluation
 newRNGTreeFromSeed :: GameStateSeed a => Procedure NetInput NetOutput -> GenIO -> Float -> a -> IO (GameState, RNGTree)
@@ -294,6 +296,14 @@ newRNGTreeFromSeed eval rng prior seed = do
 	    	, symmetricPlacementsRNG = symmetrize placements
 	    	, childPriorsRNG = noPriors no
 	    	, priorProbabilityRNG = prior
+	    	-- Normally the parent manages the cumulative valuation, because it
+	    	-- knows how much to discount it for the time the move took + how
+	    	-- much immediate reward to tack on for the results of the move.
+	    	-- But we have to get the net's evaluation out of this function
+	    	-- somehow, and this is how. We'll set things right in newRNGTree
+	    	-- and variants. For outside users, this function is generally
+	    	-- called with a brand new game state and we're going to
+	    	-- immediately descend, so it'll get ignored anyway.
 	    	, cumulativeValuationRNG = noValuation no
 	    	, visitCountRNG = 1
 	    	}
@@ -367,7 +377,6 @@ expandRNGTree' ctx t = do
 	    	, placementsRNG = plc'
 	    	, symmetricPlacementsRNG = symPlc'
 	    	, childPriorsRNG = childP'
-	    	, cumulativeValuationRNG = v + cumulativeValuationRNG t
 	    	, visitCountRNG = 1 + visitCountRNG t
 	    	}
 	pure (v, t')
@@ -397,10 +406,14 @@ expandMoveTree' ctx t = case (maximumOn (\_ -> scoreTree) (childrenMove t), scor
 		before <- readIORef (framesPassed (ctxState ctx))
 		Just results <- playMove (ctxState ctx) (pathsMove t HM.! pill) pill
 		after <- readIORef (framesPassed (ctxState ctx))
-		(dv, tNew) <- buildTree
-		pure ( ctxImmediateReward ctx results + ctxDiscount ctx (after - before) dv
-		     , t' { childrenMove = HM.insert pill tNew (childrenMove t'), visitCountMove = visitCountMove t' + 1 }
-		     )
+		(childValue, tNew_) <- buildTree
+		let value = ctxImmediateReward ctx results + ctxDiscount ctx (after - before) childValue
+		    tNew = tNew_ { cumulativeValuationRNG = cumulativeValuationRNG tNew_ + value }
+		    t'' = t'
+		    	{ childrenMove = HM.insert pill tNew (childrenMove t')
+		    	, visitCountMove = visitCountMove t' + 1
+		    	}
+		pure (value, t'')
 
 withClonedState :: (SearchContext -> a -> IO b) -> SearchContext -> a -> IO b
 withClonedState f ctx a = do
