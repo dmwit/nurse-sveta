@@ -46,11 +46,13 @@ common shared
                         , GADTs
                         , GeneralizedNewtypeDeriving
                         , LambdaCase
+                        , MagicHash
                         , MultiParamTypeClasses
                         , MultiWayIf
                         , OverloadedLabels
                         , OverloadedStrings
                         , PartialTypeSignatures
+                        , PatternSynonyms
                         , QuantifiedConstraints
                         , RankNTypes
                         , ScopedTypeVariables

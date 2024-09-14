@@ -1,3 +1,6 @@
+{-# LANGUAGE AllowAmbiguousTypes #-}
+{-# LANGUAGE DataKinds #-}
+
 module Main where
 
 import Control.Concurrent
@@ -12,6 +15,8 @@ import Data.List
 import Data.Ord
 import Data.Vector (Vector)
 import Dr.Mario.Model
+import GHC.Base
+import GHC.TypeLits
 import Nurse.Sveta.Files
 import Nurse.Sveta.STM
 import Nurse.Sveta.STM.BatchProcessor
@@ -20,7 +25,6 @@ import Nurse.Sveta.Torch
 import Nurse.Sveta.Torch.Semantics
 import Nurse.Sveta.Util
 import System.Directory
-import System.IO
 import System.Random.MWC
 import System.Random.MWC.Distributions
 import System.Random.Stateful (uniformDouble01M)
@@ -93,9 +97,6 @@ repl = do
 			forM_ es \(nm, e) -> replLn $ "Error while trying to parse a " ++ nm ++ " command: " ++ e
 			repl
 
-replOut :: String -> Repl ()
-replOut s = liftIO (putStr s >> hFlush stdout)
-
 replLn :: String -> Repl ()
 replLn = liftIO . putStrLn
 
@@ -106,15 +107,21 @@ command_ :: String -> String -> ([String] -> Either String (Repl ())) -> Command
 command_ nm h f = Command
 	{ name = nm
 	, help = h
-	, parser = go nm
-	} where
-	go _ [] = success ""
-	go _ (' ':s) = success s
-	go [] _ = NoParse
-	go (c:cs) (c':cs') = if c == c' then go cs cs' else NoParse
-	success s = case f (words s) of
-		Left e -> SubcommandError e
-		Right act -> Match act
+	, parser = \s -> case match nm s of
+		Nothing -> NoParse
+		Just s -> case f (words s) of
+			Left e -> SubcommandError e
+			Right act -> Match act
+	}
+
+match :: String -> String -> Maybe String
+match _ [] = Just ""
+match _ (' ':s) = Just s
+match [] _ = Nothing
+match (c:cs) (c':cs') = if c == c' then match cs cs' else Nothing
+
+pattern PrefixOf :: forall s. KnownSymbol s => String
+pattern PrefixOf <- (match (symbolVal' (proxy# @s)) -> Just "")
 
 command :: String -> String -> ([String] -> Either String (Repl ())) -> Command
 command nm h f = command_ nm h (fmap (>>repl) . f)
@@ -156,11 +163,11 @@ helpC = commandNR "help" helpH [0,1] \case
 	helpH = "help [VERB]\nGives more info about how to use the given VERB, or lists available verbs if no argument is given."
 
 quitC :: Command
-quitC = command_ "quit" "Quits. What were you expecting?" \_ -> Right (pure ())
+quitC = commandNR_ "quit" "Quits. What were you expecting?" [0] \_ -> pure ()
 
 boardC :: Command
 boardC = commandNR "board" "Prints the board." [0] \_ ->
-	replOut . pp =<< liftIO . mfreeze =<< gets (board . ctxState . context)
+	liftIO . ppIO =<< liftIO . mfreeze =<< gets (board . ctxState . context)
 
 treeC :: Command
 treeC = commandNR "tree" "Usage: tree [ARG]\nPrints the current MCTS tree. Pass an argument for more verbosity." [0,1] \args -> do
@@ -215,10 +222,10 @@ mctsC = commandN "mcts" "Usage: mcts [N]\nExpand the tree using N (default 1) it
 sampleC :: Command
 sampleC = commandN "sample" sampleHelp [0, 1] \case
 	[] -> go sampleMove
-	['b':_] -> go bestMove
-	['s':_] -> go sampleMove
-	['u':_] -> go uniformMove
-	['w':_] -> go weightedMove
+	[PrefixOf @"best"] -> go bestMove
+	[PrefixOf @"sample"] -> go sampleMove
+	[PrefixOf @"uniform"] -> go uniformMove
+	[PrefixOf @"weighted"] -> go weightedMove
 	_ -> Left "METHOD must be one of best, sample, uniform, or weighted"
 	where
 	go f = Right do
@@ -257,8 +264,8 @@ weightsC = commandNR "weights" weightsHelp [0,1] \case
 				listAvailable root
 	where
 	listAvailable root = liftIO (traverse_ putStrLn . sortOn numberPrefix =<< listDirectory (absDirectoryName root Weights))
-	weightsHelp = unlines
-		[ "Usage: weights [FILE]"
+	weightsHelp = init . unlines $ tail [undefined
+		, "Usage: weights [FILE]"
 		, "Use the given neural net weights for evaluation. Paths are relative to Nurse Sveta's"
 		, "weights directory. If no file is given, list what's available."
 		]
@@ -268,14 +275,50 @@ numberPrefix s = case span isDigit s of
 	("", _) -> (-1, s)
 	(digits, rest) -> (read digits, rest)
 
+withRNG :: (GenIO -> IO a) -> Repl a
+withRNG f = liftIO . f =<< replRNG
+
+replRNG :: Repl GenIO
+replRNG = gets $ ctxRNG . context
+
 rngC :: Command
-rngC = commandN "rng" "Generate a fresh board and reset the search tree. If an argument is given, use it as the max level." [0,1] \case
-	[] -> Right (go 20)
-	[readMaybe -> Just n] | 0 <= n && n <= 20 -> Right (go n)
-	                      | otherwise -> Left "Max level must be in the range 0-20 inclusive."
-	[_] -> Left "That argument doesn't look like a number!"
+rngC = commandN "rng" rngHelp [0,2,3] \case
+	[] -> Right (goMaxLevel 20)
+	[PrefixOf @"max-level", nS] -> case readMaybe nS of
+		Just n | 0 <= n && n <= 20 -> Right (goMaxLevel n)
+		       | otherwise -> Left "max level must be in the range 0-20 inclusive."
+		Nothing -> Left "max level must be given as a number in the 0-20 range."
+	[PrefixOf @"max-level", _, _] -> Left "too many arguments to max-level (expected 1, received 2)."
+	[PrefixOf @"seed", levelS, seedS] -> case (readMaybe levelS, readMaybe seedS, readMaybe ("0x" ++ seedS)) of
+		(Just level, Just seed, _) -> goSeed level seed
+		(Just level, _, Just seed) -> goSeed level seed
+		(Just level, _, _) -> Left "the seed must be provided as a number in the 2-65535 range."
+		_ -> Left "the level must be provided as a number in the 0-20 range."
+	[PrefixOf @"seed", _] -> Left "not enough arguments provided to seed (expected 2, received 1)."
+	s:_ -> Left $ "unrecognized board generation method " ++ s ++ "; recognized methods are max-level and seed."
 	where
-	go n = do
+	rngHelp = init . unlines $ tail [undefined
+		, "USAGE: rng [METHOD]"
+		, "Generate a fresh board and reset the search tree. Available generation methods are:"
+		, ""
+		, "    * max-level N: choose a level up in the range 0-N inclusive and a random seed+speed"
+		, "    * seed L S: generate level L with seed S and a random speed"
+		, "        The seed may be provided in either decimal or hex; if it's ambiguous,"
+		, "        decimal wins. You can use a 0x prefix to disambiguate."
+		, ""
+		, "If no method is given, the default is max-level 20."
+		]
+
+	goMaxLevel n = replRNG >>= \g -> go (g, n)
+	goSeed level seed
+		| 0 <= level && level <= 20 && 2 <= seed && seed <= 65535 = Right do
+			sensitivity <- withRNG uniformM
+			speed <- ([Med, Hi, Ult] !!) <$> withRNG (uniformRM (0, 2))
+			go (snd (randomLevel (fromInteger seed) level), sensitivity, speed)
+		| otherwise = Left "the level must be in the range 0-20 inclusive, and the seed must be in the range 2-65535 inclusive."
+
+	go :: GameStateSeed a => a -> Repl _
+	go init = do
 		ctx <- gets context
-		(s, t) <- liftIO $ newRNGTreeFromSeed (ctxEval ctx) (ctxRNG ctx) 0 (ctxRNG ctx, n)
+		(s, t) <- liftIO $ newRNGTreeFromSeed (ctxEval ctx) (ctxRNG ctx) 0 init
 		modify \rs -> rs { context = ctx { ctxState = s }, tree = Left t }
