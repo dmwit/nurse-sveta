@@ -70,7 +70,6 @@ netSample' i o = do
 		alloca \ptr_net ->
 		alloca \ptr_optim -> do
 			cxx_sample_net ptr_i ptr_o ptr_net ptr_optim
-			-- TODO: rename gcOptimizer to gcOptimizer
 			liftM2 (,) (peek ptr_net >>= gcNet) (peek ptr_optim >>= gcOptimizer)
 
 netLoad' :: FilePath -> Structure -> Structure -> Ptr (Ptr Optimizer) -> IO Net
