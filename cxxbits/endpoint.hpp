@@ -54,6 +54,7 @@ struct _endpoint {
 
 sp_endpoint cat(std::vector<sp_endpoint> &es);
 std::vector<sp_endpoint> splat(sp_endpoint e);
+sp_endpoint permute(sp_endpoint e, game_constant sz, torch::Tensor perm);
 
 std::ostream &dump_game_constant(std::ostream &os, const game_constant c);
 std::ostream &dump_game_constants(std::ostream &os, const std::vector<game_constant> &gcs);

@@ -2,6 +2,7 @@
 
 const torch::TensorOptions CPU_BYTE  = torch::TensorOptions().dtype(torch::kU8);
 const torch::TensorOptions CPU_FLOAT = torch::TensorOptions().dtype(torch::kF32);
+const torch::TensorOptions GPU_BYTE  = CPU_BYTE.device(torch::kCUDA);
 const torch::TensorOptions GPU_FLOAT = CPU_FLOAT.device(torch::kCUDA);
 
 const int64_t BOARD_WIDTH = 8;

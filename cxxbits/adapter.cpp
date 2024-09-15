@@ -878,6 +878,18 @@ sp_endpoint batch_gradients(Net &net, sp_endpoint scaling, sp_endpoint training_
 	return cat(out);
 }
 
+const torch::Tensor COLOR_PERMUTATIONS = torch::tensor({0,1,2,0,2,1,1,0,2,1,2,0,2,0,1,2,1,0}).reshape({6,3});
+sp_endpoint permute_colors(sp_endpoint in) {
+	std::vector<sp_endpoint> out;
+
+	// the unpermuted one we already have, just push it without calling permute(-, perms[0], -)
+	out.push_back(in);
+	for(int i = 1; i < 6; ++i)
+		out.push_back(permute(in, c_colors, COLOR_PERMUTATIONS[i]));
+
+	return cat(out);
+}
+
 extern "C" {
 	void sample_net(structure *in, structure *out, Net **net_out, torch::optim::SGD **optim_out);
 	void load_net(char *path, structure *in, structure *out, Net **net_out, torch::optim::SGD **optim_out);
@@ -890,6 +902,7 @@ extern "C" {
 	endpoint *gradients(Net *net, endpoint *scaling, endpoint *training_examples);
 	endpoint *net_weights(Net *net);
 	void discard_optimizer(torch::optim::SGD *optim);
+	endpoint *permute_colors(endpoint *in);
 }
 
 void sample_net(structure *in, structure *out, Net **net_out, torch::optim::SGD **optim_out) {
@@ -991,4 +1004,8 @@ endpoint *net_weights(Net *net) {
 void discard_optimizer(torch::optim::SGD *optim) {
 	DebugScope dbg("discard_optimizer", DEFAULT_CONSTRUCTOR_VERBOSITY);
 	delete optim;
+}
+
+endpoint *permute_colors(endpoint *in) {
+	return new endpoint(permute_colors(in->ref));
 }

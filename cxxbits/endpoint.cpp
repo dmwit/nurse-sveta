@@ -1,5 +1,6 @@
 #include "endpoint.hpp"
 #include "constants.hpp"
+#include "debugging.hpp"
 
 using namespace std;
 
@@ -131,7 +132,7 @@ sp_endpoint cat(std::vector<sp_endpoint> &es) {
 		case tag_tensor: {
 			const bool use_mask = es[0]->mask.defined();
 			out->values = torch::zeros(tensor_dimensions(out->size, out->dims), GPU_FLOAT);
-			if(use_mask) out->mask = torch::zeros(tensor_dimensions(out->size, out->dims), GPU_FLOAT);
+			if(use_mask) out->mask = torch::zeros(tensor_dimensions(out->size, out->dims), GPU_BYTE);
 			int batch_index = 0;
 			for(auto e: es) {
 				out->values.index_put_({torch::indexing::Slice(batch_index, batch_index + e->size), "..."}, e->values);
@@ -408,6 +409,48 @@ void endpoint_read_dictionary(int *ret_count, char ***ret_names, endpoint ***ret
 		(*ret_children)[i] = new endpoint(pair.second);
 		++i;
 	}
+}
+
+sp_endpoint permute(sp_endpoint e, game_constant sz, torch::Tensor perm) {
+	sp_endpoint out(new _endpoint());
+	out->size = e->size;
+	out->tag = e->tag;
+	out->dims = e->dims;
+
+	switch(e->tag) {
+		case tag_tensor: {
+			std::vector<torch::indexing::TensorIndex> is(e->dims.size() + 1, torch::indexing::Slice());
+			out->values = e->values;
+			if(e->mask.defined()) out->mask = e->mask;
+			for(int i = 0; i < e->dims.size(); ++i) {
+				if(e->dims[i] == sz) {
+					is[i+1] = perm;
+					out->values = out->values.index(is);
+					if(out->mask.defined()) out->mask = out->mask.index(is);
+					is[i+1] = torch::indexing::Slice();
+				}
+			}
+			break;
+		}
+		case tag_vector:
+			if(e->dims[0] == sz) {
+				for(int i = 0; i < eval_game_constant(sz); ++i)
+					out->vec.push_back(permute(e->vec[perm[i].item<int>()], sz, perm));
+			} else {
+				for(auto &child: e->vec)
+					out->vec.push_back(permute(child, sz, perm));
+			}
+			break;
+		case tag_dictionary:
+			for(auto [k, v]: e->dict)
+				out->dict[k] = permute(v, sz, perm);
+			break;
+		default:
+			std::cerr << "Invalid tag " << e->tag << " in permute()." << std::endl;
+			throw 0;
+	}
+
+	return out;
 }
 
 void free_endpoint_read_tensor_constants(game_constant *lens) { delete lens; }

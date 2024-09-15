@@ -97,7 +97,10 @@ setupEndpointView netRef inpRef gsRef ssRef = do
 			newResidue (toEndpoint tes) (backgroundsFor tes inp)
 		(Just net, Just inp) -> do
 				tes <- trainingExamples inp
-				let tesE@(EDictionary [("input", ni), ("ground truth", gt)]) = toEndpoint tes
+				let EDictionary [("input", ni_), ("ground truth", gt_)] = toEndpoint tes
+				ni <- permuteColors ni_
+				gt <- permuteColors gt_
+				let tesE = EDictionary [("input", ni), ("ground truth", gt)]
 				-- could use netEvaluation instead, but:
 				-- 1. that would incur an extra round-trip through Endpoint
 				-- 2. I worry that would hide a bug somehow; I'd rather use
@@ -405,13 +408,13 @@ normalizeBatchSelection r = case (batchSelection r, representative r) of
 	(Pending b, EMaskedTensor gcs v m) -> r { batchSelection = Selected, representative = EMaskedTensor gcs (v ! b) (m ! b), background = bg' b }
 	_ -> r
 	where
-	bg' b = case (background r V.!? b, background r V.!? 0) of
-		(Just bg, _) -> V.singleton bg
-		(_, Just bg) -> V.singleton bg
-		_ -> V.singleton Background
+	bg' b = V.singleton if null bg
+		then Background
 			{ bgBoard = def
 			, bgLookahead = Lookahead minBound minBound
 			}
+		else bg V.! (b `mod` V.length bg)
+	bg = background r
 
 useAxis :: Axis -> Residue -> Residue
 useAxis axis r = normalizeBatchSelection r

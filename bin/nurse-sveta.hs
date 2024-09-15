@@ -717,6 +717,7 @@ data TrainingConfiguration = TrainingConfiguration
 	, tcBatchSizeTrain :: Int
 	, tcBatchSizeTest :: Int
 	, tcLossScaling :: LossScaling
+	, tcPermuteColors :: Bool
 	} deriving (Eq, Ord, Read, Show)
 
 newTrainingConfiguration :: TrainingConfiguration
@@ -724,13 +725,14 @@ newTrainingConfiguration = TrainingConfiguration
 	{ tcDutyCycle = newStable 0.1
 	, tcHoursPerSave = 1
 	, tcHoursPerDetailReport = 0.1
-	, tcBatchSizeTrain = 2000 -- TODO: optimize this choice (empirically, maxing out GPU memory is not the fastest choice)
+	, tcBatchSizeTrain = 400 -- TODO: optimize this choice (empirically, maxing out GPU memory is not the fastest choice)
 	, tcBatchSizeTest = 100
 	-- TODO: make this configurable
 	, tcLossScaling = LossScaling
 		{ lsPriors = 0.1
 		, lsValuation = 10
 		}
+	, tcPermuteColors = True
 	}
 
 data TrainingThreadState = TrainingThreadState
@@ -780,6 +782,8 @@ ttsAccept tts = tts { ttsCurrentConfiguration = sTrySet (ttsRequestedConfigurati
 -- ││╰─────╯│       │
 -- ││╭╴bse╶╮│       │
 -- ││╰─────╯│       │
+-- ││╭╴prm╶╮│       │
+-- ││╰─────╯│       │
 -- │╰───────╯       │
 -- ╰────────────────╯
 trainingThreadView :: Procedure LogMessage () -> TVar (Maybe Integer) -> IO ThreadView
@@ -820,6 +824,11 @@ trainingThreadView log netUpdate = do
 	hpd <- newPosCfg tcHoursPerDetailReport  "hours per detailed report" $ \tc n -> tc { tcHoursPerDetailReport  = n }
 	bsr <- newPosCfg tcBatchSizeTrain        "training batch size"       $ \tc n -> tc { tcBatchSizeTrain        = n }
 	bse <- newPosCfg tcBatchSizeTest         "test batch size"           $ \tc n -> tc { tcBatchSizeTest         = n }
+	prm <- new CheckButton [#label := "Generate training data by permuting colors", #active := tcPermuteColors newTrainingConfiguration]
+
+	on prm #toggled do
+		pc <- G.get prm #active
+		() <$ ttsRequest ref (\tc perm -> Just tc { tcPermuteColors = perm }) pc
 
 	#append top ogb
 	#append ogb ogd
@@ -837,6 +846,7 @@ trainingThreadView log netUpdate = do
 	crvAttach hpd cfg 2
 	crvAttach bsr cfg 3
 	crvAttach bse cfg 4
+	#attach cfg prm 0 5 3 1
 
 	tLastSaved <- newTracker
 	tCurrent <- newTracker
@@ -891,7 +901,7 @@ trainingThread log netUpdate ref sc = do
 	    	every (tcHoursPerSave cfg) saveT (saveWeights ten)
 	    	batch <- loadBatch rng sc dir "train" (tcBatchSizeTrain cfg)
 	    	before <- Time.getCurrentTime
-	    	loss <- netTrain net sgd (tcLossScaling cfg) batch
+	    	loss <- netTrain net sgd (tcPermuteColors cfg) (tcLossScaling cfg) batch
 	    	after <- Time.getCurrentTime
 	    	schedule log (Metric "loss/train/sum" loss)
 
@@ -906,11 +916,12 @@ trainingThread log netUpdate ref sc = do
 	    			, (ty, loss) <- components
 	    			]
 
-	    	let ten' = ten+toInteger (tcBatchSizeTrain cfg)
+	    	let dten = tcBatchSizeTrain cfg * if tcPermuteColors cfg then 6 else 1
+	    	    ten' = ten + toInteger dten
 	    	atomically . modifyTVar ref $ \tts -> tts
 	    		{ ttsGenerationHundredths = ssIncBy (ttsGenerationHundredths tts) 100
-	    		, ttsTensors = ssIncBy (ttsTensors tts) (tcBatchSizeTrain cfg)
-	    		, ttsDutyCycle = ssIncBy (ttsDutyCycle tts) (tcBatchSizeTrain cfg)
+	    		, ttsTensors = ssIncBy (ttsTensors tts) dten
+	    		, ttsDutyCycle = ssIncBy (ttsDutyCycle tts) dten
 	    		, ttsCurrent = sSet (Just ten') (ttsCurrent tts)
 	    		, ttsLoss = sSet loss (ttsLoss tts)
 	    		}

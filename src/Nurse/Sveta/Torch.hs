@@ -3,11 +3,13 @@ module Nurse.Sveta.Torch (
 	netSample, netLoadForInference, netLoadForTraining,
 	netEvaluation, netLossComponents, netActivations, netGradients, netTrain,
 	netSave, netWeights,
+	permuteColors,
 	TrainingExample(..), GameDetails, GameStep(..),
 	fullReplay, fullReplayV, trainingExamples,
 	NetInput(..), NetOutput(..), GroundTruth(..), LossScaling(..),
 	netSample', netLoadForInference', netLoadForTraining',
 	netEvaluation', netLossComponents', netActivations', netGradients', netTrain',
+	permuteColors',
 	)
 	where
 
@@ -52,6 +54,7 @@ foreign import ccall "net_activations" cxx_net_activations :: Ptr Net -> Ptr CEn
 foreign import ccall "train_net" cxx_train_net :: Ptr Net -> Ptr Optimizer -> Ptr CEndpoint -> Ptr CEndpoint -> IO CFloat
 foreign import ccall "gradients" cxx_gradients :: Ptr Net -> Ptr CEndpoint -> Ptr CEndpoint -> IO (Ptr CEndpoint)
 foreign import ccall "net_weights" cxx_net_weights :: Ptr Net -> IO (Ptr CEndpoint)
+foreign import ccall "permute_colors" cxx_permute_colors :: Ptr CEndpoint -> IO (Ptr CEndpoint)
 
 newtype Net = Net (ForeignPtr Net) deriving newtype CWrapper
 newtype Optimizer = Optimizer (ForeignPtr Optimizer) deriving newtype CWrapper
@@ -114,10 +117,10 @@ netActivations' net_ i_ = do
 	withUnwrapped (net_, c_i) \(net, ptr_i) ->
 		cxx_net_activations net ptr_i >>= gcEndpoint >>= hsEndpoint
 
-netTrain' :: Net -> Optimizer -> Endpoint -> Endpoint -> IO Float
-netTrain' net_ optim_ scaling_ batch_ = do
+netTrain' :: Net -> Optimizer -> Bool -> Endpoint -> Endpoint -> IO Float
+netTrain' net_ optim_ perm scaling_ batch_ = do
 	c_scaling <- cEndpoint scaling_
-	c_batch <- cEndpoint batch_
+	c_batch <- cEndpoint batch_ >>= if perm then permuteColors' else pure
 	withUnwrapped (net_, (optim_, (c_scaling, c_batch))) \(net, (optim, (scaling, batch))) ->
 		realToFrac <$> cxx_train_net net optim scaling batch
 
@@ -127,6 +130,9 @@ netGradients' net_ scaling_ batch_ = do
 	c_batch <- cEndpoint batch_
 	withUnwrapped (net_, (c_scaling, c_batch)) \(net, (scaling, batch)) ->
 		cxx_gradients net scaling batch >>= gcEndpoint >>= hsEndpoint
+
+permuteColors' :: CEndpoint -> IO CEndpoint
+permuteColors' c_e = withUnwrapped c_e (cxx_permute_colors >=> gcEndpoint)
 
 withNetIO :: (Structure -> Structure -> a) -> a
 withNetIO f = f (structure @NetInput) (structure @NetOutput)
@@ -167,14 +173,20 @@ netLossComponents net scaling batch = flatten [] <$> netLossComponents' net (lsE
 			(k, v) <- dict
 			flatten (k:prefix) v
 
-netTrain :: Net -> Optimizer -> LossScaling -> Vector TrainingExample -> IO Float
-netTrain net optim scaling batch = netTrain' net optim (lsEndpoint scaling) (toEndpoint batch)
+netTrain :: Net -> Optimizer -> Bool -> LossScaling -> Vector TrainingExample -> IO Float
+netTrain net optim perm scaling batch = netTrain' net optim perm (lsEndpoint scaling) (toEndpoint batch)
 
 netWeights :: Net -> IO Endpoint
 netWeights net_ = withUnwrapped net_ (cxx_net_weights >=> gcEndpoint >=> hsEndpoint)
 
 netGradients :: Net -> LossScaling -> Vector TrainingExample -> IO Endpoint
 netGradients net scaling batch = netGradients' net (lsEndpoint scaling) (toEndpoint batch)
+
+-- | This is very inefficient -- lots of cross-language and possibly
+-- cross-memory-hierarchy round trips. Use permuteColors' or the built-in
+-- permutation support in netTrain when efficiency matters.
+permuteColors :: Endpoint -> IO Endpoint
+permuteColors = cEndpoint >=> permuteColors' >=> hsEndpoint
 
 fullReplay :: (GameStateSeed a, Show a) => a -> [GameStep] -> Lookahead -> (IGameState -> s) -> (GameStep -> IGameState -> ClearResults -> s -> s) -> IO s
 fullReplay seed steps0 lk fDone fStep = initialState seed >>= go steps0 where
