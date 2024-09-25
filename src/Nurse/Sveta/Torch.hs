@@ -10,8 +10,7 @@ module Nurse.Sveta.Torch (
 	netSample', netLoadForInference', netLoadForTraining',
 	netEvaluation', netLossComponents', netActivations', netGradients', netTrain',
 	permuteColors',
-	)
-	where
+	) where
 
 import Control.Monad
 import Data.Aeson
