@@ -86,6 +86,7 @@ library
     hs-source-dirs:     src
     exposed-modules:      Nurse.Sveta.Cairo
                         , Nurse.Sveta.Files
+                        , Nurse.Sveta.Genome
                         , Nurse.Sveta.STM
                         , Nurse.Sveta.STM.BatchProcessor
                         , Nurse.Sveta.Tomcats
@@ -110,6 +111,7 @@ library
                         , cxxbits/constants.cpp
                         , cxxbits/debugging.cpp
                         , cxxbits/endpoint.cpp
+                        , cxxbits/ms-mendel.cpp
     include-dirs:       cxxbits
     includes:           endpoint.h
     extra-libraries:    stdc++, c10, torch, torch_cpu

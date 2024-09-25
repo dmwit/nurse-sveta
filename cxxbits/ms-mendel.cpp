@@ -351,19 +351,22 @@ Tensor evaluate(const Genome &g, const Boards &bs) {
 extern "C" {
 	Boards *boards_new(char *base_board, char *diffs) { return new Boards(base_board, diffs); }
 	void boards_delete(Boards *bs) { delete bs; }
-	int64_t boards_size(Boards *bs) { return bs->size(); }
+	int boards_size(Boards *bs) { return bs->size(); }
 
-	Genome *genome_new(int64_t w, int64_t h, int64_t n, float p) { return new Genome(w, h, n, p); }
+	Genome *genome_new(int w, int h, int n, float p) { return new Genome(w, h, n, p); }
 	void genome_delete(Genome *g) { delete g; }
-	int64_t genome_size(Genome *g) { return g->size(); }
-	int64_t genome_conv_width(Genome *g) { return g->conv_width(); }
-	int64_t genome_conv_height(Genome *g) { return g->conv_height(); }
-	Genome *genome_indices(Genome *g, int64_t *is, int64_t is_size);
+	int genome_size(Genome *g) { return g->size(); }
+	int genome_conv_width(Genome *g) { return g->conv_width(); }
+	int genome_conv_height(Genome *g) { return g->conv_height(); }
+	Genome *genome_indices(Genome *g, int *is, int is_size);
 	Genome *genome_append(Genome *g, Genome *other) { return new Genome(*g + *other); }
+	void genome_dump(Genome *g) { cout << *g << endl; }
+	void genome_sketch(Genome *g) { cout << g->sketch() << endl; }
+
 	void evaluate(Genome *g, Boards *bs, float *out);
 }
 
-Genome *genome_indices(Genome *g, int64_t *is, int64_t is_size) {
+Genome *genome_indices(Genome *g, int *is, int is_size) {
 	vector<int64_t> is_vec(is_size);
 	for(int i = 0; i < is_size; ++i) is_vec[i] = is[i];
 	return new Genome(g->indices(is_vec));
