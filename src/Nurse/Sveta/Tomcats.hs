@@ -4,7 +4,7 @@ module Nurse.Sveta.Tomcats (
 	newHyperParameters, newRNGTree, newRNGTreeFromSeed, newMoveTree,
 	descendRNGTree, descendMoveTree,
 	expandRNGTree', expandRNGTree, expandMoveTree', expandMoveTree,
-	sampleRNG, bestMove, weightedMove, uniformMove, sampleMove,
+	sampleRNG, sampleRNG', bestMove, weightedMove, uniformMove, sampleMove,
 	hpDiscount, hpImmediateReward, hpFinalReward, ihpFinalReward,
 	ctxDiscount, ctxImmediateReward, ctxFinalReward,
 	ctxIterations, ctxMaxLevel,
@@ -15,6 +15,7 @@ module Nurse.Sveta.Tomcats (
 	dumbEvaluation,
 	MidPath(..),
 	GameState(..), IGameState(..), cloneGameState, freezeGameState,
+	finished,
 	ppRNGTree, ppRNGTreeDebug, ppMoveTree, ppMoveTreeDebug,
 	ppMoveTrees, ppPlacements, ppEndpointMap, ppUnexploredMove,
 	ppAeson,
@@ -464,7 +465,10 @@ sampleMove ctx t = do
 	p = ctxMoveNoise ctx
 
 sampleRNG :: SearchContext -> IO Lookahead
-sampleRNG ctx = uniformV ctx allLookaheads
+sampleRNG = sampleRNG' . ctxRNG
+
+sampleRNG' :: GenIO -> IO Lookahead
+sampleRNG' rng = uniformV' rng allLookaheads
 
 ensureNonEmpty :: (MoveTree -> IO a) -> MoveTree -> IO (Maybe a)
 ensureNonEmpty f t = if HM.null (childrenMove t) && V.null (unexploredMove t)
@@ -473,7 +477,10 @@ ensureNonEmpty f t = if HM.null (childrenMove t) && V.null (unexploredMove t)
 
 -- | Caller must ensure the vector is nonempty
 uniformV :: SearchContext -> Vector a -> IO a
-uniformV ctx v = (v V.!) <$> uniformR (0, V.length v - 1) (ctxRNG ctx)
+uniformV = uniformV' . ctxRNG
+
+uniformV' :: GenIO -> Vector a -> IO a
+uniformV' rng v = (v V.!) <$> uniformR (0, V.length v - 1) rng
 
 data BestMoves' = BestMoves' (Vector Pill) Float deriving (Eq, Ord, Read, Show)
 

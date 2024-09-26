@@ -159,3 +159,7 @@ executable nurse-sveta-archive-games
     import:             executable
     main-is:            archive-games.hs
     other-modules:      CategoryMetadata
+
+executable ms-mendel
+    import:             executable
+    main-is:            ms-mendel.hs

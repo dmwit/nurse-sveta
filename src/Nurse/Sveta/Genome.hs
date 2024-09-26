@@ -78,7 +78,6 @@ gEvaluateIO (Genome g) b bs | invalid = fail "gEvaluate only works on 8x16 board
 		allocaArray 128 \cxx_base_board ->
 		allocaArray (V.length bs) \cxx_out ->
 		BS.useAsCStringLen diffsBS \(cxx_diffs, _len) -> do
-			print diffsBS
 			for_ [0..7] \x ->
 				for_ [0..15] \y ->
 					pokeElemOff cxx_base_board (x + 8*y) . fromIntegral . word8FromCell  . unsafeGet b $ Position x y
