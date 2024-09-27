@@ -4,7 +4,7 @@ module Nurse.Sveta.Tomcats (
 	newHyperParameters, newRNGTree, newRNGTreeFromSeed, newMoveTree,
 	descendRNGTree, descendMoveTree,
 	expandRNGTree', expandRNGTree, expandMoveTree', expandMoveTree,
-	sampleRNG, sampleRNG', bestMove, weightedMove, uniformMove, sampleMove,
+	sampleRNG, bestMove, weightedMove, uniformMove, sampleMove,
 	hpDiscount, hpImmediateReward, hpFinalReward, ihpFinalReward,
 	ctxDiscount, ctxImmediateReward, ctxFinalReward,
 	ctxIterations, ctxMaxLevel,
@@ -13,6 +13,7 @@ module Nurse.Sveta.Tomcats (
 	playRNG, playMove,
 	GameStateSeed(..),
 	dumbEvaluation,
+	sampleRNG', uniformV, uniformV', uniformVI, uniformVI',
 	MidPath(..),
 	GameState(..), IGameState(..), cloneGameState, freezeGameState,
 	finished,
@@ -475,12 +476,21 @@ ensureNonEmpty f t = if HM.null (childrenMove t) && V.null (unexploredMove t)
 	then pure Nothing
 	else Just <$> f t
 
--- | Caller must ensure the vector is nonempty
+-- | Choose a random value from the given vector. Caller must ensure the vector
+-- is nonempty.
 uniformV :: SearchContext -> Vector a -> IO a
 uniformV = uniformV' . ctxRNG
 
 uniformV' :: GenIO -> Vector a -> IO a
-uniformV' rng v = (v V.!) <$> uniformR (0, V.length v - 1) rng
+uniformV' rng v = (v V.!) <$> uniformVI' rng v
+
+-- | Choose a random index within bounds for the given vector. Caller must
+-- ensure the vector is nonempty.
+uniformVI :: SearchContext -> Vector a -> IO Int
+uniformVI = uniformVI' . ctxRNG
+
+uniformVI' :: GenIO -> Vector a -> IO Int
+uniformVI' rng v = uniformR (0, V.length v - 1) rng
 
 data BestMoves' = BestMoves' (Vector Pill) Float deriving (Eq, Ord, Read, Show)
 
