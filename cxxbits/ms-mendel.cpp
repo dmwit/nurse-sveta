@@ -274,15 +274,15 @@ Genome Genome::indices(vector<int64_t> is) const {
 }
 
 Genome Genome::operator+(const Genome &other) const {
-	int64_t sz = size() + other.size(), w = conv_width(), h = conv_height();
+	int64_t sz = size(), new_sz = size() + other.size(), w = conv_width(), h = conv_height();
 
 	assert(other.conv_width() == w);
 	assert(other.conv_height() == w);
 
 	Tensor co, sh, sc;
-	co = torch::zeros({sz, COLORS+SENTINELS, w, h}, GPU_BOOL_REP);
-	sh = torch::zeros({sz, SHAPES+SENTINELS, w, h}, GPU_BOOL_REP);
-	sc = torch::zeros({sz});
+	co = torch::zeros({new_sz, COLORS+SENTINELS, w, h}, GPU_BOOL_REP);
+	sh = torch::zeros({new_sz, SHAPES+SENTINELS, w, h}, GPU_BOOL_REP);
+	sc = torch::zeros({new_sz}, GPU_FLOAT);
 
 	co.index_put_({indexing::Slice(0, sz), "..."}, color_pattern_);
 	sh.index_put_({indexing::Slice(0, sz), "..."}, shape_pattern_);
@@ -337,7 +337,7 @@ void Genome::normalize_scores() {
 
 void Genome::assert_compatible(const Tensor &t, const TensorOptions &o) {
 	assert(t.dtype() == o.dtype());
-	assert(t.device() == o.device());
+	assert(t.device().type() == o.device().type());
 }
 
 Tensor evaluate(const Genome &g, const Boards &bs) {
