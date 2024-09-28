@@ -65,6 +65,9 @@ main = do
 				True -> pure False
 				False -> do
 					writeIORef forceQuitRef True
+					forkIO do
+						threadDelay 1000000
+						forever (putMVar jobs undefined)
 					True <$ ply `tmDieThen` (performGC >> #quit app)
 			]
 
