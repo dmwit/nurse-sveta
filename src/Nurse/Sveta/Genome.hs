@@ -21,23 +21,23 @@ import qualified Data.ByteString as BS
 import qualified Data.Vector as V
 
 foreign import ccall "boards_new" cxx_boards_new :: Ptr CChar -> Ptr CChar -> IO (Ptr Boards)
-foreign import ccall "boards_delete" cxx_boards_delete :: Ptr Boards -> IO ()
+foreign import ccall unsafe "boards_delete" cxx_boards_delete :: Ptr Boards -> IO ()
 
 foreign import ccall "genome_new" cxx_genome_new :: CInt -> CInt -> CInt -> CFloat -> IO (Ptr Genome)
 foreign import ccall "genome_clone" cxx_genome_clone :: Ptr Genome -> IO (Ptr Genome)
 foreign import ccall "&genome_delete" cxx_genome_delete :: FinalizerPtr Genome
 
-foreign import ccall "genome_get_color_pattern" cxx_genome_get_color_pattern :: Ptr Genome -> CInt -> CInt -> CInt -> CInt -> IO CBool
-foreign import ccall "genome_get_shape_pattern" cxx_genome_get_shape_pattern :: Ptr Genome -> CInt -> CInt -> CInt -> CInt -> IO CBool
-foreign import ccall "genome_get_pattern_score" cxx_genome_get_pattern_score :: Ptr Genome -> CInt -> IO CFloat
+foreign import ccall unsafe "genome_get_color_pattern" cxx_genome_get_color_pattern :: Ptr Genome -> CInt -> CInt -> CInt -> CInt -> IO CBool
+foreign import ccall unsafe "genome_get_shape_pattern" cxx_genome_get_shape_pattern :: Ptr Genome -> CInt -> CInt -> CInt -> CInt -> IO CBool
+foreign import ccall unsafe "genome_get_pattern_score" cxx_genome_get_pattern_score :: Ptr Genome -> CInt -> IO CFloat
 
-foreign import ccall "genome_set_color_pattern" cxx_genome_set_color_pattern :: Ptr Genome -> CInt -> CInt -> CInt -> CInt -> CBool -> IO ()
-foreign import ccall "genome_set_shape_pattern" cxx_genome_set_shape_pattern :: Ptr Genome -> CInt -> CInt -> CInt -> CInt -> CBool -> IO ()
-foreign import ccall "genome_set_pattern_score" cxx_genome_set_pattern_score :: Ptr Genome -> CInt -> CFloat -> IO ()
+foreign import ccall unsafe "genome_set_color_pattern" cxx_genome_set_color_pattern :: Ptr Genome -> CInt -> CInt -> CInt -> CInt -> CBool -> IO ()
+foreign import ccall unsafe "genome_set_shape_pattern" cxx_genome_set_shape_pattern :: Ptr Genome -> CInt -> CInt -> CInt -> CInt -> CBool -> IO ()
+foreign import ccall unsafe "genome_set_pattern_score" cxx_genome_set_pattern_score :: Ptr Genome -> CInt -> CFloat -> IO ()
 
-foreign import ccall "genome_size" cxx_genome_size :: Ptr Genome -> IO CInt
-foreign import ccall "genome_conv_width" cxx_genome_conv_width :: Ptr Genome -> IO CInt
-foreign import ccall "genome_conv_height" cxx_genome_conv_height :: Ptr Genome -> IO CInt
+foreign import ccall unsafe "genome_size" cxx_genome_size :: Ptr Genome -> IO CInt
+foreign import ccall unsafe "genome_conv_width" cxx_genome_conv_width :: Ptr Genome -> IO CInt
+foreign import ccall unsafe "genome_conv_height" cxx_genome_conv_height :: Ptr Genome -> IO CInt
 
 foreign import ccall "genome_indices" cxx_genome_indices :: Ptr Genome -> Ptr CInt -> CInt -> IO (Ptr Genome)
 foreign import ccall "genome_append" cxx_genome_append :: Ptr Genome -> Ptr Genome -> IO (Ptr Genome)
