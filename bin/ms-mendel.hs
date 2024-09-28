@@ -71,7 +71,10 @@ main = do
 					writeIORef forceQuitRef True
 					forkIO do
 						threadDelay 1000000
-						forever (putMVar jobs undefined)
+						forever (putMVar jobs undefined) -- unblock evaluation threads waiting for a job
+					forkIO do
+						threadDelay 1000000
+						forever (takeMVar jobs) -- unblock dying threads trying to push jobs into the queue
 					True <$ play1 `tmDieThen` play2 `tmDieThen` (performGC >> #quit app)
 			]
 
@@ -140,10 +143,12 @@ evaluationThread :: MsMendelConfig -> MVar Job -> TVar PlayerStateModel -> Statu
 evaluationThread mmc jobs psmRef sc = createSystemRandom >>= \rng -> forever do
 	scIO_ sc
 	job <- takeMVar jobs
-	let gs = jGame job
-	    moveLoop frames [] = moveLoop frames (jLookaheads job)
+	-- we need to make a copy so that scIO below can put the original game back
+	-- into the queue
+	gs <- cloneGameState (jGame job)
+	let moveLoop frames [] = moveLoop frames (jLookaheads job)
 	    moveLoop frames (lk:lks) = finished gs >>= \b -> if b then pure frames else do
-	    	scIO_ sc
+	    	scIO sc (putMVar jobs job)
 	    	cur <- mfreeze (board gs)
 	    	atomically $ writeTVar psmRef PSM { psmBoard = cur, psmLookahead = Just lk, psmOverlay = [] }
 	    	fp <- readIORef (framesPassed gs)
