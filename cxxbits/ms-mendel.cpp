@@ -14,6 +14,7 @@ const int64_t COLOR_OUT_OF_BOUNDS = COLORS + 1, SHAPE_OUT_OF_BOUNDS = SHAPES + 1
 // ideally we'd use kBool, but convolutions aren't implemented for those
 // see also https://github.com/pytorch/pytorch/issues/136578
 const TensorOptions GPU_BOOL_REP = TensorOptions().dtype(kF16).device(kCUDA);
+typedef float CXX_BOOL_REP;
 
 const Tensor PERMUTATIONS = torch::tensor({0,1,2,3,4,0,2,1,3,4,1,0,2,3,4,1,2,0,3,4,2,0,1,3,4,2,1,0,3,4}).reshape({NUM_PERMUTATIONS,COLORS+SENTINELS});
 
@@ -66,10 +67,19 @@ class Genome {
 	public:
 		Genome(int64_t conv_width, int64_t conv_height, int64_t num_patterns = 0, float p = 0.5);
 		Genome(const Tensor &color_pattern, const Tensor &shape_pattern, const Tensor &pattern_score);
+		Genome clone() const;
 
 		int64_t size() const { return color_pattern_.size(INDEX_DIM); }
 		int64_t conv_width() const { return color_pattern_.size(CONV_WIDTH_DIM); }
 		int64_t conv_height() const { return color_pattern_.size(CONV_HEIGHT_DIM); }
+
+		bool get_color_pattern(int64_t pattern, int64_t color, int64_t w, int64_t h) const;
+		bool get_shape_pattern(int64_t pattern, int64_t shape, int64_t w, int64_t h) const;
+		float get_pattern_score(int64_t pattern) const;
+
+		void set_color_pattern(int64_t pattern, int64_t color, int64_t w, int64_t h, bool v);
+		void set_shape_pattern(int64_t pattern, int64_t color, int64_t w, int64_t h, bool v);
+		void set_pattern_score(int64_t pattern, float v);
 
 		const Tensor &p_color_pattern() const;
 		const Tensor &p_shape_pattern() const;
@@ -236,6 +246,42 @@ Genome::Genome(const Tensor &co, const Tensor &sh, const Tensor &sc)
 	assert(!pattern_score_.requires_grad());
 }
 
+Genome Genome::clone() const {
+	Genome result(color_pattern_.clone(), shape_pattern_.clone(), pattern_score_.clone());
+	// we always set these fields back to Tensor() before modifying them, so no need to clone
+	result.p_color_pattern_ = p_color_pattern_;
+	result.p_shape_pattern_ = p_shape_pattern_;
+	result.p_pattern_score_ = p_pattern_score_;
+	return result;
+}
+
+bool Genome::get_color_pattern(int64_t pattern, int64_t color, int64_t w, int64_t h) const {
+	return color_pattern_[pattern][color][w][h].item<CXX_BOOL_REP>() != 0;
+}
+
+bool Genome::get_shape_pattern(int64_t pattern, int64_t shape, int64_t w, int64_t h) const {
+	return shape_pattern_[pattern][shape][w][h].item<CXX_BOOL_REP>() != 0;
+}
+
+float Genome::get_pattern_score(int64_t pattern) const {
+	return pattern_score_[pattern].item<float>();
+}
+
+void Genome::set_color_pattern(int64_t pattern, int64_t color, int64_t w, int64_t h, bool v) {
+	color_pattern_[pattern][color][w][h] = v;
+	p_color_pattern_ = Tensor();
+}
+
+void Genome::set_shape_pattern(int64_t pattern, int64_t shape, int64_t w, int64_t h, bool v) {
+	shape_pattern_[pattern][shape][w][h] = v;
+	p_shape_pattern_ = Tensor();
+}
+
+void Genome::set_pattern_score(int64_t pattern, float v) {
+	pattern_score_[pattern] = v;
+	normalize_scores(); // this clears p_pattern_score_
+}
+
 const Tensor &Genome::p_color_pattern() const {
 	if(!p_color_pattern_.defined()) {
 		const int64_t sz = size();
@@ -354,12 +400,24 @@ extern "C" {
 	int boards_size(Boards *bs) { return bs->size(); }
 
 	Genome *genome_new(int w, int h, int n, float p) { return new Genome(w, h, n, p); }
+	Genome *genome_clone(Genome *g) { return new Genome(g->clone()); }
 	void genome_delete(Genome *g) { delete g; }
+
 	int genome_size(Genome *g) { return g->size(); }
 	int genome_conv_width(Genome *g) { return g->conv_width(); }
 	int genome_conv_height(Genome *g) { return g->conv_height(); }
+
+	bool genome_get_color_pattern(Genome *g, int n, int c, int w, int h) { return g->get_color_pattern(n, c, w, h); }
+	bool genome_get_shape_pattern(Genome *g, int n, int s, int w, int h) { return g->get_shape_pattern(n, s, w, h); }
+	float genome_get_pattern_score(Genome *g, int n) { return g->get_pattern_score(n); }
+
+	void genome_set_color_pattern(Genome *g, int n, int c, int w, int h, bool v) { return g->set_color_pattern(n, c, w, h, v); }
+	void genome_set_shape_pattern(Genome *g, int n, int s, int w, int h, bool v) { return g->set_shape_pattern(n, s, w, h, v); }
+	void genome_set_pattern_score(Genome *g, int n, float v) { return g->set_pattern_score(n, v); }
+
 	Genome *genome_indices(Genome *g, int *is, int is_size);
 	Genome *genome_append(Genome *g, Genome *other) { return new Genome(*g + *other); }
+
 	void genome_dump(Genome *g) { cout << *g << endl; }
 	void genome_sketch(Genome *g) { cout << g->sketch() << endl; }
 

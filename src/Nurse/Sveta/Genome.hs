@@ -1,9 +1,12 @@
 module Nurse.Sveta.Genome (
-	Genome, newGenome,
+	Genome, newGenome, gClone,
 	gSize, gConvWidth, gConvHeight,
 	gEvaluate,
 	gIndices, gAppend,
+	gGetColorPattern, gGetShapePattern, gGetPatternScore,
+	gSetColorPattern, gSetShapePattern, gSetPatternScore,
 	gDump, gSketch,
+	WithSentinels(..),
 	) where
 
 import Data.ByteString.Builder
@@ -21,12 +24,24 @@ foreign import ccall "boards_new" cxx_boards_new :: Ptr CChar -> Ptr CChar -> IO
 foreign import ccall "boards_delete" cxx_boards_delete :: Ptr Boards -> IO ()
 
 foreign import ccall "genome_new" cxx_genome_new :: CInt -> CInt -> CInt -> CFloat -> IO (Ptr Genome)
+foreign import ccall "genome_clone" cxx_genome_clone :: Ptr Genome -> IO (Ptr Genome)
 foreign import ccall "&genome_delete" cxx_genome_delete :: FinalizerPtr Genome
+
+foreign import ccall "genome_get_color_pattern" cxx_genome_get_color_pattern :: Ptr Genome -> CInt -> CInt -> CInt -> CInt -> IO CBool
+foreign import ccall "genome_get_shape_pattern" cxx_genome_get_shape_pattern :: Ptr Genome -> CInt -> CInt -> CInt -> CInt -> IO CBool
+foreign import ccall "genome_get_pattern_score" cxx_genome_get_pattern_score :: Ptr Genome -> CInt -> IO CFloat
+
+foreign import ccall "genome_set_color_pattern" cxx_genome_set_color_pattern :: Ptr Genome -> CInt -> CInt -> CInt -> CInt -> CBool -> IO ()
+foreign import ccall "genome_set_shape_pattern" cxx_genome_set_shape_pattern :: Ptr Genome -> CInt -> CInt -> CInt -> CInt -> CBool -> IO ()
+foreign import ccall "genome_set_pattern_score" cxx_genome_set_pattern_score :: Ptr Genome -> CInt -> CFloat -> IO ()
+
 foreign import ccall "genome_size" cxx_genome_size :: Ptr Genome -> IO CInt
 foreign import ccall "genome_conv_width" cxx_genome_conv_width :: Ptr Genome -> IO CInt
 foreign import ccall "genome_conv_height" cxx_genome_conv_height :: Ptr Genome -> IO CInt
+
 foreign import ccall "genome_indices" cxx_genome_indices :: Ptr Genome -> Ptr CInt -> CInt -> IO (Ptr Genome)
 foreign import ccall "genome_append" cxx_genome_append :: Ptr Genome -> Ptr Genome -> IO (Ptr Genome)
+
 foreign import ccall "genome_dump" cxx_genome_dump :: Ptr Genome -> IO ()
 foreign import ccall "genome_sketch" cxx_genome_sketch :: Ptr Genome -> IO ()
 
@@ -41,6 +56,9 @@ newGenome w h n p = gcGenome (cxx_genome_new (fromIntegral w) (fromIntegral h) (
 gcGenome :: IO (Ptr Genome) -> IO Genome
 gcGenome act = Genome <$> (act >>= newForeignPtr cxx_genome_delete)
 
+gClone :: Genome -> IO Genome
+gClone (Genome g) = withForeignPtr g (gcGenome . cxx_genome_clone)
+
 gSize :: Genome -> Int
 gSize (Genome g) = fromIntegral . unsafePerformIO $ withForeignPtr g cxx_genome_size
 
@@ -49,6 +67,30 @@ gConvWidth (Genome g) = fromIntegral . unsafePerformIO $ withForeignPtr g cxx_ge
 
 gConvHeight :: Genome -> Int
 gConvHeight (Genome g) = fromIntegral . unsafePerformIO $ withForeignPtr g cxx_genome_conv_height
+
+gGetColorPattern :: Genome -> Int -> WithSentinels Color -> Int -> Int -> Bool
+gGetColorPattern (Genome g) n c w h = unsafePerformIO $ withForeignPtr g \cxx_g -> (0 /=) <$>
+	cxx_genome_get_color_pattern cxx_g (fromIntegral n) (colorSentinelIndex c) (fromIntegral w) (fromIntegral h)
+
+gGetShapePattern :: Genome -> Int -> WithSentinels Shape -> Int -> Int -> Bool
+gGetShapePattern (Genome g) n s w h = unsafePerformIO $ withForeignPtr g \cxx_g -> (0 /=) <$>
+	cxx_genome_get_shape_pattern cxx_g (fromIntegral n) (shapeSentinelIndex s) (fromIntegral w) (fromIntegral h)
+
+gGetPatternScore :: Genome -> Int -> Float
+gGetPatternScore (Genome g) n = unsafePerformIO $ withForeignPtr g \cxx_g -> realToFrac <$>
+	cxx_genome_get_pattern_score cxx_g (fromIntegral n)
+
+gSetColorPattern :: Genome -> Int -> WithSentinels Color -> Int -> Int -> Bool -> IO ()
+gSetColorPattern (Genome g) n c w h v = withForeignPtr g \cxx_g ->
+	cxx_genome_set_color_pattern cxx_g (fromIntegral n) (colorSentinelIndex c) (fromIntegral w) (fromIntegral h) (fromIntegral (fromEnum v))
+
+gSetShapePattern :: Genome -> Int -> WithSentinels Shape -> Int -> Int -> Bool -> IO ()
+gSetShapePattern (Genome g) n s w h v = withForeignPtr g \cxx_g ->
+	cxx_genome_set_shape_pattern cxx_g (fromIntegral n) (shapeSentinelIndex s) (fromIntegral w) (fromIntegral h) (fromIntegral (fromEnum v))
+
+gSetPatternScore :: Genome -> Int -> Float -> IO ()
+gSetPatternScore (Genome g) n v = withForeignPtr g \cxx_g ->
+	cxx_genome_set_pattern_score cxx_g (fromIntegral n) (realToFrac v)
 
 gIndices :: Genome -> [Int] -> IO Genome
 gIndices (Genome g) is =
@@ -101,14 +143,42 @@ gEvaluateIO (Genome g) b bs | invalid = fail "gEvaluate only works on 8x16 board
 	word8FromCell = \case
 		Empty -> 0x13
 		Occupied col sh -> word8FromColor col .|. word8FromShape sh
-	word8FromColor = \case
-		Blue -> 0
-		Red -> 1
-		Yellow -> 2
-	word8FromShape = \case
-		Virus -> 0
-		Disconnected -> 4
-		North -> 4
-		South -> 4
-		East -> 8
-		West -> 12
+	word8FromColor = colorIndex
+	word8FromShape = (`shiftL` 2) . shapeIndex
+
+data WithSentinels a = NonSentinel a | EmptySentinel | OutOfBoundsSentinel deriving (Eq, Ord, Read, Show)
+
+instance Bounded a => Bounded (WithSentinels a) where
+	minBound = NonSentinel minBound
+	maxBound = OutOfBoundsSentinel
+
+{-# Specialize colorIndex :: Color -> CInt #-}
+{-# Specialize colorIndex :: Color -> Word8 #-}
+colorIndex :: Num a => Color -> a
+colorIndex = \case
+	Blue -> 0
+	Red -> 1
+	Yellow -> 2
+
+{-# Specialize shapeIndex :: Shape -> CInt #-}
+{-# Specialize shapeIndex :: Shape -> Word8 #-}
+shapeIndex :: Num a => Shape -> a
+shapeIndex = \case
+	Virus -> 0
+	Disconnected -> 1
+	North -> 1
+	South -> 1
+	East -> 2
+	West -> 3
+
+colorSentinelIndex :: WithSentinels Color -> CInt
+colorSentinelIndex = \case
+	NonSentinel a -> colorIndex a
+	EmptySentinel -> 3
+	OutOfBoundsSentinel -> 4
+
+shapeSentinelIndex :: WithSentinels Shape -> CInt
+shapeSentinelIndex = \case
+	NonSentinel a -> shapeIndex a
+	EmptySentinel -> 4
+	OutOfBoundsSentinel -> 5

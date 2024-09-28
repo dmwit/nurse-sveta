@@ -85,7 +85,12 @@ data MsMendelConfig = MsMendelConfig
 	, mmcBreeders :: Int
 	, mmcMutators :: Int
 	, mmcOffspring :: Int
-	, mmcMutations :: Int
+	, mmcGeneInsertions :: Int
+	, mmcGeneDeletions :: Int
+	, mmcPatternToggles :: Int
+	, mmcScoreToggles :: Int
+	, mmcScoreAdjustments :: Int
+	, mmcMaxScoreAdjustmentFactor :: Float
 	, mmcMaxLevel :: Int
 	} deriving (Eq, Ord, Read, Show, Generic)
 
@@ -173,7 +178,7 @@ data GenerationOverview = GenerationOverview
 
 evolutionThreadView :: MsMendelConfig -> MVar Job -> IO ThreadView
 evolutionThreadView mmc jobs = do
-	pop <- V.generateM (mmcInitialPopulation mmc) \_ -> newGenome (mmcPatternWidth mmc) (mmcPatternHeight mmc) (mmcInitialPatterns mmc) (mmcInitialPatternThreshold mmc)
+	pop <- V.replicateM (mmcInitialPopulation mmc) $ newGenome (mmcPatternWidth mmc) (mmcPatternHeight mmc) (mmcInitialPatterns mmc) (mmcInitialPatternThreshold mmc)
 	replies <- newEmptyMVar
 	rng <- createSystemRandom
 	overviewRef <- newTVarIO GenerationOverview
@@ -311,7 +316,7 @@ what'sBad pop e = (-eViruses e, eFramesToLastKill e, -gSize (pop V.! eID e))
 breed :: MsMendelConfig -> GenIO -> Vector Genome -> IO (Vector Genome)
 breed mmc rng pop
 	| V.length pop < 2 = pure V.empty
-	| otherwise = V.generateM (mmcOffspring mmc) \_ -> do
+	| otherwise = V.replicateM (mmcOffspring mmc) do
 		(g, g') <- chooseTwo
 		shuffledIndices <- uniformShuffle ((Left <$> V.generate (gSize g) id) <> (Right <$> V.generate (gSize g') id)) rng
 		len <- (1+) <$> uniformVI' rng shuffledIndices
@@ -323,4 +328,54 @@ breed mmc rng pop
 		if a == b then chooseTwo else pure (pop V.! a, pop V.! b)
 
 mutate :: MsMendelConfig -> GenIO -> Vector Genome -> IO (Vector Genome)
-mutate _ _ _ = pure V.empty -- TODO
+mutate mmc rng pop = do
+	ins <- V.replicateM (mmcGeneInsertions mmc) insertGene
+	del <- V.replicateM (mmcGeneDeletions mmc) deleteGene
+	pat <- V.replicateM (mmcPatternToggles mmc) togglePattern
+	sco <- V.replicateM (mmcScoreToggles mmc) toggleScore
+	adj <- V.replicateM (mmcScoreAdjustments mmc) adjustScore
+	pure $ mconcat [ins, del, pat, sco, adj]
+	where
+	insertGene = liftJ2 gAppend
+		(uniformV' rng pop)
+		(newGenome (mmcPatternWidth mmc) (mmcPatternHeight mmc) 1 (mmcInitialPatternThreshold mmc))
+	deleteGene = do
+		g <- uniformV' rng pop
+		let sz = gSize g
+		if sz <= 1 then deleteGene else do
+			n <- uniformRM (0, sz - 1) rng
+			gIndices g $ [0..n-1] ++ [n+1..sz-1]
+	togglePattern = do
+		g <- uniformV' rng pop >>= gClone
+		pat <- uniformRM (0, gSize g - 1) rng
+		chan <- uniformV' rng allChannels
+		x <- uniformRM (0, mmcPatternWidth mmc - 1) rng
+		y <- uniformRM (0, mmcPatternHeight mmc - 1) rng
+		case chan of
+			Left  color -> gSetColorPattern g pat color x y . not $ gGetColorPattern g pat color x y
+			Right shape -> gSetShapePattern g pat shape x y . not $ gGetShapePattern g pat shape x y
+		pure g
+	toggleScore = do
+		g <- uniformV' rng pop >>= gClone
+		pat <- uniformRM (0, gSize g - 1) rng
+		gSetPatternScore g pat . negate $ gGetPatternScore g pat
+		pure g
+	adjustScore = do
+		g <- uniformV' rng pop >>= gClone
+		pat <- uniformRM (0, gSize g - 1) rng
+		let range = log (mmcMaxScoreAdjustmentFactor mmc)
+		factor <- exp <$> uniformRM (-range, range) rng
+		gSetPatternScore g pat . (factor*) $ gGetPatternScore g pat
+		pure g
+
+allChannels :: Vector (Either (WithSentinels Color) (WithSentinels Shape))
+allChannels = fmap Left allColorSentinels <> fmap Right allShapeSentinels
+
+allColorSentinels :: Vector (WithSentinels Color)
+allColorSentinels = addSentinels [minBound..maxBound]
+
+allShapeSentinels :: Vector (WithSentinels Shape)
+allShapeSentinels = addSentinels [Virus, Disconnected, East, West] -- North, South = Disconnected
+
+addSentinels :: [a] -> Vector (WithSentinels a)
+addSentinels as = V.fromList $ map NonSentinel as ++ [EmptySentinel, OutOfBoundsSentinel]
