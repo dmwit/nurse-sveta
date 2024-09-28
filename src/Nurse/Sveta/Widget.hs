@@ -581,6 +581,7 @@ newThreadManager nm aff mkView = do
 tmWidget :: ThreadManager -> IO Widget
 tmWidget = toWidget . tmContainer
 
+infixr 5 `tmDieThen`
 tmDieThen :: ThreadManager -> IO () -> IO ()
 tmDieThen tm report = do
 	set (tmAddThread tm) [#sensitive := False]

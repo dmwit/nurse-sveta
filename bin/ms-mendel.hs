@@ -32,12 +32,12 @@ import Util
 import qualified Data.HashMap.Strict as HM
 import qualified Data.Vector as V
 
--- ╭╴w╶─────────────╮
--- │╭╴top╶─────────╮│
--- ││╭╴ply╶╮╭╴gen╶╮││
--- ││╰─────╯╰─────╯││
--- │╰──────────────╯│
--- ╰────────────────╯
+-- ╭╴w╶────────────────────────╮
+-- │╭╴top╶────────────────────╮│
+-- ││╭╴play1╶╮╭╴play2╶╮╭╴gen╶╮││
+-- ││╰───────╯╰───────╯╰─────╯││
+-- │╰─────────────────────────╯│
+-- ╰───────────────────────────╯
 main :: IO ()
 main = do
 	torchPlusGtkFix
@@ -48,11 +48,15 @@ main = do
 		forceQuitRef <- newIORef False
 		jobs <- newEmptyMVar
 		top <- new Box [#orientation := OrientationHorizontal, #spacing := 10]
-		ply <- newThreadManager "evaluation" Green (evaluationThreadView mmc jobs)
+		play1 <- newThreadManager "evaluation" Green (evaluationThreadView mmc jobs)
+		play2 <- newThreadManager "evaluation" Green (evaluationThreadView mmc jobs)
 		gen <- newThreadManager "evolution" Green (evolutionThreadView mmc jobs)
-		#append top =<< tmWidget ply
+		#append top =<< tmWidget play1
+		#append top =<< tmWidget play2
 		#append top =<< tmWidget gen
-		replicateM_ (mmcInitialEvaluationThreads mmc) (tmStartThread ply)
+		let ethreads = mmcInitialEvaluationThreads mmc
+		replicateM_ ((ethreads+1) `quot` 2) (tmStartThread play1)
+		replicateM_ ( ethreads    `quot` 2) (tmStartThread play2)
 		replicateM_ (mmcInitialEvolutionThreads mmc) (tmStartThread gen)
 
 		w <- new Window $ tail [undefined
@@ -68,7 +72,7 @@ main = do
 					forkIO do
 						threadDelay 1000000
 						forever (putMVar jobs undefined)
-					True <$ ply `tmDieThen` (performGC >> #quit app)
+					True <$ play1 `tmDieThen` play2 `tmDieThen` (performGC >> #quit app)
 			]
 
 		#show w
