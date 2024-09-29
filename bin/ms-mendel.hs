@@ -88,7 +88,6 @@ data MsMendelConfig = MsMendelConfig
 	, mmcInitialPopulation :: Int
 	, mmcPatternWidth, mmcPatternHeight :: Int
 	, mmcInitialPatterns :: Int
-	, mmcInitialPatternThreshold :: Float
 	, mmcPillCycleLength :: Int
 	, mmcEvaluationRateLimit :: Int
 	, mmcSurvivors :: Int
@@ -188,11 +187,16 @@ data GenerationOverview = GenerationOverview
 	, goMinSize, goFirstQuartileSize, goMedianSize, goLastQuartileSize, goMaxSize :: Double
 	} deriving (Eq, Ord, Read, Show)
 
+-- use the Jeffreys prior for Bernoulli distributions, β(½,½), to choose the
+-- Bernoulli parameter
+newJeffreysGenome :: GenIO -> Int -> Int -> Int -> IO Genome
+newJeffreysGenome rng w h n = newGenome w h n . realToFrac =<< beta 0.5 0.5 rng
+
 evolutionThreadView :: MsMendelConfig -> MVar Job -> IO ThreadView
 evolutionThreadView mmc jobs = do
-	pop <- V.replicateM (mmcInitialPopulation mmc) $ newGenome (mmcPatternWidth mmc) (mmcPatternHeight mmc) (mmcInitialPatterns mmc) (mmcInitialPatternThreshold mmc)
-	replies <- newEmptyMVar
 	rng <- createSystemRandom
+	pop <- V.replicateM (mmcInitialPopulation mmc) $ newJeffreysGenome rng (mmcPatternWidth mmc) (mmcPatternHeight mmc) (mmcInitialPatterns mmc)
+	replies <- newEmptyMVar
 	overviewRef <- newTVarIO GenerationOverview
 		{ goID = 0
 		, goPopulationSize = V.length pop
@@ -350,7 +354,7 @@ mutate mmc rng pop = do
 	where
 	insertGene = liftJ2 gAppend
 		(uniformV' rng pop)
-		(newGenome (mmcPatternWidth mmc) (mmcPatternHeight mmc) 1 (mmcInitialPatternThreshold mmc))
+		(newJeffreysGenome rng (mmcPatternWidth mmc) (mmcPatternHeight mmc) 1)
 	deleteGene = do
 		g <- uniformV' rng pop
 		let sz = gSize g
