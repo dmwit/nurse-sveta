@@ -11,7 +11,7 @@ module Nurse.Sveta.Tomcats (
 	ctxDiscountRate, ctxC_puct, ctxDirichlet, ctxPriorNoise,
 	ctxRewardVirusClear, ctxRewardOtherClear, ctxRewardWin, ctxRewardLoss,
 	playRNG, playMove,
-	GameStateSeed(..),
+	GameStateSeed(..), ExactLevel(..),
 	dumbEvaluation,
 	sampleRNG', uniformV, uniformV', uniformVI, uniformVI',
 	MidPath(..),
@@ -119,8 +119,12 @@ instance Gen a ~ GenIO => GameStateSeed (Gen a) where
 instance (a ~ GenIO, b ~ Int) => GameStateSeed (a, b) where
 	-- note to self: when the NES does it, it generates the pill sequence first,
 	-- then the board
-	initialState (g, maxLevel_) = do
-		level <- uniformRM (0, maxLevel) g
+	initialState (g, maxLevel_) = initialState . ExactLevel g =<< uniformRM (0, maxLevel) g
+		where maxLevel = min 20 . max 0 $ maxLevel_
+
+data ExactLevel = ExactLevel { elRNG :: GenIO, elLevel :: Int }
+instance GameStateSeed ExactLevel where
+	initialState (ExactLevel g level_) = do
 		seed <- uniformRM (2, maxBound) g
 		b <- mrandomBoard seed level
 		frameParity <- uniformM g
@@ -139,7 +143,7 @@ instance (a ~ GenIO, b ~ Int) => GameStateSeed (a, b) where
 			, originalSensitive = frameParity
 			, speed = coarseSpeed
 			}
-		where maxLevel = min 20 . max 0 $ maxLevel_
+		where level = min 20 . max 0 $ level_
 
 instance (a ~ Board, b ~ Bool, c ~ CoarseSpeed) => GameStateSeed (a, b, c) where
 	initialState (b, sensitive, speed) = pure GameState

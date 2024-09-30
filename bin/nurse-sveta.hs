@@ -627,8 +627,7 @@ processGameFile log status dir fp = recallGame dir fp >>= \case
 		    -- the speedup calculation is completed inside the logger
 		    logAccumulations = zip3 ["viruses", "frames", "days", "clear rate", "speedup" :: String]
 		                            [cmVirusesKilled, cmFrames, cmFrames, cmFrames, cmFrames]
-		                            [1, 1, fps*60*60*24, max 1 (accumulate cmVirusesKilled)*fps, fps]
-		    fps = 60.0988
+		                            [1, 1, ntscFrameRate*60*60*24, max 1 (accumulate cmVirusesKilled)*ntscFrameRate, ntscFrameRate]
 		    accumulate f = lmFloat . foldr (lmSum . foldr1 lmSum . f . cmCumulative) (LevelMetric 0 "") . bgsMetadata $ btsLatestGlobal bts
 
 		traverse_ (schedule log)
@@ -651,7 +650,7 @@ processGameFile log status dir fp = recallGame dir fp >>= \case
 			| (k, f, denominator) <- logAccumulations
 			]
 		traverse_ (schedule log)
-			[ Metric ("clear rate/" ++ k) (fromIntegral f / (fps * fromIntegral v))
+			[ Metric ("clear rate/" ++ k) (fromIntegral f / (ntscFrameRate * fromIntegral v))
 			| (k, f, v) <- zip3
 				[printf "%02d" viruses, "avg/" ++ categoryS]
 				[frames, sum (lmMetric <$> cmFrames        (cmLatest meta))]

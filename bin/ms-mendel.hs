@@ -30,7 +30,10 @@ import System.Mem
 import Util
 
 import qualified Data.HashMap.Strict as HM
+import qualified Data.Text as T
 import qualified Data.Vector as V
+import qualified Data.Vector.Algorithms.Intro as V
+import qualified Data.Vector.Mutable as VM
 
 -- ╭╴w╶────────────────────────╮
 -- │╭╴top╶────────────────────╮│
@@ -127,6 +130,12 @@ data Evaluation = Evaluation
 	, eFramesToLastKill :: Int
 	} deriving (Eq, Ord, Read, Show)
 
+instance Semigroup Evaluation where
+	e <> e' = e
+		{ eViruses = eViruses e + eViruses e'
+		, eFramesToLastKill = eFramesToLastKill e + eFramesToLastKill e'
+		}
+
 evaluationThreadView :: MsMendelConfig -> MVar Job -> IO ThreadView
 evaluationThreadView mmc jobs = do
 	let blank = PSM
@@ -182,7 +191,8 @@ evaluationThread mmc jobs psmRef sc = createSystemRandom >>= \rng -> forever do
 data GenerationOverview = GenerationOverview
 	{ goID :: Int
 	, goPopulationSize :: Int
-	, goPopulationEvaluated :: Int
+	, goLevelsPlayed :: Int
+	, goLevelsToPlay :: Int
 	, goBestSoFar :: Maybe Evaluation
 	, goWorstSoFar :: Maybe Evaluation
 	, goMinSize, goFirstQuartileSize, goMedianSize, goLastQuartileSize, goMaxSize :: Double
@@ -201,7 +211,8 @@ evolutionThreadView mmc jobs = do
 	overviewRef <- newTVarIO GenerationOverview
 		{ goID = 0
 		, goPopulationSize = V.length pop
-		, goPopulationEvaluated = 0
+		, goLevelsPlayed = 0
+		, goLevelsToPlay = V.length pop * (mmcMaxLevel mmc + 1)
 		, goBestSoFar = Nothing
 		, goWorstSoFar = Nothing
 		, goMinSize = 0
@@ -213,11 +224,16 @@ evolutionThreadView mmc jobs = do
 
 	genDesc <- new Label [#label := "generation", #halign := AlignStart]
 	popDesc <- new Label [#label := "population size", #halign := AlignStart]
-	evalDesc <- new Label [#label := "evaluated population", #halign := AlignStart]
+	totDesc <- new Label [#label := "boards to evaluate", #halign := AlignStart]
+	evalDesc <- new Label [#label := "boards evaluated", #halign := AlignStart]
+	levDesc <- new Label [#label := "currently on level", #halign := AlignStart]
+	posVirDesc <- new Label [#label := "viruses available to kill", #halign := AlignStart]
 	bestVirDesc <- new Label [#label := "most viruses killed this generation", #halign := AlignStart]
 	bestFrameDesc <- new Label [#label := "\tframes required", #halign := AlignStart]
+	bestMinDesc <- new Label [#label := "\tminutes required", #halign := AlignStart]
 	wrstVirDesc <- new Label [#label := "least viruses killed this generation", #halign := AlignStart]
 	wrstFrameDesc <- new Label [#label := "\tframes required", #halign := AlignStart]
+	wrstMinDesc <- new Label [#label := "\tminutes required", #halign := AlignStart]
 	pctDesc <- new Label [#label := "genome size by percentile", #halign := AlignStart]
 	pct0Desc <- new Label [#label := "\tmin", #halign := AlignStart]
 	pct25Desc <- new Label [#label := "\t25%", #halign := AlignStart]
@@ -226,11 +242,16 @@ evolutionThreadView mmc jobs = do
 	pct99Desc <- new Label [#label := "\tmax", #halign := AlignStart]
 	genVal <- new Label [#halign := AlignEnd]
 	popVal <- new Label [#halign := AlignEnd]
+	totVal <- new Label [#halign := AlignEnd]
 	evalVal <- new Label [#halign := AlignEnd]
+	levVal <- new Label [#halign := AlignEnd]
+	posVirVal <- new Label [#halign := AlignEnd]
 	bestVirVal <- new Label [#halign := AlignEnd]
 	bestFrameVal <- new Label [#halign := AlignEnd]
+	bestMinVal <- new Label [#halign := AlignEnd]
 	wrstVirVal <- new Label [#halign := AlignEnd]
 	wrstFrameVal <- new Label [#halign := AlignEnd]
+	wrstMinVal <- new Label [#halign := AlignEnd]
 	pctVal <- new Label [#halign := AlignEnd]
 	pct0Val <- new Label [#halign := AlignEnd]
 	pct25Val <- new Label [#halign := AlignEnd]
@@ -242,13 +263,24 @@ evolutionThreadView mmc jobs = do
 	    	overview <- readTVarIO overviewRef
 	    	set genVal [#label := tshow (goID overview)]
 	    	set popVal [#label := tshow (goPopulationSize overview)]
-	    	set evalVal [#label := tshow (goPopulationEvaluated overview)]
+	    	set totVal [#label := tshow (goLevelsToPlay overview)]
+	    	set evalVal [#label := tshow (goLevelsPlayed overview)]
+	    	let lev = goLevelsPlayed overview `div` goPopulationSize overview
+	    	    vir = 2 * (lev+1) * (lev+2)
+	    	set levVal [#label := tshow lev]
+	    	set posVirVal [#label := tshow vir]
 	    	case goBestSoFar overview of
-	    		Nothing -> set bestVirVal [#label := ""] >> set bestFrameVal [#label := ""]
-	    		Just e -> set bestVirVal [#label := tshow (eViruses e)] >> set bestFrameVal [#label := tshow (eFramesToLastKill e)]
+	    		Nothing -> set bestVirVal [#label := ""] >> set bestFrameVal [#label := ""] >> set bestMinVal [#label := ""]
+	    		Just e -> do
+	    			set bestVirVal [#label := tshow (eViruses e)]
+	    			set bestFrameVal [#label := tshow (eFramesToLastKill e)]
+	    			set bestMinVal [#label := asMinutes (eFramesToLastKill e)]
 	    	case goWorstSoFar overview of
-	    		Nothing -> set wrstVirVal [#label := ""] >> set wrstFrameVal [#label := ""]
-	    		Just e -> set wrstVirVal [#label := tshow (eViruses e)] >> set wrstFrameVal [#label := tshow (eFramesToLastKill e)]
+	    		Nothing -> set wrstVirVal [#label := ""] >> set wrstFrameVal [#label := ""] >> set wrstMinVal [#label := ""]
+	    		Just e -> do
+	    			set wrstVirVal [#label := tshow (eViruses e)]
+	    			set wrstFrameVal [#label := tshow (eFramesToLastKill e)]
+	    			set wrstMinVal [#label := asMinutes (eFramesToLastKill e)]
 	    	set pct0Val [#label := tshow (goMinSize overview)]
 	    	set pct25Val [#label := tshow (goFirstQuartileSize overview)]
 	    	set pct50Val [#label := tshow (goMedianSize overview)]
@@ -264,11 +296,16 @@ evolutionThreadView mmc jobs = do
 	    	writeIORef rowRef (row+1)
 	attachPair genDesc genVal
 	attachPair popDesc popVal
+	attachPair totDesc totVal
 	attachPair evalDesc evalVal
+	attachPair levDesc levVal
+	attachPair posVirDesc posVirVal
 	attachPair bestVirDesc bestVirVal
 	attachPair bestFrameDesc bestFrameVal
+	attachPair bestMinDesc bestMinVal
 	attachPair wrstVirDesc wrstVirVal
 	attachPair wrstFrameDesc wrstFrameVal
+	attachPair wrstMinDesc wrstMinVal
 	attachPair pctDesc pctVal
 	attachPair pct0Desc pct0Val
 	attachPair pct25Desc pct25Val
@@ -278,13 +315,25 @@ evolutionThreadView mmc jobs = do
 
 	tvNew table refresh (evolutionThread mmc jobs replies overviewRef rng pop)
 
+asMinutes :: Int -> T.Text
+asMinutes frames = tshow wholeMinutes <> ":" <> zeroPad 2 (tshow wholeSeconds) <> "." <> zeroPad 3 (tshow wholeMillis) where
+	minutes = fromIntegral frames / ntscFrameRate / 60
+	wholeMinutes = floor minutes
+	seconds = 60 * (minutes - fromIntegral wholeMinutes)
+	wholeSeconds = floor seconds
+	millis = 1000 * (seconds - fromIntegral wholeSeconds)
+	wholeMillis = round millis
+	zeroPad n t = T.replicate (n - T.length t) "0" <> t
+
 evolutionThread :: MsMendelConfig -> MVar Job -> MVar Evaluation -> TVar GenerationOverview -> GenIO -> Vector Genome -> StatusCheck -> IO ()
 evolutionThread mmc jobs replies overviewRef rng pop0 sc = go pop0 where
 	go pop = do
 		scIO_ sc
-		gs0 <- initialState (rng, mmcMaxLevel mmc)
-		lks <- replicateM (mmcPillCycleLength mmc) (sampleRNG' rng)
-		tid <- forkIO $ V.iforM_ pop \i genome -> do
+		gslks <- forM [0..mmcMaxLevel mmc] \lev -> do
+			gs <- initialState (ExactLevel rng lev)
+			lk <- replicateM (mmcPillCycleLength mmc) (sampleRNG' rng)
+			pure (gs, lk)
+		tid <- forkIO $ forM_ gslks \(gs0, lks) -> V.iforM_ pop \i genome -> do
 			gs <- cloneGameState gs0
 			putMVar jobs Job
 				{ jGenome = genome
@@ -293,18 +342,23 @@ evolutionThread mmc jobs replies overviewRef rng pop0 sc = go pop0 where
 				, jID = i
 				, jReply = replies
 				}
-		evals_ <- replicateM (V.length pop) do
+		evals <- VM.generate (V.length pop) \i -> Evaluation { eID = i, eViruses = 0, eFramesToLastKill = 0 }
+		forM_ gslks \_ -> forM_ pop \_ -> do
 			scIO sc do
 				forkIO . forever $ takeMVar replies
 				killThread tid
-			v <- takeMVar replies
-			atomically $ v <$ modifyTVar overviewRef \overview -> overview
-				{ goPopulationEvaluated = goPopulationEvaluated overview + 1
-				, goBestSoFar = Just $ maybe v (minOn (what'sBad pop) v) (goBestSoFar overview)
-				, goWorstSoFar = Just $ maybe v (maxOn (what'sBad pop) v) (goWorstSoFar overview)
+			deval <- takeMVar replies
+			VM.modify evals (deval<>) (eID deval)
+			eval <- VM.read evals (eID deval)
+			atomically $ modifyTVar overviewRef \overview -> overview
+				{ goLevelsPlayed = goLevelsPlayed overview + 1
+				, goBestSoFar = Just $ maybe eval (minOn (what'sBad pop) eval) (goBestSoFar overview)
+				, goWorstSoFar = Just $ maybe eval (maxOn (what'sBad pop) eval) (goWorstSoFar overview)
 				}
-		let evals = sortOn (what'sBad pop) evals_
-		    sortedPop = V.fromList evals <&> \e -> pop V.! eID e
+		print . goBestSoFar =<< readTVarIO overviewRef
+		V.sortBy (comparing (what'sBad pop)) evals
+		sortedIDs <- (eID<$>) <$> V.freeze evals
+		let sortedPop = V.backpermute pop sortedIDs
 		    survivors = V.take (mmcSurvivors mmc) sortedPop
 		offspring <- breed mmc rng (V.take (mmcBreeders mmc) sortedPop)
 		mutations <- mutate mmc rng (V.take (mmcMutators mmc) sortedPop)
@@ -315,7 +369,8 @@ evolutionThread mmc jobs replies overviewRef rng pop0 sc = go pop0 where
 		    	        + fromIntegral (sizes !! (q+1)) * (fromIntegral    r  / 4)
 		atomically $ modifyTVar overviewRef \overview -> overview
 			{ goID = goID overview + 1
-			, goPopulationEvaluated = 0
+			, goLevelsPlayed = 0
+			, goLevelsToPlay = V.length pop' * length gslks
 			, goPopulationSize = V.length pop'
 			, goBestSoFar = Nothing
 			, goWorstSoFar = Nothing
@@ -328,7 +383,7 @@ evolutionThread mmc jobs replies overviewRef rng pop0 sc = go pop0 where
 		go pop'
 
 what'sBad :: Vector Genome -> Evaluation -> (Int, Int, Int)
-what'sBad pop e = (-eViruses e, eFramesToLastKill e, -gSize (pop V.! eID e))
+what'sBad pop e = (-eViruses e, eFramesToLastKill e, gSize (pop V.! eID e))
 
 breed :: MsMendelConfig -> GenIO -> Vector Genome -> IO (Vector Genome)
 breed mmc rng pop
