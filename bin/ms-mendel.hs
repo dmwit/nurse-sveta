@@ -101,6 +101,7 @@ data MsMendelConfig = MsMendelConfig
 	, mmcScoreAdjustments :: Int
 	, mmcMaxScoreAdjustmentFactor :: Float
 	, mmcMaxLevel :: Int
+	, mmcMaxGenomeSize :: Int
 	} deriving (Eq, Ord, Read, Show, Generic)
 
 instance FromJSON MsMendelConfig where
@@ -335,7 +336,7 @@ breed mmc rng pop
 	| otherwise = V.replicateM (mmcOffspring mmc) do
 		(g, g') <- chooseTwo
 		shuffledIndices <- uniformShuffle ((Left <$> V.generate (gSize g) id) <> (Right <$> V.generate (gSize g') id)) rng
-		len <- (1+) <$> uniformVI' rng shuffledIndices
+		len <- min (mmcMaxGenomeSize mmc) . (1+) <$> uniformVI' rng shuffledIndices
 		let (indices, indices') = V.partitionWith id (V.take len shuffledIndices)
 		liftJ2 gAppend (gIndices g (V.toList indices)) (gIndices g' (V.toList indices'))
 	where
@@ -352,9 +353,11 @@ mutate mmc rng pop = do
 	adj <- V.replicateM (mmcScoreAdjustments mmc) adjustScore
 	pure $ mconcat [ins, del, pat, sco, adj]
 	where
-	insertGene = liftJ2 gAppend
-		(uniformV' rng pop)
-		(newJeffreysGenome rng (mmcPatternWidth mmc) (mmcPatternHeight mmc) 1)
+	insertGene = do
+		g <- uniformV' rng pop
+		if gSize g >= mmcMaxGenomeSize mmc then insertGene else do
+			g' <- newJeffreysGenome rng (mmcPatternWidth mmc) (mmcPatternHeight mmc) 1
+			gAppend g g'
 	deleteGene = do
 		g <- uniformV' rng pop
 		let sz = gSize g
