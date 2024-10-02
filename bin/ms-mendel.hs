@@ -343,23 +343,31 @@ evolutionThread mmc jobs replies overviewRef rng pop0 sc = go pop0 where
 				, jReply = replies
 				}
 		evals <- VM.generate (V.length pop) \i -> Evaluation { eID = i, eViruses = 0, eFramesToLastKill = 0 }
-		forM_ gslks \_ -> forM_ pop \_ -> do
-			scIO sc do
-				forkIO . forever $ takeMVar replies
-				killThread tid
-			deval <- takeMVar replies
-			VM.modify evals (deval<>) (eID deval)
-			eval <- VM.read evals (eID deval)
-			atomically $ modifyTVar overviewRef \overview -> overview
-				{ goLevelsPlayed = goLevelsPlayed overview + 1
-				, goBestSoFar = Just $ maybe eval (minOn (what'sBad pop) eval) (goBestSoFar overview)
-				, goWorstSoFar = Just $ maybe eval (maxOn (what'sBad pop) eval) (goWorstSoFar overview)
-				}
-		print . goBestSoFar =<< readTVarIO overviewRef
+		forM_ gslks \_ -> do
+			atomically $ modifyTVar overviewRef \overview -> overview { goWorstSoFar = Nothing }
+			forM_ pop \_ -> do
+				scIO sc do
+					forkIO . forever $ takeMVar replies
+					killThread tid
+				deval <- takeMVar replies
+				VM.modify evals (deval<>) (eID deval)
+				eval <- VM.read evals (eID deval)
+				atomically $ modifyTVar overviewRef \overview -> overview
+					{ goLevelsPlayed = goLevelsPlayed overview + 1
+					, goBestSoFar = Just $ maybe eval (minOn (what'sBad pop) eval) (goBestSoFar overview)
+					, goWorstSoFar = Just $ maybe eval (maxOn (what'sBad pop) eval) (goWorstSoFar overview)
+					}
 		V.sortBy (comparing (what'sBad pop)) evals
-		sortedIDs <- (eID<$>) <$> V.freeze evals
-		let sortedPop = V.backpermute pop sortedIDs
+		frozenEvals <- V.freeze evals
+		let sortedIDs = eID <$> frozenEvals
+		    sortedPop = V.backpermute pop sortedIDs
 		    survivors = V.take (mmcSurvivors mmc) sortedPop
+
+		putStrLn $ "sortedIDs: " ++ show sortedIDs
+		putStrLn $ "eViruses: " ++ show (eViruses <$> frozenEvals)
+		putStrLn $ "eFramesToLastKill: " ++ show (eFramesToLastKill <$> frozenEvals)
+		putStrLn $ "sizes: " ++ show (gSize <$> sortedPop)
+
 		offspring <- breed mmc rng (V.take (mmcBreeders mmc) sortedPop)
 		mutations <- mutate mmc rng (V.take (mmcMutators mmc) sortedPop)
 		let pop' = survivors <> offspring <> mutations
