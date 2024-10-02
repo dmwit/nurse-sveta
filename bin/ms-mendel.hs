@@ -369,11 +369,13 @@ evolutionThread mmc jobs replies overviewRef rng pop0 sc = go pop0 where
 		let sortedIDs = eID <$> frozenEvals
 		    sortedPop = V.backpermute pop sortedIDs
 		    survivors = V.take (mmcSurvivors mmc) sortedPop
+		    report nm val = putStrLn (nm ++ ": " ++ show val)
 
-		putStrLn $ "sortedIDs: " ++ show sortedIDs
-		putStrLn $ "eViruses: " ++ show (eViruses <$> frozenEvals)
-		putStrLn $ "eFramesToLastKill: " ++ show (eFramesToLastKill <$> frozenEvals)
-		putStrLn $ "sizes: " ++ show (gSize <$> sortedPop)
+		report "sortedIDs" sortedIDs
+		report "eViruses" (eViruses <$> frozenEvals)
+		report "eFramesToLastKill" (eFramesToLastKill <$> frozenEvals)
+		report "sizes" (gSize <$> sortedPop)
+		putStrLn ""
 
 		offspring <- breed mmc rng (V.take (mmcBreeders mmc) sortedPop)
 		mutations <- mutate mmc rng (V.take (mmcMutators mmc) sortedPop)
