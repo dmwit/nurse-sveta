@@ -25,6 +25,18 @@ forZipWith as bs f = zipWith f as bs
 liftJ2 :: Monad m => (a -> b -> m c) -> m a -> m b -> m c
 liftJ2 f ma mb = join (liftM2 f ma mb)
 
+infixr 2 <||>
+(<||>) :: Monad m => m Bool -> m Bool -> m Bool
+a <||> b = a >>= \case
+	True -> pure True
+	_ -> b
+
+infixr 3 <&&>
+(<&&>) :: Monad m => m Bool -> m Bool -> m Bool
+a <&&> b = a >>= \case
+	False -> pure False
+	_ -> b
+
 maxOn :: Ord b => (a -> b) -> a -> a -> a
 maxOn f a a' = if f a < f a' then a' else a
 

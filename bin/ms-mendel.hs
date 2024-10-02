@@ -105,6 +105,7 @@ data MsMendelConfig = MsMendelConfig
 	, mmcMaxScoreAdjustmentFactor :: Float
 	, mmcMaxLevel :: Int
 	, mmcMaxGenomeSize :: Int
+	, mmcMaxPillsPerKill :: Int
 	} deriving (Eq, Ord, Read, Show, Generic)
 
 instance FromJSON MsMendelConfig where
@@ -155,8 +156,8 @@ evaluationThread mmc jobs psmRef sc = createSystemRandom >>= \rng -> forever do
 	-- we need to make a copy so that scIO below can put the original game back
 	-- into the queue
 	gs <- cloneGameState (jGame job)
-	let moveLoop frames [] = moveLoop frames (jLookaheads job)
-	    moveLoop frames (lk:lks) = finished gs >>= \b -> if b then pure frames else do
+	let moveLoop pills frames [] = moveLoop pills frames (jLookaheads job)
+	    moveLoop pills frames (lk:lks) = stopMoving pills gs >>= \b -> if b then pure frames else do
 	    	scIO sc (putMVar jobs job)
 	    	cur <- mfreeze (board gs)
 	    	atomically $ writeTVar psmRef PSM { psmBoard = cur, psmLookahead = Just lk, psmOverlay = [] }
@@ -177,16 +178,22 @@ evaluationThread mmc jobs psmRef sc = createSystemRandom >>= \rng -> forever do
 	    	(pill, path) <- (moves V.!) <$> uniformV' rng bestIndices
 	    	playMove gs path pill
 	    	vk' <- readIORef (virusesKilled gs)
-	    	frames' <- if vk' > vk then readIORef (framesPassed gs) else pure frames
+	    	(pills', frames') <- if vk' > vk
+	    		then liftM2 (,) (readIORef (pillsUsed gs)) (readIORef (framesPassed gs))
+	    		else pure (pills, frames)
 	    	when (rateLimit > 0) (threadDelay rateLimit)
-	    	moveLoop frames' lks
-	frames <- moveLoop 0 []
+	    	moveLoop pills' frames' lks
+	frames <- moveLoop 0 0 []
 	vk <- readIORef (virusesKilled gs)
 	putMVar (jReply job) Evaluation
 		{ eID = jID job
 		, eViruses = vk
 		, eFramesToLastKill = frames
 		}
+	where
+	stopMoving pills gs = finished gs <||> do
+		pills' <- readIORef (pillsUsed gs)
+		pure (pills' > pills + mmcMaxPillsPerKill mmc)
 
 data GenerationOverview = GenerationOverview
 	{ goID :: Int
