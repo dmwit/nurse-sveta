@@ -160,6 +160,10 @@ evaluationThread mmc jobs psmRef sc = createSystemRandom >>= \rng -> forever do
 	    moveLoop pills frames (lk:lks) = stopMoving pills gs >>= \b -> if b then pure frames else do
 	    	scIO sc (putMVar jobs job)
 	    	cur <- mfreeze (board gs)
+	    	-- TODO: would be nice to do this after playing the move, since we
+	    	-- only really ever see this in detail when evaluation threads have
+	    	-- finished a generation's games and are waiting for their peers,
+	    	-- but getting the lookahead right is obnoxious
 	    	atomically $ writeTVar psmRef PSM { psmBoard = cur, psmLookahead = Just lk, psmOverlay = [] }
 	    	fp <- readIORef (framesPassed gs)
 	    	pu <- readIORef (pillsUsed gs)
