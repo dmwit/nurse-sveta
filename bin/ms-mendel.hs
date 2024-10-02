@@ -97,7 +97,7 @@ data MsMendelConfig = MsMendelConfig
 	, mmcBreeders :: Int
 	, mmcMutators :: Int
 	, mmcOffspring :: Int
-	, mmcGeneInsertions :: Int
+	, mmcGeneReplacements :: Int
 	, mmcGeneDeletions :: Int
 	, mmcPatternToggles :: Int
 	, mmcScoreToggles :: Int
@@ -416,46 +416,52 @@ breed mmc rng pop
 
 mutate :: MsMendelConfig -> GenIO -> Vector Genome -> IO (Vector Genome)
 mutate mmc rng pop = do
-	ins <- V.replicateM (mmcGeneInsertions mmc) insertGene
-	del <- V.replicateM (mmcGeneDeletions mmc) deleteGene
+	ins <- V.replicateM (mmcGeneReplacements mmc) replaceGene
+	del <- if any (>0) (gSize <$> pop)
+		then V.replicateM (mmcGeneDeletions mmc) deleteGene
+		else pure V.empty -- should never happen
 	pat <- V.replicateM (mmcPatternToggles mmc) togglePattern
 	sco <- V.replicateM (mmcScoreToggles mmc) toggleScore
 	adj <- V.replicateM (mmcScoreAdjustments mmc) adjustScore
 	pure $ mconcat [ins, del, pat, sco, adj]
 	where
-	insertGene = do
+	replaceGene = do
 		g <- uniformV' rng pop
-		if gSize g >= mmcMaxGenomeSize mmc then insertGene else do
-			g' <- newJeffreysGenome rng (mmcPatternWidth mmc) (mmcPatternHeight mmc) 1
-			gAppend g g'
+		let sz = gSize g
+		n <- uniformIndex sz
+		g' <- gIndices g $ [0..n-1] ++ [n+1..sz-1]
+		g'' <- newJeffreysGenome rng (mmcPatternWidth mmc) (mmcPatternHeight mmc) 1
+		gAppend g' g''
 	deleteGene = do
 		g <- uniformV' rng pop
 		let sz = gSize g
 		if sz <= 1 then deleteGene else do
-			n <- uniformRM (0, sz - 1) rng
+			n <- uniformIndex sz
 			gIndices g $ [0..n-1] ++ [n+1..sz-1]
 	togglePattern = do
 		g <- uniformV' rng pop >>= gClone
-		pat <- uniformRM (0, gSize g - 1) rng
+		pat <- uniformPattern g
 		chan <- uniformV' rng allChannels
-		x <- uniformRM (0, mmcPatternWidth mmc - 1) rng
-		y <- uniformRM (0, mmcPatternHeight mmc - 1) rng
+		x <- uniformIndex (mmcPatternWidth mmc)
+		y <- uniformIndex (mmcPatternHeight mmc)
 		case chan of
 			Left  color -> gSetColorPattern g pat color x y . not $ gGetColorPattern g pat color x y
 			Right shape -> gSetShapePattern g pat shape x y . not $ gGetShapePattern g pat shape x y
 		pure g
 	toggleScore = do
 		g <- uniformV' rng pop >>= gClone
-		pat <- uniformRM (0, gSize g - 1) rng
+		pat <- uniformPattern g
 		gSetPatternScore g pat . negate $ gGetPatternScore g pat
 		pure g
 	adjustScore = do
 		g <- uniformV' rng pop >>= gClone
-		pat <- uniformRM (0, gSize g - 1) rng
+		pat <- uniformPattern g
 		let range = log (mmcMaxScoreAdjustmentFactor mmc)
 		factor <- exp <$> uniformRM (-range, range) rng
 		gSetPatternScore g pat . (factor*) $ gGetPatternScore g pat
 		pure g
+	uniformPattern = uniformIndex . gSize
+	uniformIndex n = uniformRM (0, n-1) rng
 
 allChannels :: Vector (Either (WithSentinels Color) (WithSentinels Shape))
 allChannels = fmap Left allColorSentinels <> fmap Right allShapeSentinels
