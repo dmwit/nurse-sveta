@@ -11,6 +11,7 @@ import Data.HashMap.Strict (HashMap)
 import Data.IORef
 import Data.List
 import Data.Ord
+import Data.Time
 import Data.Traversable
 import Data.Vector (Vector)
 import Dr.Mario.Model
@@ -238,6 +239,7 @@ evolutionThreadView mmc jobs = do
 	totDesc <- new Label [#label := "boards to evaluate", #halign := AlignStart]
 	evalDesc <- new Label [#label := "boards evaluated", #halign := AlignStart]
 	levDesc <- new Label [#label := "currently on level", #halign := AlignStart]
+	scaVirDesc <- new Label [#label := "scaled virus kills", #halign := AlignStart]
 	posVirDesc <- new Label [#label := "viruses available to kill", #halign := AlignStart]
 	bestVirDesc <- new Label [#label := "most viruses killed this generation", #halign := AlignStart]
 	bestFrameDesc <- new Label [#label := "\tframes required", #halign := AlignStart]
@@ -256,6 +258,7 @@ evolutionThreadView mmc jobs = do
 	totVal <- new Label [#halign := AlignEnd]
 	evalVal <- new Label [#halign := AlignEnd]
 	levVal <- new Label [#halign := AlignEnd]
+	scaVirVal <- new Label [#halign := AlignEnd]
 	posVirVal <- new Label [#halign := AlignEnd]
 	bestVirVal <- new Label [#halign := AlignEnd]
 	bestFrameVal <- new Label [#halign := AlignEnd]
@@ -281,11 +284,17 @@ evolutionThreadView mmc jobs = do
 	    	set levVal [#label := tshow lev]
 	    	set posVirVal [#label := tshow vir]
 	    	case goBestSoFar overview of
-	    		Nothing -> set bestVirVal [#label := ""] >> set bestFrameVal [#label := ""] >> set bestMinVal [#label := ""]
+	    		Nothing -> set bestVirVal [#label := ""] >> set bestFrameVal [#label := ""] >> set bestMinVal [#label := ""] >> set scaVirVal [#label := ""]
 	    		Just e -> do
 	    			set bestVirVal [#label := tshow (eViruses e)]
 	    			set bestFrameVal [#label := tshow (eFramesToLastKill e)]
 	    			set bestMinVal [#label := asMinutes (eFramesToLastKill e)]
+	    			let maxVir = 2 * (mmcMaxLevel mmc + 1) * (mmcMaxLevel mmc + 2)
+	    			    scale = fromIntegral maxVir / fromIntegral vir
+	    			    floatViruses = fromIntegral (eViruses e)
+	    			    lo = max 0      . floor   $ scale * (floatViruses - 0.5)
+	    			    hi = min maxVir . ceiling $ scale * (floatViruses + 0.5)
+	    			set scaVirVal [#label := tshow lo <> "-" <> tshow hi]
 	    	case goWorstSoFar overview of
 	    		Nothing -> set wrstVirVal [#label := ""] >> set wrstFrameVal [#label := ""] >> set wrstMinVal [#label := ""]
 	    		Just e -> do
@@ -310,6 +319,7 @@ evolutionThreadView mmc jobs = do
 	attachPair totDesc totVal
 	attachPair evalDesc evalVal
 	attachPair levDesc levVal
+	attachPair scaVirDesc scaVirVal
 	attachPair posVirDesc posVirVal
 	attachPair bestVirDesc bestVirVal
 	attachPair bestFrameDesc bestFrameVal
@@ -375,6 +385,7 @@ evolutionThread mmc jobs replies overviewRef rng pop0 sc = go pop0 where
 		    survivors = V.take (mmcSurvivors mmc) sortedPop
 		    report nm val = putStrLn (nm ++ ": " ++ show val)
 
+		getCurrentTime >>= print
 		report "sortedIDs" sortedIDs
 		report "eViruses" (eViruses <$> frozenEvals)
 		report "eFramesToLastKill" (eFramesToLastKill <$> frozenEvals)

@@ -31,6 +31,7 @@ common shared
                         , mwc-random ^>=0.15
                         , random ^>=1.2
                         , text ^>=2.1
+                        , time >=1.9 && <1.12
                         , unordered-containers ^>=0.2
                         , vector ^>=0.13
                         , vector-algorithms ^>=0.9
@@ -134,7 +135,6 @@ executable nurse-sveta
     other-modules:      CategoryMetadata
     build-depends:        clock ^>=0.8
                         , process ^>=1.6
-                        , time >=1.9 && <1.12
 
 executable nurse-sveta-reset-state
     import:             executable
