@@ -14,3 +14,7 @@ torchPlusGtkFix = lookupEnv "GSK_RENDERER" >>= \case
 
 ensure :: Alternative f => (a -> Bool) -> a -> f a
 ensure p x = x <$ guard (p x)
+
+-- carefully supports multiple-use partial-application
+equating :: Eq b => (a -> b) -> a -> a -> Bool
+equating f a = (f a==) . f

@@ -2,8 +2,10 @@ module Main where
 
 import Control.Concurrent
 import Control.Concurrent.MVar
+import Control.Exception
 import Control.Monad
 import Data.Aeson
+import Data.Aeson.Types
 import Data.Bits
 import Data.Char
 import Data.Functor
@@ -14,6 +16,7 @@ import Data.Ord
 import Data.Time
 import Data.Traversable
 import Data.Vector (Vector)
+import Data.Zip (Zip)
 import Dr.Mario.Model
 import Dr.Mario.Pathfinding
 import GHC.Generics
@@ -25,16 +28,20 @@ import Nurse.Sveta.Tomcats
 import Nurse.Sveta.Util
 import Nurse.Sveta.Widget
 import System.Environment
+import System.IO.Error
 import System.Random.MWC
 import System.Random.MWC.Distributions
 import System.Mem
 import Util
 
+import qualified Data.Aeson.KeyMap as KM
+import qualified Data.ByteString.Lazy as LBS
 import qualified Data.HashMap.Strict as HM
 import qualified Data.Text as T
 import qualified Data.Vector as V
 import qualified Data.Vector.Algorithms.Intro as V
 import qualified Data.Vector.Mutable as VM
+import qualified Data.Zip as Z
 
 -- ╭╴w╶────────────────────────╮
 -- │╭╴top╶────────────────────╮│
@@ -218,10 +225,12 @@ newJeffreysGenome rng w h n = newGenome w h n . realToFrac =<< beta 0.5 0.5 rng
 evolutionThreadView :: MsMendelConfig -> MVar Job -> IO ThreadView
 evolutionThreadView mmc jobs = do
 	rng <- createSystemRandom
-	pop <- V.replicateM (mmcInitialPopulation mmc) $ newJeffreysGenome rng (mmcPatternWidth mmc) (mmcPatternHeight mmc) (mmcInitialPatterns mmc)
+	dir <- getXdgDirectory XdgData "ms-mendel"
+	createDirectoryIfMissing True dir
+	(generation, pop) <- initializePopulation mmc dir rng
 	replies <- newEmptyMVar
 	overviewRef <- newTVarIO GenerationOverview
-		{ goID = 0
+		{ goID = generation
 		, goPopulationSize = V.length pop
 		, goLevelsPlayed = 0
 		, goLevelsToPlay = V.length pop * (mmcMaxLevel mmc + 1)
@@ -334,7 +343,7 @@ evolutionThreadView mmc jobs = do
 	attachPair pct75Desc pct75Val
 	attachPair pct99Desc pct99Val
 
-	tvNew table refresh (evolutionThread mmc jobs replies overviewRef rng pop)
+	tvNew table refresh (evolutionThread mmc jobs dir replies overviewRef rng pop)
 
 asMinutes :: Int -> T.Text
 asMinutes frames = tshow wholeMinutes <> ":" <> zeroPad 2 (tshow wholeSeconds) <> "." <> zeroPad 3 (tshow wholeMillis) where
@@ -346,9 +355,10 @@ asMinutes frames = tshow wholeMinutes <> ":" <> zeroPad 2 (tshow wholeSeconds) <
 	wholeMillis = round millis
 	zeroPad n t = T.replicate (n - T.length t) "0" <> t
 
-evolutionThread :: MsMendelConfig -> MVar Job -> MVar Evaluation -> TVar GenerationOverview -> GenIO -> Vector Genome -> StatusCheck -> IO ()
-evolutionThread mmc jobs replies overviewRef rng pop0 sc = go pop0 where
+evolutionThread :: MsMendelConfig -> MVar Job -> FilePath -> MVar Evaluation -> TVar GenerationOverview -> GenIO -> Vector Genome -> StatusCheck -> IO ()
+evolutionThread mmc jobs dir replies overviewRef rng pop0 sc = go pop0 where
 	go pop = do
+		readTVarIO overviewRef >>= savePopulation dir pop . goID
 		scIO_ sc
 		gslks <- forM [0..mmcMaxLevel mmc] \lev -> do
 			gs <- initialState (ExactLevel rng lev)
@@ -413,6 +423,81 @@ evolutionThread mmc jobs replies overviewRef rng pop0 sc = go pop0 where
 			, goLastQuartileSize = quartile 3
 			}
 		go pop'
+
+data ShapeMatch f a = ShapeMismatch | ShapeMatchPure a | ShapeMatch (f a) deriving (Eq, Ord, Read, Show, Functor)
+
+instance (Eq (f ()), Zip f) => Applicative (ShapeMatch f) where
+	pure = ShapeMatchPure
+	ShapeMismatch <*> _ = ShapeMismatch
+	_ <*> ShapeMismatch = ShapeMismatch
+	ShapeMatchPure f <*> vs = f <$> vs
+	fs <*> ShapeMatchPure v = fs <&> ($ v)
+	ShapeMatch fs <*> ShapeMatch vs
+		| (()<$fs) == (()<$vs) = ShapeMatch (Z.zipWith ($) fs vs)
+		| otherwise = ShapeMismatch
+
+newtype RecordOfVectors a = RecordOfVectors (Vector a) deriving (Eq, Ord, Read, Show)
+
+instance ToJSON a => ToJSON (RecordOfVectors a) where
+	toJSON (RecordOfVectors as) = case traverse (inject . toJSON) as of
+		ShapeMismatch -> error $ "RecordOfVectors (currently) only supports types that serialize to Objects with a fixed, static set of keys"
+		ShapeMatchPure m
+			| V.length m == 0 -> Null
+			| otherwise -> error $ "the impossible happened in toJSON @RecordOfVectors: traversing a non-empty vector produced a pure result"
+		ShapeMatch km
+			| KM.null km -> toJSON (V.length as)
+			| otherwise -> Object (Array <$> km)
+		where
+		inject (Object o) = ShapeMatch o
+		inject _ = ShapeMismatch
+
+instance FromJSON a => FromJSON (RecordOfVectors a) where
+	parseJSON v = RecordOfVectors <$> case v of
+		Null -> pure V.empty
+		Number{} -> liftM2 V.replicate (parseJSON v) (parseJSON (Object mempty))
+		Object km -> case traverse inject km of
+			ShapeMismatch -> typeMismatch "RecordOfVectors (an object whose fields are all arrays of the same length)" v
+			ShapeMatchPure{} -> typeMismatch "RecordOfVectors (an object with at least one field)" v
+			ShapeMatch kms -> traverse (parseJSON . Object) kms
+		where
+		inject (Array vs) = ShapeMatch vs
+		inject _ = ShapeMismatch
+
+initializePopulation :: MsMendelConfig -> FilePath -> GenIO -> IO (Int, Vector Genome)
+initializePopulation mmc dir rng = do
+	let generationFilename = dir </> "latest.json"
+	handle (missing generationFilename) do
+		bsGeneration <- LBS.readFile generationFilename
+		handle (corrupt generationFilename) do
+			generation <- throwDecode bsGeneration
+			let specsFilename = dir </> show generation <.> "json"
+			handle (missing ("WARNING: " ++ specsFilename)) do
+				bsSpecs <- LBS.readFile specsFilename
+				handle (corrupt specsFilename) do
+					RecordOfVectors specs <- throwDecode bsSpecs
+					population <- traverse gFromSpec specs
+					pure (generation, population)
+	where
+	corrupt fp (AesonException e) = do
+		putStrLn $ "WARNING: creating a fresh population because " ++ fp ++ " was corrupt: " ++ e
+		freshPopulation
+	missing prefix e = if isDoesNotExistError e
+		then do
+			putStrLn $ prefix ++ " does not exist; creating a fresh population"
+			freshPopulation
+		else throw e
+	freshPopulation = fmap ((,)0) . V.replicateM (mmcInitialPopulation mmc) $
+		newJeffreysGenome rng (mmcPatternWidth mmc) (mmcPatternHeight mmc) (mmcInitialPatterns mmc)
+
+savePopulation :: FilePath -> Vector Genome -> Int -> IO ()
+savePopulation dir gs generation = do
+	saveAtomically dir (show generation <.> "json") (RecordOfVectors gs)
+	saveAtomically dir "latest.json" generation
+
+saveAtomically :: ToJSON a => FilePath -> FilePath -> a -> IO ()
+saveAtomically dir nm a = do
+	encodeFile (dir </> "." ++ nm) a
+	renameFile (dir </> "." ++ nm) (dir </> nm)
 
 what'sBad :: Vector Genome -> Evaluation -> (Int, Int, Int)
 what'sBad pop e = (-eViruses e, eFramesToLastKill e, gSize (pop V.! eID e))

@@ -76,10 +76,12 @@ class Genome {
 		bool get_color_pattern(int64_t pattern, int64_t color, int64_t w, int64_t h) const;
 		bool get_shape_pattern(int64_t pattern, int64_t shape, int64_t w, int64_t h) const;
 		float get_pattern_score(int64_t pattern) const;
+		string encode_patterns() const;
 
 		void set_color_pattern(int64_t pattern, int64_t color, int64_t w, int64_t h, bool v);
 		void set_shape_pattern(int64_t pattern, int64_t color, int64_t w, int64_t h, bool v);
 		void set_pattern_score(int64_t pattern, float v);
+		void decode_patterns(string ps);
 
 		const Tensor &p_color_pattern() const;
 		const Tensor &p_shape_pattern() const;
@@ -267,6 +269,36 @@ float Genome::get_pattern_score(int64_t pattern) const {
 	return pattern_score_[pattern].item<float>();
 }
 
+string Genome::encode_patterns() const {
+	string result((size()*(COLORS + SENTINELS + SHAPES + SENTINELS)*conv_width()*conv_height()+7)/8, '\0');
+	int bit = 0, byte = 0;
+	for(int pattern = 0; pattern < size(); ++pattern) {
+		for(int x = 0; x < conv_width(); ++x) {
+			for(int y = 0; y < conv_height(); ++y) {
+				for(int color = 0; color < COLORS + SENTINELS; ++color) {
+					if(color_pattern_[pattern][color][x][y].item<CXX_BOOL_REP>() != 0)
+						result[byte] |= 1 << bit;
+					++bit;
+					if(bit >= 8) {
+						++byte;
+						bit -= 8;
+					}
+				}
+				for(int shape = 0; shape < SHAPES + SENTINELS; ++shape) {
+					if(shape_pattern_[pattern][shape][x][y].item<CXX_BOOL_REP>() != 0)
+						result[byte] |= 1 << bit;
+					++bit;
+					if(bit >= 8) {
+						++byte;
+						bit -= 8;
+					}
+				}
+			}
+		}
+	}
+	return result;
+}
+
 void Genome::set_color_pattern(int64_t pattern, int64_t color, int64_t w, int64_t h, bool v) {
 	color_pattern_[pattern][color][w][h] = v;
 	p_color_pattern_ = Tensor();
@@ -280,6 +312,38 @@ void Genome::set_shape_pattern(int64_t pattern, int64_t shape, int64_t w, int64_
 void Genome::set_pattern_score(int64_t pattern, float v) {
 	pattern_score_[pattern] = v;
 	normalize_scores(); // this clears p_pattern_score_
+}
+
+void Genome::decode_patterns(string ps) {
+	int bit = 0, byte = 0;
+	for(int pattern = 0; pattern < size(); ++pattern) {
+		for(int x = 0; x < conv_width(); ++x) {
+			for(int y = 0; y < conv_height(); ++y) {
+				for(int color = 0; color < COLORS + SENTINELS; ++color) {
+					color_pattern_[pattern][color][x][y] = byte < ps.size()
+						? (ps[byte] >> bit) & 1
+						: 0;
+					++bit;
+					if(bit >= 8) {
+						++byte;
+						bit -= 8;
+					}
+				}
+				for(int shape = 0; shape < SHAPES + SENTINELS; ++shape) {
+					shape_pattern_[pattern][shape][x][y] = byte < ps.size()
+						? (ps[byte] >> bit) & 1
+						: 0;
+					++bit;
+					if(bit >= 8) {
+						++byte;
+						bit -= 8;
+					}
+				}
+			}
+		}
+	}
+	p_color_pattern_ = Tensor();
+	p_shape_pattern_ = Tensor();
 }
 
 const Tensor &Genome::p_color_pattern() const {
@@ -410,10 +474,13 @@ extern "C" {
 	bool genome_get_color_pattern(Genome *g, int n, int c, int w, int h) { return g->get_color_pattern(n, c, w, h); }
 	bool genome_get_shape_pattern(Genome *g, int n, int s, int w, int h) { return g->get_shape_pattern(n, s, w, h); }
 	float genome_get_pattern_score(Genome *g, int n) { return g->get_pattern_score(n); }
+	char *genome_encode_patterns(Genome *g, int *o_length);
+	void patterns_encoding_delete(char *code) { delete code; }
 
 	void genome_set_color_pattern(Genome *g, int n, int c, int w, int h, bool v) { return g->set_color_pattern(n, c, w, h, v); }
 	void genome_set_shape_pattern(Genome *g, int n, int s, int w, int h, bool v) { return g->set_shape_pattern(n, s, w, h, v); }
 	void genome_set_pattern_score(Genome *g, int n, float v) { return g->set_pattern_score(n, v); }
+	void genome_decode_patterns(Genome *g, char *code, int length) { g->decode_patterns(string(code, length)); }
 
 	Genome *genome_indices(Genome *g, int *is, int is_size);
 	Genome *genome_append(Genome *g, Genome *other) { return new Genome(*g + *other); }
@@ -422,6 +489,14 @@ extern "C" {
 	void genome_sketch(Genome *g) { cout << g->sketch() << endl; }
 
 	void evaluate(Genome *g, Boards *bs, float *out);
+}
+
+char *genome_encode_patterns(Genome *g, int *o_length) {
+	string code = g->encode_patterns();
+	*o_length = code.size();
+	char *result = new char[code.size()];
+	copy(code.begin(), code.end(), result);
+	return result;
 }
 
 Genome *genome_indices(Genome *g, int *is, int is_size) {

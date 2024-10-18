@@ -5,19 +5,29 @@ module Nurse.Sveta.Genome (
 	gIndices, gAppend,
 	gGetColorPattern, gGetShapePattern, gGetPatternScore,
 	gSetColorPattern, gSetShapePattern, gSetPatternScore,
+	GenomeSpec, gSpec, gFromSpec,
 	gDump, gSketch,
 	WithSentinels(..),
 	) where
 
+import Control.Monad
+import Data.Aeson
+import Data.Aeson.Types
 import Data.ByteString.Builder
 import Data.Foldable
+import Data.Map (Map)
+import Data.String
 import Data.Vector (Vector)
 import Dr.Mario.Model
 import Foreign
 import Foreign.C
 import System.IO.Unsafe
+import Text.Read
 
+import qualified Data.Aeson.Encoding as A
 import qualified Data.ByteString as BS
+import qualified Data.Map as M
+import qualified Data.Text as T
 import qualified Data.Vector as V
 
 foreign import ccall "boards_new" cxx_boards_new :: Ptr CChar -> Ptr CChar -> IO (Ptr Boards)
@@ -30,10 +40,13 @@ foreign import ccall "&genome_delete" cxx_genome_delete :: FinalizerPtr Genome
 foreign import ccall unsafe "genome_get_color_pattern" cxx_genome_get_color_pattern :: Ptr Genome -> CInt -> CInt -> CInt -> CInt -> IO CBool
 foreign import ccall unsafe "genome_get_shape_pattern" cxx_genome_get_shape_pattern :: Ptr Genome -> CInt -> CInt -> CInt -> CInt -> IO CBool
 foreign import ccall unsafe "genome_get_pattern_score" cxx_genome_get_pattern_score :: Ptr Genome -> CInt -> IO CFloat
+foreign import ccall "genome_encode_patterns" cxx_genome_encode_patterns :: Ptr Genome -> Ptr CInt -> IO (Ptr CChar)
+foreign import ccall "patterns_encoding_delete" cxx_patterns_encoding_delete :: Ptr CChar -> IO ()
 
 foreign import ccall unsafe "genome_set_color_pattern" cxx_genome_set_color_pattern :: Ptr Genome -> CInt -> CInt -> CInt -> CInt -> CBool -> IO ()
 foreign import ccall unsafe "genome_set_shape_pattern" cxx_genome_set_shape_pattern :: Ptr Genome -> CInt -> CInt -> CInt -> CInt -> CBool -> IO ()
 foreign import ccall unsafe "genome_set_pattern_score" cxx_genome_set_pattern_score :: Ptr Genome -> CInt -> CFloat -> IO ()
+foreign import ccall "genome_decode_patterns" cxx_genome_decode_patterns :: Ptr Genome -> Ptr CChar -> CInt -> IO ()
 
 foreign import ccall unsafe "genome_size" cxx_genome_size :: Ptr Genome -> IO CInt
 foreign import ccall unsafe "genome_conv_width" cxx_genome_conv_width :: Ptr Genome -> IO CInt
@@ -80,6 +93,16 @@ gGetPatternScore :: Genome -> Int -> Float
 gGetPatternScore (Genome g) n = unsafePerformIO $ withForeignPtr g \cxx_g -> realToFrac <$>
 	cxx_genome_get_pattern_score cxx_g (fromIntegral n)
 
+gEncodePatterns :: Genome -> [Word8]
+gEncodePatterns (Genome g) = unsafePerformIO $
+	withForeignPtr g \cxx_g ->
+	alloca \cxx_length -> do
+	cxx_bytes <- cxx_genome_encode_patterns cxx_g cxx_length
+	len <- fromIntegral <$> peek cxx_length
+	chars <- peekArray len cxx_bytes
+	cxx_patterns_encoding_delete cxx_bytes
+	pure (map fromIntegral chars)
+
 gSetColorPattern :: Genome -> Int -> WithSentinels Color -> Int -> Int -> Bool -> IO ()
 gSetColorPattern (Genome g) n c w h v = withForeignPtr g \cxx_g ->
 	cxx_genome_set_color_pattern cxx_g (fromIntegral n) (colorSentinelIndex c) (fromIntegral w) (fromIntegral h) (fromIntegral (fromEnum v))
@@ -91,6 +114,12 @@ gSetShapePattern (Genome g) n s w h v = withForeignPtr g \cxx_g ->
 gSetPatternScore :: Genome -> Int -> Float -> IO ()
 gSetPatternScore (Genome g) n v = withForeignPtr g \cxx_g ->
 	cxx_genome_set_pattern_score cxx_g (fromIntegral n) (realToFrac v)
+
+gDecodePatterns :: Genome -> [Word8] -> IO ()
+gDecodePatterns (Genome g) bytes =
+	withForeignPtr g \cxx_g ->
+	withArrayLen (map fromIntegral bytes) \len cxx_bytes ->
+	cxx_genome_decode_patterns cxx_g cxx_bytes (fromIntegral len)
 
 gIndices :: Genome -> [Int] -> IO Genome
 gIndices (Genome g) is =
@@ -182,3 +211,101 @@ shapeSentinelIndex = \case
 	NonSentinel a -> shapeIndex a
 	EmptySentinel -> 4
 	OutOfBoundsSentinel -> 5
+
+data ConvolutionSize = ConvolutionSize { csWidth, csHeight :: Int } deriving (Eq, Ord, Read, Show)
+
+csToTuple :: ConvolutionSize -> (Int, Int)
+csToTuple cs = (csWidth cs, csHeight cs)
+
+csFromTuple :: (Int, Int) -> ConvolutionSize
+csFromTuple (w, h) = ConvolutionSize { csWidth = w, csHeight = h }
+
+instance ToJSON ConvolutionSize where
+	toEncoding = toEncoding . csToTuple
+	toJSON = toJSON . csToTuple
+
+instance FromJSON ConvolutionSize where
+	parseJSON v = csFromTuple <$> parseJSON v
+
+instance ToJSONKey ConvolutionSize where
+	toJSONKey = ToJSONKeyText
+		(\cs -> fromString $ show (csWidth cs) ++ "x" ++ show (csHeight cs))
+		(\cs -> fromString $ show (csWidth cs) ++ "x" ++ show (csHeight cs))
+
+instance FromJSONKey ConvolutionSize where
+	fromJSONKey = FromJSONKeyTextParser \t -> case T.breakOnAll "x" t of
+		[(treadMaybe -> Just w, treadMaybe . T.drop 1 -> Just h)] -> pure $ ConvolutionSize w h
+		_ -> typeMismatch "ConvolutionSize (a string of the form \"wxh\" where w and h are ints)" (toJSON t)
+		where treadMaybe = readMaybe . T.unpack
+
+data ConvolutionsSpec = ConvolutionsSpec
+	{ csPatterns :: [Word8]
+	, csScores :: [Float]
+	} deriving (Eq, Ord, Read, Show)
+
+instance ToJSON ConvolutionsSpec where
+	toEncoding cs = A.list id
+		$ (toEncoding . encodePrintable . csPatterns) cs
+		: (map toEncoding . csScores) cs
+	toJSON cs = toJSON
+		$ (toJSON . encodePrintable . csPatterns) cs
+		: (map toJSON . csScores) cs
+
+instance FromJSON ConvolutionsSpec where
+	parseJSON (Array vs) | V.length vs >= 1 = pure ConvolutionsSpec
+		<*> (decodePrintable <$> parseJSON (vs V.! 0))
+		<*> parseJSON (Array (V.drop 1 vs))
+	parseJSON o = typeMismatch "ConvolutionsSpec (an array with a string and some floats)" o
+
+instance ToJSON Genome where
+	toJSON = toJSON . gSpec
+	toEncoding = toEncoding . gSpec
+
+type GenomeSpec = Map ConvolutionSize ConvolutionsSpec
+
+gSpec :: Genome -> GenomeSpec
+gSpec g = M.singleton
+	ConvolutionSize
+		{ csWidth = gConvWidth g
+		, csHeight = gConvHeight g
+		}
+	ConvolutionsSpec
+		{ csPatterns = gEncodePatterns g
+		, csScores = gGetPatternScore g <$> [0..gSize g-1]
+		}
+
+gFromSpec :: GenomeSpec -> IO Genome
+gFromSpec gs = case M.toList gs of
+	[(sz, conv)] -> do
+		let len = length (csScores conv)
+		g <- newGenome (csWidth sz) (csHeight sz) len 0
+		gDecodePatterns g (csPatterns conv)
+		gSetPatternScore g (len-1) 1 -- avoid rescaling until we're done
+		zipWithM_ (gSetPatternScore g) [0..] (csScores conv)
+		pure g
+	_ -> fail $ "Building a genome with more (or fewer) than one size of convolution is not (yet) supported. (Saw " ++ show (M.size gs) ++ " sizes.)"
+
+-- encodePrintable and decodePrintable convert between unconstrained byte
+-- sequences and sequences of bytes that JSON can represent in one byte each:
+-- " !#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[]^_`abcdefghijklmnopqrstuvwxyz{|}~"
+-- this gets us about logBase 93 256 = 1.2234 bytes/byte on average
+encodePrintable :: [Word8] -> String
+encodePrintable = map toEnum . expand . contract where
+	contract [] = 0
+	contract (w:ws) = toInteger w .|. shiftL (contract ws) 8
+
+	expand 0 = []
+	expand n = byte : expand q where
+		(q, r) = n `quotRem` 93
+		byte = 32 + fromInteger r
+			+ (if r <  2 then 0 else 1)
+			+ (if r < 59 then 0 else 1)
+
+decodePrintable :: String -> [Word8]
+decodePrintable = expand . contract . map fromEnum where
+	contract [] = 0
+	contract (w:ws) = toInteger byte + 93 * contract ws where
+		byte = w - 32 - (if w < 34 then 0 else 1) - (if w < 93 then 0 else 1)
+
+	expand 0 = []
+	expand n = fromInteger n : expand (shiftR n 8)

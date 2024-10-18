@@ -163,3 +163,4 @@ executable nurse-sveta-archive-games
 executable ms-mendel
     import:             executable
     main-is:            ms-mendel.hs
+    build-depends:        semialign ^>=1.3
