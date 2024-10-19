@@ -10,6 +10,7 @@ import Data.Bits
 import Data.Char
 import Data.Functor
 import Data.HashMap.Strict (HashMap)
+import Data.Int
 import Data.IORef
 import Data.List
 import Data.Ord
@@ -217,10 +218,35 @@ data GenerationOverview = GenerationOverview
 	, goMinSize, goFirstQuartileSize, goMedianSize, goLastQuartileSize, goMaxSize :: Double
 	} deriving (Eq, Ord, Read, Show)
 
+goCurrentLevelEstimate, goVirusesAvailableEstimate :: GenerationOverview -> Int
+goCurrentLevelEstimate go = goLevelsPlayed go `div` goPopulationSize go
+goVirusesAvailableEstimate = (\lev -> 2 * (lev+1) * (lev+2)) . goCurrentLevelEstimate
+
 -- use the Jeffreys prior for Bernoulli distributions, β(½,½), to choose the
 -- Bernoulli parameter
 newJeffreysGenome :: GenIO -> Int -> Int -> Int -> IO Genome
 newJeffreysGenome rng w h n = newGenome w h n . realToFrac =<< beta 0.5 0.5 rng
+
+data Table = Table
+	{ tNextRow :: IORef Int32
+	, tRefreshRef :: IORef (GenerationOverview -> IO ())
+	, tTop :: Grid
+	}
+
+newTable :: IO Table
+newTable = pure Table <*> newIORef 0 <*> newIORef (\_ -> pure ()) <*> new Grid []
+
+tAddRow :: Table -> T.Text -> (GenerationOverview -> T.Text) -> IO ()
+tAddRow t desc fVal = do
+	descLbl <- new Label [#label := desc, #halign := AlignStart]
+	valLbl <- new Label [#halign := AlignEnd]
+	modifyIORef (tRefreshRef t) \f go -> do
+		set valLbl [#label := fVal go]
+		f go
+	row <- readIORef (tNextRow t)
+	#attach (tTop t) descLbl 0 row 1 1
+	#attach (tTop t)  valLbl 1 row 1 1
+	writeIORef (tNextRow t) (row+1)
 
 evolutionThreadView :: MsMendelConfig -> MVar Job -> IO ThreadView
 evolutionThreadView mmc jobs = do
@@ -243,107 +269,39 @@ evolutionThreadView mmc jobs = do
 		, goMaxSize = 0
 		}
 
-	genDesc <- new Label [#label := "generation", #halign := AlignStart]
-	popDesc <- new Label [#label := "population size", #halign := AlignStart]
-	totDesc <- new Label [#label := "boards to evaluate", #halign := AlignStart]
-	evalDesc <- new Label [#label := "boards evaluated", #halign := AlignStart]
-	levDesc <- new Label [#label := "currently on level", #halign := AlignStart]
-	scaVirDesc <- new Label [#label := "scaled virus kills", #halign := AlignStart]
-	posVirDesc <- new Label [#label := "viruses available to kill", #halign := AlignStart]
-	bestVirDesc <- new Label [#label := "most viruses killed this generation", #halign := AlignStart]
-	bestFrameDesc <- new Label [#label := "\tframes required", #halign := AlignStart]
-	bestMinDesc <- new Label [#label := "\tminutes required", #halign := AlignStart]
-	wrstVirDesc <- new Label [#label := "least viruses killed this generation", #halign := AlignStart]
-	wrstFrameDesc <- new Label [#label := "\tframes required", #halign := AlignStart]
-	wrstMinDesc <- new Label [#label := "\tminutes required", #halign := AlignStart]
-	pctDesc <- new Label [#label := "genome size by percentile", #halign := AlignStart]
-	pct0Desc <- new Label [#label := "\tmin", #halign := AlignStart]
-	pct25Desc <- new Label [#label := "\t25%", #halign := AlignStart]
-	pct50Desc <- new Label [#label := "\t50%", #halign := AlignStart]
-	pct75Desc <- new Label [#label := "\t75%", #halign := AlignStart]
-	pct99Desc <- new Label [#label := "\tmax", #halign := AlignStart]
-	genVal <- new Label [#halign := AlignEnd]
-	popVal <- new Label [#halign := AlignEnd]
-	totVal <- new Label [#halign := AlignEnd]
-	evalVal <- new Label [#halign := AlignEnd]
-	levVal <- new Label [#halign := AlignEnd]
-	scaVirVal <- new Label [#halign := AlignEnd]
-	posVirVal <- new Label [#halign := AlignEnd]
-	bestVirVal <- new Label [#halign := AlignEnd]
-	bestFrameVal <- new Label [#halign := AlignEnd]
-	bestMinVal <- new Label [#halign := AlignEnd]
-	wrstVirVal <- new Label [#halign := AlignEnd]
-	wrstFrameVal <- new Label [#halign := AlignEnd]
-	wrstMinVal <- new Label [#halign := AlignEnd]
-	pctVal <- new Label [#halign := AlignEnd]
-	pct0Val <- new Label [#halign := AlignEnd]
-	pct25Val <- new Label [#halign := AlignEnd]
-	pct50Val <- new Label [#halign := AlignEnd]
-	pct75Val <- new Label [#halign := AlignEnd]
-	pct99Val <- new Label [#halign := AlignEnd]
+	t <- newTable
+	tAddRow t "generation" (tshow . goID)
+	tAddRow t "population size" (tshow . goPopulationSize)
+	tAddRow t "boards to evaluate" (tshow . goLevelsToPlay)
+	tAddRow t "boards evaluated" (tshow . goLevelsPlayed)
+	tAddRow t "currently on level" (tshow . goCurrentLevelEstimate)
+	tAddRow t "scaled virus kills" (scaleViruses mmc)
+	tAddRow t "viruses available to kill" (tshow . goVirusesAvailableEstimate)
+	tAddRow t "most viruses killed this generation" (maybe "" (tshow . eViruses) . goBestSoFar)
+	tAddRow t "\tframes required" (maybe "" (tshow . eFramesToLastKill) . goBestSoFar)
+	tAddRow t "\tminutes required" (maybe "" (asMinutes . eFramesToLastKill) . goBestSoFar)
+	tAddRow t "least viruses killed this generation" (maybe "" (tshow . eViruses) . goWorstSoFar)
+	tAddRow t "\tframes required" (maybe "" (tshow . eFramesToLastKill) . goWorstSoFar)
+	tAddRow t "\tminutes required" (maybe "" (asMinutes . eFramesToLastKill) . goWorstSoFar)
+	tAddRow t "genome size by percentile" (const "")
+	tAddRow t "\tmin" (tshow . goMinSize)
+	tAddRow t "\t25%" (tshow . goFirstQuartileSize)
+	tAddRow t "\t50%" (tshow . goMedianSize)
+	tAddRow t "\t75%" (tshow . goLastQuartileSize)
+	tAddRow t "\tmax" (tshow . goMaxSize)
 
-	let refresh = do
-	    	overview <- readTVarIO overviewRef
-	    	set genVal [#label := tshow (goID overview)]
-	    	set popVal [#label := tshow (goPopulationSize overview)]
-	    	set totVal [#label := tshow (goLevelsToPlay overview)]
-	    	set evalVal [#label := tshow (goLevelsPlayed overview)]
-	    	let lev = goLevelsPlayed overview `div` goPopulationSize overview
-	    	    vir = 2 * (lev+1) * (lev+2)
-	    	set levVal [#label := tshow lev]
-	    	set posVirVal [#label := tshow vir]
-	    	case goBestSoFar overview of
-	    		Nothing -> set bestVirVal [#label := ""] >> set bestFrameVal [#label := ""] >> set bestMinVal [#label := ""] >> set scaVirVal [#label := ""]
-	    		Just e -> do
-	    			set bestVirVal [#label := tshow (eViruses e)]
-	    			set bestFrameVal [#label := tshow (eFramesToLastKill e)]
-	    			set bestMinVal [#label := asMinutes (eFramesToLastKill e)]
-	    			let maxVir = 2 * (mmcMaxLevel mmc + 1) * (mmcMaxLevel mmc + 2)
-	    			    scale = fromIntegral maxVir / fromIntegral vir
-	    			    floatViruses = fromIntegral (eViruses e)
-	    			    lo = max 0      . floor   $ scale * (floatViruses - 0.5)
-	    			    hi = min maxVir . ceiling $ scale * (floatViruses + 0.5)
-	    			set scaVirVal [#label := tshow lo <> "-" <> tshow hi]
-	    	case goWorstSoFar overview of
-	    		Nothing -> set wrstVirVal [#label := ""] >> set wrstFrameVal [#label := ""] >> set wrstMinVal [#label := ""]
-	    		Just e -> do
-	    			set wrstVirVal [#label := tshow (eViruses e)]
-	    			set wrstFrameVal [#label := tshow (eFramesToLastKill e)]
-	    			set wrstMinVal [#label := asMinutes (eFramesToLastKill e)]
-	    	set pct0Val [#label := tshow (goMinSize overview)]
-	    	set pct25Val [#label := tshow (goFirstQuartileSize overview)]
-	    	set pct50Val [#label := tshow (goMedianSize overview)]
-	    	set pct75Val [#label := tshow (goLastQuartileSize overview)]
-	    	set pct99Val [#label := tshow (goMaxSize overview)]
+	refresh <- readIORef (tRefreshRef t)
+	tvNew (tTop t) (readTVarIO overviewRef >>= refresh) (evolutionThread mmc jobs dir replies overviewRef rng pop)
 
-	table <- new Grid []
-	rowRef <- newIORef 0
-	let attachPair a b = do
-	    	row <- readIORef rowRef
-	    	#attach table a 0 row 1 1
-	    	#attach table b 1 row 1 1
-	    	writeIORef rowRef (row+1)
-	attachPair genDesc genVal
-	attachPair popDesc popVal
-	attachPair totDesc totVal
-	attachPair evalDesc evalVal
-	attachPair levDesc levVal
-	attachPair scaVirDesc scaVirVal
-	attachPair posVirDesc posVirVal
-	attachPair bestVirDesc bestVirVal
-	attachPair bestFrameDesc bestFrameVal
-	attachPair bestMinDesc bestMinVal
-	attachPair wrstVirDesc wrstVirVal
-	attachPair wrstFrameDesc wrstFrameVal
-	attachPair wrstMinDesc wrstMinVal
-	attachPair pctDesc pctVal
-	attachPair pct0Desc pct0Val
-	attachPair pct25Desc pct25Val
-	attachPair pct50Desc pct50Val
-	attachPair pct75Desc pct75Val
-	attachPair pct99Desc pct99Val
-
-	tvNew table refresh (evolutionThread mmc jobs dir replies overviewRef rng pop)
+scaleViruses :: MsMendelConfig -> GenerationOverview -> T.Text
+scaleViruses mmc overview = case goBestSoFar overview of
+	Nothing -> ""
+	Just e -> tshow lo <> "-" <> tshow hi where
+		maxVir = 2 * (mmcMaxLevel mmc + 1) * (mmcMaxLevel mmc + 2)
+		scale = fromIntegral maxVir / fromIntegral (goVirusesAvailableEstimate overview)
+		floatViruses = fromIntegral (eViruses e)
+		lo = max 0      . floor   $ scale * (floatViruses - 0.5)
+		hi = min maxVir . ceiling $ scale * (floatViruses + 0.5)
 
 asMinutes :: Int -> T.Text
 asMinutes frames = tshow wholeMinutes <> ":" <> zeroPad 2 (tshow wholeSeconds) <> "." <> zeroPad 3 (tshow wholeMillis) where
