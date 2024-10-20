@@ -89,8 +89,8 @@ library
     import:             shared
     hs-source-dirs:     src
     exposed-modules:      Nurse.Sveta.Cairo
+                        , Nurse.Sveta.Chromosome
                         , Nurse.Sveta.Files
-                        , Nurse.Sveta.Genome
                         , Nurse.Sveta.STM
                         , Nurse.Sveta.STM.BatchProcessor
                         , Nurse.Sveta.Tomcats

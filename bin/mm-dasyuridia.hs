@@ -18,7 +18,7 @@ import Data.Vector (Vector)
 import Dr.Mario.Model
 import Dr.Mario.Pathfinding
 import Nurse.Sveta.Files
-import Nurse.Sveta.Genome
+import Nurse.Sveta.Chromosome
 import System.Environment
 import System.Process
 import System.IO
@@ -38,13 +38,13 @@ main = do
 	dir <- getXdgDirectory XdgData "ms-mendel"
 	generation <- readFile (dir </> "latest.json") >>= readIO @Int
 	Just (RecordOfVectors specs) <- A.decodeFileStrict (dir </> show generation <.> "json")
-	genome <- gFromSpec (V.head specs)
+	chromosome <- cFromSpec (V.head specs)
 
 	args <- getArgs
 	(i, o, e, _p) <- runInteractiveProcess "dasyuridia" args Nothing Nothing
 	for_ [i, o, e] \h -> hSetBuffering h LineBuffering
 	forkIO . forever $ hGetLine e >>= hPrintf stderr "dasyuridia err: %s\n"
-	let possiblyEmit' = possiblyEmit i genome
+	let possiblyEmit' = possiblyEmit i chromosome
 	fforever state0 \s -> hGetLine o >>= \ln -> case parseEvent ln of
 		Just e -> case e of
 			EBoard b -> putStrLn ("B " ++ ln) >> possiblyEmit' s { sBoard = Just b }
@@ -73,12 +73,12 @@ data State = State
 state0 :: State
 state0 = State Nothing Nothing Nothing Nothing 0
 
-possiblyEmit :: Handle -> Genome -> State -> IO State
+possiblyEmit :: Handle -> Chromosome -> State -> IO State
 possiblyEmit h g (State (Just b) (Just lk) (Just fc) (Just spd) pu) = do
 	mb <- thaw b
 	placements <- mapproxReachable mb (even fc) (gravity spd pu)
 	let pbs = V.fromList [((path, pill), b') | (placement, path) <- HM.toList placements, let pill = mpPill placement lk, Just (_, b') <- [place b pill]]
-	    scores = gEvaluate g b (snd <$> pbs)
+	    scores = cEvaluate g b (snd <$> pbs)
 	    bestIndices = V.findIndices (V.maximum scores==) scores
 	    ((bestPath, bestPill), _bestB) = pbs V.! V.head bestIndices
 	    request = ppPath fc bestPath

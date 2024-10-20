@@ -18,8 +18,8 @@ import Dr.Mario.Model
 import Dr.Mario.Pathfinding
 import GHC.Generics
 import GI.Gtk
+import Nurse.Sveta.Chromosome
 import Nurse.Sveta.Files
-import Nurse.Sveta.Genome
 import Nurse.Sveta.STM
 import Nurse.Sveta.Tomcats
 import Nurse.Sveta.Util
@@ -111,7 +111,7 @@ data MsMendelConfig = MsMendelConfig
 	, mmcBulkPatternToggles :: Int
 	, mmcTypicalPatternToggleBatchSize :: Float
 	, mmcMaxLevel :: Int
-	, mmcMaxGenomeSize :: Int
+	, mmcMaxChromosomeSize :: Int
 	, mmcMaxPillsPerKill :: Int
 	} deriving (Eq, Ord, Read, Show, Generic)
 
@@ -125,7 +125,7 @@ instance FromJSON MsMendelConfig where
 		}
 
 data Job = Job
-	{ jGenome :: Genome
+	{ jChromosome :: Chromosome
 	, jGame :: GameState
 	, jLookaheads :: [Lookahead]
 	, jID :: Int
@@ -182,7 +182,7 @@ evaluationThread mmc jobs psmRef sc = createSystemRandom >>= \rng -> forever do
 	    		gs' <- cloneGameState gs
 	    		playMove gs' path pill
 	    		mfreeze (board gs')
-	    	let scores = gEvaluate (jGenome job) cur next
+	    	let scores = cEvaluate (jChromosome job) cur next
 	    	    bestScore = V.maximum scores
 	    	    bestIndices = V.findIndices (bestScore==) scores
 	    	    rateLimit = mmcEvaluationRateLimit mmc
@@ -223,8 +223,8 @@ goVirusesAvailableEstimate go = (goRunsPerGeneration go *) . (\lev -> 2 * (lev+1
 
 -- use the Jeffreys prior for Bernoulli distributions, β(½,½), to choose the
 -- Bernoulli parameter
-newJeffreysGenome :: GenIO -> Int -> Int -> Int -> IO Genome
-newJeffreysGenome rng w h n = newGenome w h n . realToFrac =<< beta 0.5 0.5 rng
+newJeffreysChromosome :: GenIO -> Int -> Int -> Int -> IO Chromosome
+newJeffreysChromosome rng w h n = newChromosome w h n . realToFrac =<< beta 0.5 0.5 rng
 
 data Table = Table
 	{ tNextRow :: IORef Int32
@@ -313,7 +313,7 @@ asMinutes frames = tshow wholeMinutes <> ":" <> zeroPad 2 (tshow wholeSeconds) <
 	wholeMillis = round millis
 	zeroPad n t = T.replicate (n - T.length t) "0" <> t
 
-evolutionThread :: MsMendelConfig -> MVar Job -> FilePath -> MVar Evaluation -> TVar GenerationOverview -> GenIO -> Vector Genome -> StatusCheck -> IO ()
+evolutionThread :: MsMendelConfig -> MVar Job -> FilePath -> MVar Evaluation -> TVar GenerationOverview -> GenIO -> Vector Chromosome -> StatusCheck -> IO ()
 evolutionThread mmc jobs dir replies overviewRef rng pop0 sc = go pop0 where
 	go pop = do
 		readTVarIO overviewRef >>= savePopulation dir pop . goID
@@ -323,10 +323,10 @@ evolutionThread mmc jobs dir replies overviewRef rng pop0 sc = go pop0 where
 				gs <- initialState (ExactLevel rng lev)
 				lk <- replicateM (mmcPillCycleLength mmc) (sampleRNG' rng)
 				pure (gs, lk)
-		tid <- forkIO $ forM_ gslks \(gs0, lks) -> V.iforM_ pop \i genome -> do
+		tid <- forkIO $ forM_ gslks \(gs0, lks) -> V.iforM_ pop \i chromosome -> do
 			gs <- cloneGameState gs0
 			putMVar jobs Job
-				{ jGenome = genome
+				{ jChromosome = chromosome
 				, jGame = gs
 				, jLookaheads = lks
 				, jID = i
@@ -358,13 +358,13 @@ evolutionThread mmc jobs dir replies overviewRef rng pop0 sc = go pop0 where
 		report "sortedIDs" sortedIDs
 		report "eViruses" (eViruses <$> frozenEvals)
 		report "eFramesToLastKill" (eFramesToLastKill <$> frozenEvals)
-		report "sizes" (gSize <$> sortedPop)
+		report "sizes" (cSize <$> sortedPop)
 		putStrLn ""
 
 		offspring <- breed mmc rng (V.take (mmcBreeders mmc) sortedPop)
 		mutations <- mutate mmc rng (V.take (mmcMutators mmc) sortedPop)
 		let pop' = survivors <> offspring <> mutations
-		    sizes = sort . V.toList $ gSize <$> pop'
+		    sizes = sort . V.toList $ cSize <$> pop'
 		    quartile n = case (V.length pop' * n) `quotRem` 4 of
 		    	(q, r) -> fromIntegral (sizes !!  q   ) * (fromIntegral (4-r) / 4)
 		    	        + fromIntegral (sizes !! (q+1)) * (fromIntegral    r  / 4)
@@ -383,7 +383,7 @@ evolutionThread mmc jobs dir replies overviewRef rng pop0 sc = go pop0 where
 			}
 		go pop'
 
-initializePopulation :: MsMendelConfig -> FilePath -> GenIO -> IO (Int, Vector Genome)
+initializePopulation :: MsMendelConfig -> FilePath -> GenIO -> IO (Int, Vector Chromosome)
 initializePopulation mmc dir rng = do
 	let generationFilename = dir </> "latest.json"
 	handle (missing generationFilename) do
@@ -395,7 +395,7 @@ initializePopulation mmc dir rng = do
 				bsSpecs <- LBS.readFile specsFilename
 				handle (corrupt specsFilename) do
 					RecordOfVectors specs <- throwDecode bsSpecs
-					population <- traverse gFromSpec specs
+					population <- traverse cFromSpec specs
 					pure (generation, population)
 	where
 	corrupt fp (AesonException e) = do
@@ -407,9 +407,9 @@ initializePopulation mmc dir rng = do
 			freshPopulation
 		else throw e
 	freshPopulation = fmap ((,)0) . V.replicateM (mmcInitialPopulation mmc) $
-		newJeffreysGenome rng (mmcPatternWidth mmc) (mmcPatternHeight mmc) (mmcInitialPatterns mmc)
+		newJeffreysChromosome rng (mmcPatternWidth mmc) (mmcPatternHeight mmc) (mmcInitialPatterns mmc)
 
-savePopulation :: FilePath -> Vector Genome -> Int -> IO ()
+savePopulation :: FilePath -> Vector Chromosome -> Int -> IO ()
 savePopulation dir gs generation = do
 	saveAtomically dir (show generation <.> "json") (RecordOfVectors gs)
 	saveAtomically dir "latest.json" generation
@@ -419,27 +419,27 @@ saveAtomically dir nm a = do
 	encodeFile (dir </> "." ++ nm) a
 	renameFile (dir </> "." ++ nm) (dir </> nm)
 
-what'sBad :: Vector Genome -> Evaluation -> (Int, Int, Int)
-what'sBad pop e = (-eViruses e, eFramesToLastKill e, gSize (pop V.! eID e))
+what'sBad :: Vector Chromosome -> Evaluation -> (Int, Int, Int)
+what'sBad pop e = (-eViruses e, eFramesToLastKill e, cSize (pop V.! eID e))
 
-breed :: MsMendelConfig -> GenIO -> Vector Genome -> IO (Vector Genome)
+breed :: MsMendelConfig -> GenIO -> Vector Chromosome -> IO (Vector Chromosome)
 breed mmc rng pop
 	| V.length pop < 2 = pure V.empty
 	| otherwise = V.replicateM (mmcOffspring mmc) do
 		(g, g') <- chooseTwo
-		shuffledIndices <- uniformShuffle ((Left <$> V.generate (gSize g) id) <> (Right <$> V.generate (gSize g') id)) rng
-		len <- min (mmcMaxGenomeSize mmc) . (1+) <$> uniformVI' rng shuffledIndices
+		shuffledIndices <- uniformShuffle ((Left <$> V.generate (cSize g) id) <> (Right <$> V.generate (cSize g') id)) rng
+		len <- min (mmcMaxChromosomeSize mmc) . (1+) <$> uniformVI' rng shuffledIndices
 		let (indices, indices') = V.partitionWith id (V.take len shuffledIndices)
-		liftJ2 gAppend (gIndices g (V.toList indices)) (gIndices g' (V.toList indices'))
+		liftJ2 cAppend (cIndices g (V.toList indices)) (cIndices g' (V.toList indices'))
 	where
 	chooseTwo = do
 		[a, b] <- replicateM 2 (uniformVI' rng pop)
 		if a == b then chooseTwo else pure (pop V.! a, pop V.! b)
 
-mutate :: MsMendelConfig -> GenIO -> Vector Genome -> IO (Vector Genome)
+mutate :: MsMendelConfig -> GenIO -> Vector Chromosome -> IO (Vector Chromosome)
 mutate mmc rng pop = do
 	ins <- V.replicateM (mmcGeneReplacements mmc) replaceGene
-	del <- if any (>0) (gSize <$> pop)
+	del <- if any (>0) (cSize <$> pop)
 		then V.replicateM (mmcGeneDeletions mmc) deleteGene
 		else pure V.empty -- should never happen
 	pat <- V.replicateM (mmcPatternToggles mmc) togglePattern
@@ -450,48 +450,48 @@ mutate mmc rng pop = do
 	where
 	replaceGene = do
 		g <- uniformV' rng pop
-		let sz = gSize g
+		let sz = cSize g
 		n <- uniformIndex sz
-		g' <- gIndices g $ [0..n-1] ++ [n+1..sz-1]
-		g'' <- newJeffreysGenome rng (mmcPatternWidth mmc) (mmcPatternHeight mmc) 1
-		gAppend g' g''
+		g' <- cIndices g $ [0..n-1] ++ [n+1..sz-1]
+		g'' <- newJeffreysChromosome rng (mmcPatternWidth mmc) (mmcPatternHeight mmc) 1
+		cAppend g' g''
 	deleteGene = do
 		g <- uniformV' rng pop
-		let sz = gSize g
+		let sz = cSize g
 		if sz <= 1 then deleteGene else do
 			n <- uniformIndex sz
-			gIndices g $ [0..n-1] ++ [n+1..sz-1]
+			cIndices g $ [0..n-1] ++ [n+1..sz-1]
 	togglePattern = do
-		g <- uniformV' rng pop >>= gClone
+		g <- uniformV' rng pop >>= cClone
 		pat <- uniformPattern g
 		chan <- uniformV' rng allChannels
 		x <- uniformIndex (mmcPatternWidth mmc)
 		y <- uniformIndex (mmcPatternHeight mmc)
 		case chan of
-			Left  color -> gSetColorPattern g pat color x y . not $ gGetColorPattern g pat color x y
-			Right shape -> gSetShapePattern g pat shape x y . not $ gGetShapePattern g pat shape x y
+			Left  color -> cSetColorPattern g pat color x y . not $ cGetColorPattern g pat color x y
+			Right shape -> cSetShapePattern g pat shape x y . not $ cGetShapePattern g pat shape x y
 		pure g
 	toggleScore = do
-		g <- uniformV' rng pop >>= gClone
+		g <- uniformV' rng pop >>= cClone
 		pat <- uniformPattern g
-		gSetPatternScore g pat . negate $ gGetPatternScore g pat
+		cSetPatternScore g pat . negate $ cGetPatternScore g pat
 		pure g
 	adjustScore = do
-		g <- uniformV' rng pop >>= gClone
+		g <- uniformV' rng pop >>= cClone
 		pat <- uniformPattern g
 		let range = log (mmcMaxScoreAdjustmentFactor mmc)
 		factor <- exp <$> uniformRM (-range, range) rng
-		gSetPatternScore g pat . (factor*) $ gGetPatternScore g pat
+		cSetPatternScore g pat . (factor*) $ cGetPatternScore g pat
 		pure g
 	bulkPatternToggle = do
-		g <- uniformV' rng pop >>= gClone
+		g <- uniformV' rng pop >>= cClone
 		pat <- uniformPattern g
-		pat' <- newJeffreysGenome rng (gConvWidth g) (gConvHeight g) 1
+		pat' <- newJeffreysChromosome rng (cConvWidth g) (cConvHeight g) 1
 		let loop = do
-		    	x <- uniformIndex (gConvWidth g)
-		    	y <- uniformIndex (gConvHeight g)
-		    	for_ allColorsWithSentinels \c -> gSetColorPattern g pat c x y (gGetColorPattern pat' 0 c x y)
-		    	for_ allShapesWithSentinels \s -> gSetShapePattern g pat s x y (gGetShapePattern pat' 0 s x y)
+		    	x <- uniformIndex (cConvWidth g)
+		    	y <- uniformIndex (cConvHeight g)
+		    	for_ allColorSentinels \c -> cSetColorPattern g pat c x y (cGetColorPattern pat' 0 c x y)
+		    	for_ allShapeSentinels \s -> cSetShapePattern g pat s x y (cGetShapePattern pat' 0 s x y)
 		    	n <- uniformFloat01M rng
 		    	when (n > pDone) loop
 		    -- this calculation isn't exactly correct because we make no
@@ -499,7 +499,7 @@ mutate mmc rng pop = do
 		    -- enough
 		    pDone = recip (mmcTypicalPatternToggleBatchSize mmc)
 		g <$ loop
-	uniformPattern = uniformIndex . gSize
+	uniformPattern = uniformIndex . cSize
 	uniformIndex n = uniformRM (0, n-1) rng
 
 allChannels :: Vector (Either (WithSentinels Color) (WithSentinels Shape))

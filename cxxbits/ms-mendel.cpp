@@ -63,11 +63,11 @@ class Boards {
 		mutable Tensor p_color_, p_shape_;
 };
 
-class Genome {
+class Chromosome {
 	public:
-		Genome(int64_t conv_width, int64_t conv_height, int64_t num_patterns = 0, float p = 0.5);
-		Genome(const Tensor &color_pattern, const Tensor &shape_pattern, const Tensor &pattern_score);
-		Genome clone() const;
+		Chromosome(int64_t conv_width, int64_t conv_height, int64_t num_patterns = 0, float p = 0.5);
+		Chromosome(const Tensor &color_pattern, const Tensor &shape_pattern, const Tensor &pattern_score);
+		Chromosome clone() const;
 
 		int64_t size() const { return color_pattern_.size(INDEX_DIM); }
 		int64_t conv_width() const { return color_pattern_.size(CONV_WIDTH_DIM); }
@@ -87,11 +87,11 @@ class Genome {
 		const Tensor &p_shape_pattern() const;
 		const Tensor &p_pattern_score() const;
 
-		Genome indices(vector<int64_t> is) const;
-		Genome operator+(const Genome &other) const;
+		Chromosome indices(vector<int64_t> is) const;
+		Chromosome operator+(const Chromosome &other) const;
 
 		string sketch() const;
-		friend ostream &operator<<(ostream &o, const Genome &g);
+		friend ostream &operator<<(ostream &o, const Chromosome &g);
 
 	protected:
 		void normalize_scores();
@@ -114,7 +114,7 @@ class Genome {
 		mutable Tensor p_color_pattern_, p_shape_pattern_, p_pattern_score_;
 };
 
-Tensor evaluate(const Genome &g, const Boards &bs);
+Tensor evaluate(const Chromosome &g, const Boards &bs);
 
 Boards::Boards(char *base_board, char *diffs) {
 	int num_boards = 0, i = 0;
@@ -212,7 +212,7 @@ ostream &operator<<(ostream &o, const Boards &bs) {
 	return o;
 }
 
-Genome::Genome(int64_t w, int64_t h, int64_t n, float p) {
+Chromosome::Chromosome(int64_t w, int64_t h, int64_t n, float p) {
 	color_pattern_ = (torch::rand({n, COLORS + SENTINELS, w, h}, GPU_FLOAT) < p).to(GPU_BOOL_REP);
 	shape_pattern_ = (torch::rand({n, SHAPES + SENTINELS, w, h}, GPU_FLOAT) < p).to(GPU_BOOL_REP);
 	pattern_score_ = torch::randn({n}, GPU_FLOAT);
@@ -223,7 +223,7 @@ Genome::Genome(int64_t w, int64_t h, int64_t n, float p) {
 	assert(!pattern_score_.requires_grad());
 }
 
-Genome::Genome(const Tensor &co, const Tensor &sh, const Tensor &sc)
+Chromosome::Chromosome(const Tensor &co, const Tensor &sh, const Tensor &sc)
 	: color_pattern_(co), shape_pattern_(sh), pattern_score_(sc)
 {
 	assert_compatible(co, GPU_BOOL_REP);
@@ -248,8 +248,8 @@ Genome::Genome(const Tensor &co, const Tensor &sh, const Tensor &sc)
 	assert(!pattern_score_.requires_grad());
 }
 
-Genome Genome::clone() const {
-	Genome result(color_pattern_.clone(), shape_pattern_.clone(), pattern_score_.clone());
+Chromosome Chromosome::clone() const {
+	Chromosome result(color_pattern_.clone(), shape_pattern_.clone(), pattern_score_.clone());
 	// we always set these fields back to Tensor() before modifying them, so no need to clone
 	result.p_color_pattern_ = p_color_pattern_;
 	result.p_shape_pattern_ = p_shape_pattern_;
@@ -257,19 +257,19 @@ Genome Genome::clone() const {
 	return result;
 }
 
-bool Genome::get_color_pattern(int64_t pattern, int64_t color, int64_t w, int64_t h) const {
+bool Chromosome::get_color_pattern(int64_t pattern, int64_t color, int64_t w, int64_t h) const {
 	return color_pattern_[pattern][color][w][h].item<CXX_BOOL_REP>() != 0;
 }
 
-bool Genome::get_shape_pattern(int64_t pattern, int64_t shape, int64_t w, int64_t h) const {
+bool Chromosome::get_shape_pattern(int64_t pattern, int64_t shape, int64_t w, int64_t h) const {
 	return shape_pattern_[pattern][shape][w][h].item<CXX_BOOL_REP>() != 0;
 }
 
-float Genome::get_pattern_score(int64_t pattern) const {
+float Chromosome::get_pattern_score(int64_t pattern) const {
 	return pattern_score_[pattern].item<float>();
 }
 
-string Genome::encode_patterns() const {
+string Chromosome::encode_patterns() const {
 	string result((size()*(COLORS + SENTINELS + SHAPES + SENTINELS)*conv_width()*conv_height()+7)/8, '\0');
 	int bit = 0, byte = 0;
 	for(int pattern = 0; pattern < size(); ++pattern) {
@@ -299,22 +299,22 @@ string Genome::encode_patterns() const {
 	return result;
 }
 
-void Genome::set_color_pattern(int64_t pattern, int64_t color, int64_t w, int64_t h, bool v) {
+void Chromosome::set_color_pattern(int64_t pattern, int64_t color, int64_t w, int64_t h, bool v) {
 	color_pattern_[pattern][color][w][h] = v;
 	p_color_pattern_ = Tensor();
 }
 
-void Genome::set_shape_pattern(int64_t pattern, int64_t shape, int64_t w, int64_t h, bool v) {
+void Chromosome::set_shape_pattern(int64_t pattern, int64_t shape, int64_t w, int64_t h, bool v) {
 	shape_pattern_[pattern][shape][w][h] = v;
 	p_shape_pattern_ = Tensor();
 }
 
-void Genome::set_pattern_score(int64_t pattern, float v) {
+void Chromosome::set_pattern_score(int64_t pattern, float v) {
 	pattern_score_[pattern] = v;
 	normalize_scores(); // this clears p_pattern_score_
 }
 
-void Genome::decode_patterns(string ps) {
+void Chromosome::decode_patterns(string ps) {
 	int bit = 0, byte = 0;
 	for(int pattern = 0; pattern < size(); ++pattern) {
 		for(int x = 0; x < conv_width(); ++x) {
@@ -346,7 +346,7 @@ void Genome::decode_patterns(string ps) {
 	p_shape_pattern_ = Tensor();
 }
 
-const Tensor &Genome::p_color_pattern() const {
+const Tensor &Chromosome::p_color_pattern() const {
 	if(!p_color_pattern_.defined()) {
 		const int64_t sz = size();
 		p_color_pattern_ = torch::zeros({NUM_PERMUTATIONS*sz, COLORS+SENTINELS, conv_width(), conv_height()}, GPU_BOOL_REP);
@@ -360,7 +360,7 @@ const Tensor &Genome::p_color_pattern() const {
 	return p_color_pattern_;
 }
 
-const Tensor &Genome::p_shape_pattern() const {
+const Tensor &Chromosome::p_shape_pattern() const {
 	if(!p_shape_pattern_.defined()) {
 		p_shape_pattern_ = shape_pattern_
 			.expand({NUM_PERMUTATIONS, -1, -1, -1, -1})
@@ -369,7 +369,7 @@ const Tensor &Genome::p_shape_pattern() const {
 	return p_shape_pattern_;
 }
 
-const Tensor &Genome::p_pattern_score() const {
+const Tensor &Chromosome::p_pattern_score() const {
 	if(!p_pattern_score_.defined()) {
 		p_pattern_score_ = pattern_score_
 			.expand({NUM_PERMUTATIONS, size()})
@@ -378,12 +378,12 @@ const Tensor &Genome::p_pattern_score() const {
 	return p_pattern_score_;
 }
 
-Genome Genome::indices(vector<int64_t> is) const {
+Chromosome Chromosome::indices(vector<int64_t> is) const {
 	Tensor tis = torch::tensor(is);
-	return Genome(color_pattern_.index({tis, "..."}), shape_pattern_.index({tis, "..."}), pattern_score_.index({tis}));
+	return Chromosome(color_pattern_.index({tis, "..."}), shape_pattern_.index({tis, "..."}), pattern_score_.index({tis}));
 }
 
-Genome Genome::operator+(const Genome &other) const {
+Chromosome Chromosome::operator+(const Chromosome &other) const {
 	int64_t sz = size(), new_sz = size() + other.size(), w = conv_width(), h = conv_height();
 
 	assert(other.conv_width() == w);
@@ -402,10 +402,10 @@ Genome Genome::operator+(const Genome &other) const {
 	sh.index_put_({indexing::Slice(sz), "..."}, other.shape_pattern_);
 	sc.index_put_({indexing::Slice(sz)}, other.pattern_score_);
 
-	return Genome(co, sh, sc);
+	return Chromosome(co, sh, sc);
 }
 
-string Genome::sketch() const {
+string Chromosome::sketch() const {
 	stringstream o;
 
 	o << "{ color: " << TensorSketch(color_pattern_);
@@ -419,9 +419,9 @@ string Genome::sketch() const {
 	return o.str();
 }
 
-ostream &operator<<(ostream &o, const Genome &g) {
+ostream &operator<<(ostream &o, const Chromosome &g) {
 	string prefix;
-	o << "Genome {size = " << g.size() << ", permutation cache = {";
+	o << "Chromosome {size = " << g.size() << ", permutation cache = {";
 	if(g.p_color_pattern_.defined()) { o << prefix << "color"; prefix = ", "; }
 	if(g.p_shape_pattern_.defined()) { o << prefix << "shape"; prefix = ", "; }
 	if(g.p_pattern_score_.defined()) { o << prefix << "score"; prefix = ", "; }
@@ -439,18 +439,18 @@ ostream &operator<<(ostream &o, const Genome &g) {
 	return o;
 }
 
-void Genome::normalize_scores() {
+void Chromosome::normalize_scores() {
 	if(size() <= 0) return;
 	pattern_score_ /= pattern_score_.abs().max();
 	p_pattern_score_ = Tensor();
 }
 
-void Genome::assert_compatible(const Tensor &t, const TensorOptions &o) {
+void Chromosome::assert_compatible(const Tensor &t, const TensorOptions &o) {
 	assert(t.dtype() == o.dtype());
 	assert(t.device().type() == o.device().type());
 }
 
-Tensor evaluate(const Genome &g, const Boards &bs) {
+Tensor evaluate(const Chromosome &g, const Boards &bs) {
 	const int64_t cw = g.conv_width(), ch = g.conv_height();
 	Tensor mismatch_color = conv2d(bs.p_color(cw, ch), g.p_color_pattern()),
 	       mismatch_shape = conv2d(bs.p_shape(cw, ch), g.p_shape_pattern());
@@ -463,35 +463,35 @@ extern "C" {
 	void boards_delete(Boards *bs) { delete bs; }
 	int boards_size(Boards *bs) { return bs->size(); }
 
-	Genome *genome_new(int w, int h, int n, float p) { return new Genome(w, h, n, p); }
-	Genome *genome_clone(Genome *g) { return new Genome(g->clone()); }
-	void genome_delete(Genome *g) { delete g; }
+	Chromosome *chromosome_new(int w, int h, int n, float p) { return new Chromosome(w, h, n, p); }
+	Chromosome *chromosome_clone(Chromosome *g) { return new Chromosome(g->clone()); }
+	void chromosome_delete(Chromosome *g) { delete g; }
 
-	int genome_size(Genome *g) { return g->size(); }
-	int genome_conv_width(Genome *g) { return g->conv_width(); }
-	int genome_conv_height(Genome *g) { return g->conv_height(); }
+	int chromosome_size(Chromosome *g) { return g->size(); }
+	int chromosome_conv_width(Chromosome *g) { return g->conv_width(); }
+	int chromosome_conv_height(Chromosome *g) { return g->conv_height(); }
 
-	bool genome_get_color_pattern(Genome *g, int n, int c, int w, int h) { return g->get_color_pattern(n, c, w, h); }
-	bool genome_get_shape_pattern(Genome *g, int n, int s, int w, int h) { return g->get_shape_pattern(n, s, w, h); }
-	float genome_get_pattern_score(Genome *g, int n) { return g->get_pattern_score(n); }
-	char *genome_encode_patterns(Genome *g, int *o_length);
+	bool chromosome_get_color_pattern(Chromosome *g, int n, int c, int w, int h) { return g->get_color_pattern(n, c, w, h); }
+	bool chromosome_get_shape_pattern(Chromosome *g, int n, int s, int w, int h) { return g->get_shape_pattern(n, s, w, h); }
+	float chromosome_get_pattern_score(Chromosome *g, int n) { return g->get_pattern_score(n); }
+	char *chromosome_encode_patterns(Chromosome *g, int *o_length);
 	void patterns_encoding_delete(char *code) { delete code; }
 
-	void genome_set_color_pattern(Genome *g, int n, int c, int w, int h, bool v) { return g->set_color_pattern(n, c, w, h, v); }
-	void genome_set_shape_pattern(Genome *g, int n, int s, int w, int h, bool v) { return g->set_shape_pattern(n, s, w, h, v); }
-	void genome_set_pattern_score(Genome *g, int n, float v) { return g->set_pattern_score(n, v); }
-	void genome_decode_patterns(Genome *g, char *code, int length) { g->decode_patterns(string(code, length)); }
+	void chromosome_set_color_pattern(Chromosome *g, int n, int c, int w, int h, bool v) { return g->set_color_pattern(n, c, w, h, v); }
+	void chromosome_set_shape_pattern(Chromosome *g, int n, int s, int w, int h, bool v) { return g->set_shape_pattern(n, s, w, h, v); }
+	void chromosome_set_pattern_score(Chromosome *g, int n, float v) { return g->set_pattern_score(n, v); }
+	void chromosome_decode_patterns(Chromosome *g, char *code, int length) { g->decode_patterns(string(code, length)); }
 
-	Genome *genome_indices(Genome *g, int *is, int is_size);
-	Genome *genome_append(Genome *g, Genome *other) { return new Genome(*g + *other); }
+	Chromosome *chromosome_indices(Chromosome *g, int *is, int is_size);
+	Chromosome *chromosome_append(Chromosome *g, Chromosome *other) { return new Chromosome(*g + *other); }
 
-	void genome_dump(Genome *g) { cout << *g << endl; }
-	void genome_sketch(Genome *g) { cout << g->sketch() << endl; }
+	void chromosome_dump(Chromosome *g) { cout << *g << endl; }
+	void chromosome_sketch(Chromosome *g) { cout << g->sketch() << endl; }
 
-	void evaluate(Genome *g, Boards *bs, float *out);
+	void evaluate(Chromosome *g, Boards *bs, float *out);
 }
 
-char *genome_encode_patterns(Genome *g, int *o_length) {
+char *chromosome_encode_patterns(Chromosome *g, int *o_length) {
 	string code = g->encode_patterns();
 	*o_length = code.size();
 	char *result = new char[code.size()];
@@ -499,13 +499,13 @@ char *genome_encode_patterns(Genome *g, int *o_length) {
 	return result;
 }
 
-Genome *genome_indices(Genome *g, int *is, int is_size) {
+Chromosome *chromosome_indices(Chromosome *g, int *is, int is_size) {
 	vector<int64_t> is_vec(is_size);
 	for(int i = 0; i < is_size; ++i) is_vec[i] = is[i];
-	return new Genome(g->indices(is_vec));
+	return new Chromosome(g->indices(is_vec));
 }
 
-void evaluate(Genome *g, Boards *bs, float *out) {
+void evaluate(Chromosome *g, Boards *bs, float *out) {
 	Tensor out_tensor = evaluate(*g, *bs).to(kCPU).contiguous();
 	copy(out_tensor.data_ptr<float>(), out_tensor.data_ptr<float>() + bs->size(), out);
 }
