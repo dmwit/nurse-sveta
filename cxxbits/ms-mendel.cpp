@@ -1,7 +1,11 @@
+#include <compare>
 #include <iostream>
 
 #include "constants.hpp"
 #include "debugging.hpp"
+
+// TODO: delete?
+#include <fstream>
 
 using namespace std;
 using namespace torch;
@@ -63,11 +67,36 @@ class Boards {
 		mutable Tensor p_color_, p_shape_;
 };
 
+class obitstream {
+	public:
+		obitstream(ostream &s) : s_(s), next_byte_(0), next_bit_(0) {}
+		~obitstream();
+		obitstream &operator<<(bool b);
+
+	protected:
+		ostream &s_;
+		uint8_t next_byte_;
+		int next_bit_;
+};
+
+class ibitstream {
+	public:
+		ibitstream(istream &s) : s_(s), next_byte_(0), next_bit_(0) {}
+		bool get();
+
+	protected:
+		istream &s_;
+		uint8_t next_byte_;
+		int next_bit_;
+};
+
 class Chromosome {
 	public:
 		Chromosome(int64_t conv_width, int64_t conv_height, int64_t num_patterns = 0, float p = 0.5);
 		Chromosome(const Tensor &color_pattern, const Tensor &shape_pattern, const Tensor &pattern_score);
 		Chromosome clone() const;
+
+		Tensor evaluate(const Boards &bs) const;
 
 		int64_t size() const { return color_pattern_.size(INDEX_DIM); }
 		int64_t conv_width() const { return color_pattern_.size(CONV_WIDTH_DIM); }
@@ -89,6 +118,12 @@ class Chromosome {
 
 		Chromosome indices(vector<int64_t> is) const;
 		Chromosome operator+(const Chromosome &other) const;
+		Chromosome &operator+=(const Chromosome &other);
+
+		void encode_scores(ostream &s) const;
+		void encode_patterns(obitstream &s) const;
+		void decode_scores(istream &s);
+		void decode_patterns(ibitstream &s);
 
 		string sketch() const;
 		friend ostream &operator<<(ostream &o, const Chromosome &g);
@@ -114,7 +149,50 @@ class Chromosome {
 		mutable Tensor p_color_pattern_, p_shape_pattern_, p_pattern_score_;
 };
 
-Tensor evaluate(const Chromosome &g, const Boards &bs);
+class ConvolutionSize {
+	public:
+		ConvolutionSize(int64_t w, int64_t h);
+		ConvolutionSize(const Chromosome &c) : ConvolutionSize(c.conv_width(), c.conv_height()) {}
+		explicit ConvolutionSize(uint8_t encoding) : sz_(encoding) { assert(valid(sz_)); }
+
+		int64_t width() const { return 1 + ((sz_ & kWidthMask) >> kWidthShift); }
+		int64_t height() const { return 1 + ((sz_ & kHeightMask) >> kHeightShift); }
+
+		strong_ordering operator<=>(const ConvolutionSize &other) const = default;
+
+		uint8_t encode() const { return sz_; }
+
+		static bool valid(uint8_t c) { return !(c & kInvalidMask); }
+
+	protected:
+		uint8_t sz_;
+		static constexpr uint8_t kWidthMask = 0x70, kHeightMask = 0x0f, kInvalidMask = 0x80;
+		static constexpr int kWidthShift = 4, kHeightShift = 0;
+
+	public:
+		static constexpr uint8_t kInvalidEncoding = kInvalidMask;
+};
+
+class Genome {
+	public:
+		Genome() {}
+		Genome(const Chromosome &c) : chromosomes_({pair(c, c)}) {}
+		Genome(const Genome &g) : chromosomes_(g.chromosomes_) {}
+
+		Genome operator+(const Genome &other) const;
+		Tensor evaluate(const Boards &bs) const;
+
+		vector<ConvolutionSize> sizes() const;
+		Chromosome &get_chromosome(ConvolutionSize sz);
+
+		void encode(ostream &s) const;
+		void decode(istream &s);
+
+		friend ostream &operator<<(ostream &o, const Genome &g);
+
+	protected:
+		map<ConvolutionSize, Chromosome> chromosomes_;
+};
 
 Boards::Boards(char *base_board, char *diffs) {
 	int num_boards = 0, i = 0;
@@ -384,25 +462,23 @@ Chromosome Chromosome::indices(vector<int64_t> is) const {
 }
 
 Chromosome Chromosome::operator+(const Chromosome &other) const {
-	int64_t sz = size(), new_sz = size() + other.size(), w = conv_width(), h = conv_height();
+	return Chromosome
+		( cat({color_pattern_, other.color_pattern_})
+		, cat({shape_pattern_, other.shape_pattern_})
+		, cat({pattern_score_, other.pattern_score_})
+		);
+}
 
-	assert(other.conv_width() == w);
-	assert(other.conv_height() == w);
+Chromosome &Chromosome::operator+=(const Chromosome &other) {
+	color_pattern_ = cat({color_pattern_, other.color_pattern_});
+	shape_pattern_ = cat({shape_pattern_, other.shape_pattern_});
+	pattern_score_ = cat({pattern_score_, other.pattern_score_});
 
-	Tensor co, sh, sc;
-	co = torch::zeros({new_sz, COLORS+SENTINELS, w, h}, GPU_BOOL_REP);
-	sh = torch::zeros({new_sz, SHAPES+SENTINELS, w, h}, GPU_BOOL_REP);
-	sc = torch::zeros({new_sz}, GPU_FLOAT);
+	p_color_pattern_ = Tensor();
+	p_shape_pattern_ = Tensor();
+	p_pattern_score_ = Tensor();
 
-	co.index_put_({indexing::Slice(0, sz), "..."}, color_pattern_);
-	sh.index_put_({indexing::Slice(0, sz), "..."}, shape_pattern_);
-	sc.index_put_({indexing::Slice(0, sz)}, pattern_score_);
-
-	co.index_put_({indexing::Slice(sz), "..."}, other.color_pattern_);
-	sh.index_put_({indexing::Slice(sz), "..."}, other.shape_pattern_);
-	sc.index_put_({indexing::Slice(sz)}, other.pattern_score_);
-
-	return Chromosome(co, sh, sc);
+	return *this;
 }
 
 string Chromosome::sketch() const {
@@ -450,12 +526,177 @@ void Chromosome::assert_compatible(const Tensor &t, const TensorOptions &o) {
 	assert(t.device().type() == o.device().type());
 }
 
-Tensor evaluate(const Chromosome &g, const Boards &bs) {
-	const int64_t cw = g.conv_width(), ch = g.conv_height();
-	Tensor mismatch_color = conv2d(bs.p_color(cw, ch), g.p_color_pattern()),
-	       mismatch_shape = conv2d(bs.p_shape(cw, ch), g.p_shape_pattern());
+Tensor Chromosome::evaluate(const Boards &bs) const {
+	const int64_t cw = conv_width(), ch = conv_height();
+	Tensor mismatch_color = conv2d(bs.p_color(cw, ch), p_color_pattern()),
+	       mismatch_shape = conv2d(bs.p_shape(cw, ch), p_shape_pattern());
 	Tensor match = ((mismatch_color + mismatch_shape) == 0).to(GPU_BYTE);
-	return (match.sum({2,3})*g.p_pattern_score()).sum({1});
+	return (match.sum({2,3})*p_pattern_score()).sum({1});
+}
+
+void Chromosome::encode_scores(ostream &s) const {
+	// must name it to make sure the underlying data pointer stays valid
+	Tensor contiguous_scores = pattern_score_.to(kCPU).contiguous();
+	char *scores = reinterpret_cast<char *>(contiguous_scores.data_ptr<float>());
+	for(int i = 0; i < size() * sizeof(float); ++i)
+		s << scores[i];
+}
+
+void Chromosome::encode_patterns(obitstream &s) const {
+	for(int pattern = 0; pattern < size(); ++pattern) {
+		for(int x = 0; x < conv_width(); ++x) {
+			for(int y = 0; y < conv_height(); ++y) {
+				for(int color = 0; color < COLORS + SENTINELS; ++color)
+					s << (color_pattern_[pattern][color][x][y].item<CXX_BOOL_REP>() != 0);
+				for(int shape = 0; shape < SHAPES + SENTINELS; ++shape)
+					s << (shape_pattern_[pattern][shape][x][y].item<CXX_BOOL_REP>() != 0);
+			}
+		}
+	}
+}
+
+void Chromosome::decode_scores(istream &s) {
+	float scores[size()];
+	for(int i = 0; i < sizeof(scores); ++i)
+		s >> reinterpret_cast<char *>(scores)[i];
+	pattern_score_ = torch::from_blob(scores, {size()}, CPU_FLOAT).to(kCUDA).clone();
+	assert(all((pattern_score_ <= 1) * (pattern_score_ >= -1)).item<bool>());
+	assert(any((pattern_score_ == 1) + (pattern_score_ == -1)).item<bool>());
+	p_pattern_score_ = Tensor();
+}
+
+void Chromosome::decode_patterns(ibitstream &s) {
+	for(int pattern = 0; pattern < size(); ++pattern) {
+		for(int x = 0; x < conv_width(); ++x) {
+			for(int y = 0; y < conv_height(); ++y) {
+				for(int color = 0; color < COLORS + SENTINELS; ++color)
+					color_pattern_[pattern][color][x][y] = s.get();
+				for(int shape = 0; shape < SHAPES + SENTINELS; ++shape)
+					shape_pattern_[pattern][shape][x][y] = s.get();
+			}
+		}
+	}
+}
+
+ConvolutionSize::ConvolutionSize(int64_t w, int64_t h) {
+	assert(!(--w & ~(kWidthMask >> kWidthShift)));
+	assert(!(--h & ~(kHeightMask >> kHeightShift)));
+	sz_ = (w << kWidthShift) | (h << kHeightShift);
+}
+
+ostream &operator<<(ostream &o, const ConvolutionSize &sz) {
+	return o << sz.width() << "x" << sz.height();
+}
+
+Genome Genome::operator+(const Genome &other) const {
+	Genome ret(other);
+	map<ConvolutionSize, Chromosome>::const_iterator src = chromosomes_.begin();
+	map<ConvolutionSize, Chromosome>::iterator dst = ret.chromosomes_.begin();
+
+	while(src != chromosomes_.end() && dst != ret.chromosomes_.end()) {
+		strong_ordering cmp = src->first <=> dst->first;
+		if(cmp < 0) ret.chromosomes_.insert(dst, *src++);
+		else if (cmp > 0) ++dst;
+		else dst++->second += src++->second;
+	}
+
+	return ret;
+}
+
+Tensor Genome::evaluate(const Boards &bs) const {
+	Tensor out = torch::zeros({bs.size()}, GPU_FLOAT);
+	for(auto [_, c] : chromosomes_) out += c.evaluate(bs);
+	return out;
+}
+
+vector<ConvolutionSize> Genome::sizes() const {
+	vector<ConvolutionSize> out; out.reserve(chromosomes_.size());
+	for(const auto &[sz, c] : chromosomes_)
+		if(c.size())
+			out.push_back(sz);
+	return out;
+}
+
+Chromosome &Genome::get_chromosome(ConvolutionSize sz) {
+	auto it = chromosomes_.find(sz);
+	assert(it != chromosomes_.end());
+	return it->second;
+}
+
+void Genome::encode(ostream &s) const {
+	for(const auto &[sz, c] : chromosomes_) {
+		int64_t n = c.size();
+		if(!n) continue;
+		s << sz.encode();
+		while(n > 0x7f) {
+			s << uint8_t(0x80 | n);
+			n >>= 7;
+		}
+		s << uint8_t(n);
+		c.encode_scores(s);
+	}
+	s << ConvolutionSize::kInvalidEncoding;
+	obitstream bits(s);
+	for(const auto &[sz, c] : chromosomes_) {
+		if(!c.size()) continue;
+		c.encode_patterns(bits);
+	}
+}
+
+void Genome::decode(istream &s) {
+	chromosomes_.clear();
+	auto it = chromosomes_.begin();
+	uint8_t sz_;
+
+	while(s >> sz_, ConvolutionSize::valid(sz_) && s.good()) {
+		int64_t shift = 0, n = 0;
+		uint8_t partial_n;
+		while(s >> partial_n, (partial_n & 0x80) && shift <= 35) {
+			n |= int64_t(partial_n & 0x7f) << shift;
+			shift += 7;
+		}
+		n |= int64_t(partial_n) << shift;
+		assert(n);
+		assert(shift <= 35);
+		ConvolutionSize sz(sz_);
+		it = chromosomes_.emplace_hint(it, sz, Chromosome(sz.width(), sz.height(), n, 0));
+		it++->second.decode_scores(s);
+	}
+	assert(s.good());
+
+	ibitstream bits(s);
+	for(auto &[sz, c] : chromosomes_)
+		c.decode_patterns(bits);
+	assert(s.good());
+}
+
+ostream &operator<<(ostream &o, const Genome &g) {
+	o << "Genome {" << endl;
+	for(const auto &[k, v] : g.chromosomes_)
+		o << "\t" << k << ": " << v << endl;
+	return o << "}" << endl;
+}
+
+obitstream::~obitstream() {
+	if(next_bit_ > 0) s_ << next_byte_;
+}
+
+obitstream &obitstream::operator<<(bool b) {
+	next_byte_ |= (b << next_bit_++);
+	if(next_bit_ >= 8) {
+		s_ << next_byte_;
+		next_byte_ = 0;
+		next_bit_ = 0;
+	}
+	return *this;
+}
+
+bool ibitstream::get() {
+	if(!next_bit_) s_ >> next_byte_;
+	bool ret = next_byte_ & 1;
+	next_byte_ >>= 1;
+	if(++next_bit_ >= 8) next_bit_ = 0;
+	return ret;
 }
 
 extern "C" {
@@ -506,6 +747,37 @@ Chromosome *chromosome_indices(Chromosome *g, int *is, int is_size) {
 }
 
 void evaluate(Chromosome *g, Boards *bs, float *out) {
-	Tensor out_tensor = evaluate(*g, *bs).to(kCPU).contiguous();
+	Tensor out_tensor = g->evaluate(*bs).to(kCPU).contiguous();
 	copy(out_tensor.data_ptr<float>(), out_tensor.data_ptr<float>() + bs->size(), out);
+}
+
+int main() {
+	Genome g;
+	g = g + Chromosome(2, 2, 4, 0.1);
+	g = g + Chromosome(3, 3, 2, 0.1);
+	g = g + Chromosome(3, 3, 2, 0.9);
+	cout << g << endl;
+
+	{
+	ofstream o("/tmp/ms-mendel.bin", ios_base::binary);
+	g.encode(o);
+	o.close();
+	}
+
+	{
+	ifstream i("/tmp/ms-mendel.bin", ios_base::binary);
+	g.decode(i);
+	i.close();
+	cout << g << endl;
+	}
+
+	{
+	Genome g2;
+	ifstream i("/tmp/ms-mendel.bin", ios_base::binary);
+	g2.decode(i);
+	i.close();
+	cout << g2 << endl;
+	}
+
+	return 0;
 }

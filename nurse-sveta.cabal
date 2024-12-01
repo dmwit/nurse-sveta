@@ -121,7 +121,7 @@ library
     -- when building with profiling, ghc passes -Xpreprocessor -DPROFILING to
     -- the C compiler, which is an issue because libtorch makes an enum with
     -- PROFILING as an entry
-    cxx-options:        -Xpreprocessor -UPROFILING
+    cxx-options:        -Xpreprocessor -UPROFILING -std=c++20
     if flag(debug)
         cxx-options:    -g
     else
