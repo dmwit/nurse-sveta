@@ -678,7 +678,6 @@ data HomogeneousGridView = HGV
 	, hgvModel :: IORef HomogeneousGridModel
 	}
 
--- | Arguments are the width and height of each child.
 newHomogeneousGridView :: MonadIO m => m HomogeneousGridView
 newHomogeneousGridView = do
 	box <- new Box [#orientation := OrientationVertical, #hexpand := True, #vexpand := True]
