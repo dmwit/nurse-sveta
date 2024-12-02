@@ -2,7 +2,7 @@ module Nurse.Sveta.Cairo (
 	initMath, bottleSizeRecommendation,
 	bottleWithLookahead, bottle, bottleMaybeLookahead,
 	bottleOutline, bottleContent, lookahead, lookaheadContent,
-	pill, cell, setColor, neutral,
+	pill, shape, cell, setColor, neutral,
 	fitText, fitTexts, TextRequest(..),
 	-- * Heatmaps
 	-- | Heatmaps display a grid of colors to convey numerical information.
@@ -37,7 +37,7 @@ import Data.Foldable
 import Data.Monoid
 import GI.Cairo.Render hiding (RectangleInt(..))
 import GI.Cairo.Render.Matrix (Matrix(..))
-import Dr.Mario.Model
+import Dr.Mario.Model hiding (shape)
 import GHC.Stack
 import Numeric
 import Nurse.Sveta.Util
@@ -143,9 +143,9 @@ pill Pill
 		Vertical   -> cell  x     y    (Occupied bl South)
 		           >> cell  x    (y+1) (Occupied o  North)
 
-cell :: Double -> Double -> Cell -> Render ()
-cell _ _ Empty = pure ()
-cell x_ y_ (Occupied c s) = do
+-- | Arguments are x, y, fill color, and the shape to draw.
+shape :: Double -> Double -> Render () -> Shape -> Render ()
+shape x_ y_ setFillColor s = do
 	case s of
 		Virus -> do
 			centered moveTo pos
@@ -183,7 +183,7 @@ cell x_ y_ (Occupied c s) = do
 	setSourceRGB 0 0 0
 	setLineWidth 0.05
 	strokePreserve
-	setColor c
+	setFillColor
 	fill
 
 	when (s == Virus) $ do
@@ -202,6 +202,10 @@ cell x_ y_ (Occupied c s) = do
 	x = x_ + 1
 	y = y_ + 1
 	pos = (x, y)
+
+cell :: Double -> Double -> Cell -> Render ()
+cell _ _ Empty = pure ()
+cell x y (Occupied c s) = shape x y (setColor c) s
 
 setColor :: Color -> Render ()
 setColor = \case

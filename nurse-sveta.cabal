@@ -30,6 +30,7 @@ common shared
                         , mtl ^>=2.2
                         , mwc-random ^>=0.15
                         , random ^>=1.2
+                        , semialign ^>=1.3
                         , text ^>=2.1
                         , time >=1.9 && <1.12
                         , unordered-containers ^>=0.2
@@ -163,4 +164,7 @@ executable nurse-sveta-archive-games
 executable ms-mendel
     import:             executable
     main-is:            ms-mendel.hs
-    build-depends:        semialign ^>=1.3
+
+executable ms-mendel-genome-browser
+    import:             executable
+    main-is:            genome-browser.hs

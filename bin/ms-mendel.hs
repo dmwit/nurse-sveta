@@ -1,15 +1,11 @@
 module Main where
 
 import Control.Concurrent
-import Control.Concurrent.MVar
 import Control.Exception
 import Control.Monad
 import Data.Aeson
-import Data.Aeson.Types
 import Data.Bits
 import Data.Char
-import Data.Functor
-import Data.HashMap.Strict (HashMap)
 import Data.Int
 import Data.IORef
 import Data.List
@@ -17,7 +13,6 @@ import Data.Ord
 import Data.Time
 import Data.Traversable
 import Data.Vector (Vector)
-import Data.Zip (Zip)
 import Dr.Mario.Model
 import Dr.Mario.Pathfinding
 import GHC.Generics
@@ -35,14 +30,12 @@ import System.Random.MWC.Distributions
 import System.Mem
 import Util
 
-import qualified Data.Aeson.KeyMap as KM
 import qualified Data.ByteString.Lazy as LBS
 import qualified Data.HashMap.Strict as HM
 import qualified Data.Text as T
 import qualified Data.Vector as V
 import qualified Data.Vector.Algorithms.Intro as V
 import qualified Data.Vector.Mutable as VM
-import qualified Data.Zip as Z
 
 -- ╭╴w╶────────────────────────╮
 -- │╭╴top╶────────────────────╮│
@@ -381,45 +374,6 @@ evolutionThread mmc jobs dir replies overviewRef rng pop0 sc = go pop0 where
 			, goLastQuartileSize = quartile 3
 			}
 		go pop'
-
-data ShapeMatch f a = ShapeMismatch | ShapeMatchPure a | ShapeMatch (f a) deriving (Eq, Ord, Read, Show, Functor)
-
-instance (Eq (f ()), Zip f) => Applicative (ShapeMatch f) where
-	pure = ShapeMatchPure
-	ShapeMismatch <*> _ = ShapeMismatch
-	_ <*> ShapeMismatch = ShapeMismatch
-	ShapeMatchPure f <*> vs = f <$> vs
-	fs <*> ShapeMatchPure v = fs <&> ($ v)
-	ShapeMatch fs <*> ShapeMatch vs
-		| (()<$fs) == (()<$vs) = ShapeMatch (Z.zipWith ($) fs vs)
-		| otherwise = ShapeMismatch
-
-newtype RecordOfVectors a = RecordOfVectors (Vector a) deriving (Eq, Ord, Read, Show)
-
-instance ToJSON a => ToJSON (RecordOfVectors a) where
-	toJSON (RecordOfVectors as) = case traverse (inject . toJSON) as of
-		ShapeMismatch -> error $ "RecordOfVectors (currently) only supports types that serialize to Objects with a fixed, static set of keys"
-		ShapeMatchPure m
-			| V.length m == 0 -> Null
-			| otherwise -> error $ "the impossible happened in toJSON @RecordOfVectors: traversing a non-empty vector produced a pure result"
-		ShapeMatch km
-			| KM.null km -> toJSON (V.length as)
-			| otherwise -> Object (Array <$> km)
-		where
-		inject (Object o) = ShapeMatch o
-		inject _ = ShapeMismatch
-
-instance FromJSON a => FromJSON (RecordOfVectors a) where
-	parseJSON v = RecordOfVectors <$> case v of
-		Null -> pure V.empty
-		Number{} -> liftM2 V.replicate (parseJSON v) (parseJSON (Object mempty))
-		Object km -> case traverse inject km of
-			ShapeMismatch -> typeMismatch "RecordOfVectors (an object whose fields are all arrays of the same length)" v
-			ShapeMatchPure{} -> typeMismatch "RecordOfVectors (an object with at least one field)" v
-			ShapeMatch kms -> traverse (parseJSON . Object) kms
-		where
-		inject (Array vs) = ShapeMatch vs
-		inject _ = ShapeMismatch
 
 initializePopulation :: MsMendelConfig -> FilePath -> GenIO -> IO (Int, Vector Genome)
 initializePopulation mmc dir rng = do

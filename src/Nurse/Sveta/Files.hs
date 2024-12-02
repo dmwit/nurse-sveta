@@ -7,12 +7,21 @@ module Nurse.Sveta.Files (
 
 import Control.Concurrent
 import Control.Exception
+import Control.Monad
 import Data.Aeson
+import Data.Aeson.Types
+import Data.Functor
+import Data.Vector (Vector)
+import Data.Zip (Zip)
 import Paths_nurse_sveta
 import System.Directory
 import System.Environment
 import System.FilePath
 import System.IO.Error
+
+import qualified Data.Aeson.KeyMap as KM
+import qualified Data.Vector as V
+import qualified Data.Zip as Z
 
 nsAppName :: FilePath
 nsAppName = "nurse-sveta"
@@ -151,3 +160,44 @@ relocate :: FilePath -> FilePath -> Directory -> Directory -> IO ()
 relocate root fp from to = do
 	path <- absPrepareFile root to fp
 	renameFile (absFileName root from fp) path
+
+-- | Converts [Map k v] to Map k [v] to reduce the size of the JSON encoding.
+newtype RecordOfVectors a = RecordOfVectors (Vector a) deriving (Eq, Ord, Read, Show)
+
+instance ToJSON a => ToJSON (RecordOfVectors a) where
+	toJSON (RecordOfVectors as) = case traverse (inject . toJSON) as of
+		ShapeMismatch -> error $ "RecordOfVectors (currently) only supports types that serialize to Objects with a fixed, static set of keys"
+		ShapeMatchPure m
+			| V.length m == 0 -> Null
+			| otherwise -> error $ "the impossible happened in toJSON @RecordOfVectors: traversing a non-empty vector produced a pure result"
+		ShapeMatch km
+			| KM.null km -> toJSON (V.length as)
+			| otherwise -> Object (Array <$> km)
+		where
+		inject (Object o) = ShapeMatch o
+		inject _ = ShapeMismatch
+
+instance FromJSON a => FromJSON (RecordOfVectors a) where
+	parseJSON v = RecordOfVectors <$> case v of
+		Null -> pure V.empty
+		Number{} -> liftM2 V.replicate (parseJSON v) (parseJSON (Object mempty))
+		Object km -> case traverse inject km of
+			ShapeMismatch -> typeMismatch "RecordOfVectors (an object whose fields are all arrays of the same length)" v
+			ShapeMatchPure{} -> typeMismatch "RecordOfVectors (an object with at least one field)" v
+			ShapeMatch kms -> traverse (parseJSON . Object) kms
+		where
+		inject (Array vs) = ShapeMatch vs
+		inject _ = ShapeMismatch
+
+-- | Used internally, probably not very useful in general
+data ShapeMatch f a = ShapeMismatch | ShapeMatchPure a | ShapeMatch (f a) deriving (Eq, Ord, Read, Show, Functor)
+
+instance (Eq (f ()), Zip f) => Applicative (ShapeMatch f) where
+	pure = ShapeMatchPure
+	ShapeMismatch <*> _ = ShapeMismatch
+	_ <*> ShapeMismatch = ShapeMismatch
+	ShapeMatchPure f <*> vs = f <$> vs
+	fs <*> ShapeMatchPure v = fs <&> ($ v)
+	ShapeMatch fs <*> ShapeMatch vs
+		| (()<$fs) == (()<$vs) = ShapeMatch (Z.zipWith ($) fs vs)
+		| otherwise = ShapeMismatch
