@@ -6,6 +6,7 @@ import Control.Monad
 import Data.Aeson
 import Data.Bits
 import Data.Char
+import Data.Foldable
 import Data.Int
 import Data.IORef
 import Data.List
@@ -27,6 +28,7 @@ import System.Environment
 import System.IO.Error
 import System.Random.MWC
 import System.Random.MWC.Distributions
+import System.Random.Stateful (uniformFloat01M)
 import System.Mem
 import Util
 
@@ -105,6 +107,8 @@ data MsMendelConfig = MsMendelConfig
 	, mmcScoreToggles :: Int
 	, mmcScoreAdjustments :: Int
 	, mmcMaxScoreAdjustmentFactor :: Float
+	, mmcBulkPatternToggles :: Int
+	, mmcTypicalPatternToggleBatchSize :: Float
 	, mmcMaxLevel :: Int
 	, mmcMaxGenomeSize :: Int
 	, mmcMaxPillsPerKill :: Int
@@ -437,7 +441,8 @@ mutate mmc rng pop = do
 	pat <- V.replicateM (mmcPatternToggles mmc) togglePattern
 	sco <- V.replicateM (mmcScoreToggles mmc) toggleScore
 	adj <- V.replicateM (mmcScoreAdjustments mmc) adjustScore
-	pure $ mconcat [ins, del, pat, sco, adj]
+	blk <- V.replicateM (mmcBulkPatternToggles mmc) bulkPatternToggle
+	pure $ mconcat [ins, del, pat, sco, adj, blk]
 	where
 	replaceGene = do
 		g <- uniformV' rng pop
@@ -474,6 +479,22 @@ mutate mmc rng pop = do
 		factor <- exp <$> uniformRM (-range, range) rng
 		gSetPatternScore g pat . (factor*) $ gGetPatternScore g pat
 		pure g
+	bulkPatternToggle = do
+		g <- uniformV' rng pop >>= gClone
+		pat <- uniformPattern g
+		pat' <- newJeffreysGenome rng (gConvWidth g) (gConvHeight g) 1
+		let loop = do
+		    	x <- uniformIndex (gConvWidth g)
+		    	y <- uniformIndex (gConvHeight g)
+		    	for_ allColorsWithSentinels \c -> gSetColorPattern g pat c x y (gGetColorPattern pat' 0 c x y)
+		    	for_ allShapesWithSentinels \s -> gSetShapePattern g pat s x y (gGetShapePattern pat' 0 s x y)
+		    	n <- uniformFloat01M rng
+		    	when (n > pDone) loop
+		    -- this calculation isn't exactly correct because we make no
+		    -- attempt to choose unique locations each time, but meh, close
+		    -- enough
+		    pDone = recip (mmcTypicalPatternToggleBatchSize mmc)
+		g <$ loop
 	uniformPattern = uniformIndex . gSize
 	uniformIndex n = uniformRM (0, n-1) rng
 

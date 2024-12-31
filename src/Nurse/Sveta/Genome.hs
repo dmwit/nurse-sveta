@@ -8,6 +8,7 @@ module Nurse.Sveta.Genome (
 	GenomeSpec, gSpec, gFromSpec,
 	gDump, gSketch,
 	WithSentinels(..),
+	allColorsWithSentinels, allShapesWithSentinels,
 	) where
 
 import Control.Monad
@@ -180,6 +181,12 @@ data WithSentinels a = NonSentinel a | EmptySentinel | OutOfBoundsSentinel deriv
 instance Bounded a => Bounded (WithSentinels a) where
 	minBound = NonSentinel minBound
 	maxBound = OutOfBoundsSentinel
+
+allColorsWithSentinels :: [WithSentinels Color]
+allColorsWithSentinels = map NonSentinel [minBound..maxBound] ++ [EmptySentinel, OutOfBoundsSentinel]
+
+allShapesWithSentinels :: [WithSentinels Shape]
+allShapesWithSentinels = map NonSentinel [Virus, Disconnected, East, West] ++ [EmptySentinel, OutOfBoundsSentinel]
 
 {-# Specialize colorIndex :: Color -> CInt #-}
 {-# Specialize colorIndex :: Color -> Word8 #-}
