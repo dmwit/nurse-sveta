@@ -97,6 +97,7 @@ data MsMendelConfig = MsMendelConfig
 	, mmcInitialPatterns :: Int
 	, mmcPillCycleLength :: Int
 	, mmcEvaluationRateLimit :: Int
+	, mmcRunsPerGeneration :: Int
 	, mmcSurvivors :: Int
 	, mmcBreeders :: Int
 	, mmcMutators :: Int
@@ -208,6 +209,7 @@ evaluationThread mmc jobs psmRef sc = createSystemRandom >>= \rng -> forever do
 data GenerationOverview = GenerationOverview
 	{ goID :: Int
 	, goPopulationSize :: Int
+	, goRunsPerGeneration :: Int
 	, goLevelsPlayed :: Int
 	, goLevelsToPlay :: Int
 	, goBestSoFar :: Maybe Evaluation
@@ -216,8 +218,8 @@ data GenerationOverview = GenerationOverview
 	} deriving (Eq, Ord, Read, Show)
 
 goCurrentLevelEstimate, goVirusesAvailableEstimate :: GenerationOverview -> Int
-goCurrentLevelEstimate go = goLevelsPlayed go `div` goPopulationSize go
-goVirusesAvailableEstimate = (\lev -> 2 * (lev+1) * (lev+2)) . goCurrentLevelEstimate
+goCurrentLevelEstimate go = goLevelsPlayed go `div` goPopulationSize go `div` goRunsPerGeneration go
+goVirusesAvailableEstimate go = (goRunsPerGeneration go *) . (\lev -> 2 * (lev+1) * (lev+2)) . goCurrentLevelEstimate $ go
 
 -- use the Jeffreys prior for Bernoulli distributions, β(½,½), to choose the
 -- Bernoulli parameter
@@ -255,8 +257,9 @@ evolutionThreadView mmc jobs = do
 	overviewRef <- newTVarIO GenerationOverview
 		{ goID = generation
 		, goPopulationSize = V.length pop
+		, goRunsPerGeneration = mmcRunsPerGeneration mmc
 		, goLevelsPlayed = 0
-		, goLevelsToPlay = V.length pop * (mmcMaxLevel mmc + 1)
+		, goLevelsToPlay = V.length pop * (mmcMaxLevel mmc + 1) * mmcRunsPerGeneration mmc
 		, goBestSoFar = Nothing
 		, goWorstSoFar = Nothing
 		, goMinSize = 0
@@ -315,10 +318,12 @@ evolutionThread mmc jobs dir replies overviewRef rng pop0 sc = go pop0 where
 	go pop = do
 		readTVarIO overviewRef >>= savePopulation dir pop . goID
 		scIO_ sc
-		gslks <- forM [0..mmcMaxLevel mmc] \lev -> do
-			gs <- initialState (ExactLevel rng lev)
-			lk <- replicateM (mmcPillCycleLength mmc) (sampleRNG' rng)
-			pure (gs, lk)
+		gslks <- concat <$> forM [0..mmcMaxLevel mmc] \lev -> do
+			forM [1..mmcRunsPerGeneration mmc] \_ -> do
+				gs <- initialState (ExactLevel rng lev)
+				lk <- replicateM (mmcPillCycleLength mmc) (sampleRNG' rng)
+				pure (gs, lk)
+		print (length gslks)
 		tid <- forkIO $ forM_ gslks \(gs0, lks) -> V.iforM_ pop \i genome -> do
 			gs <- cloneGameState gs0
 			putMVar jobs Job
