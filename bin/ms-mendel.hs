@@ -323,7 +323,6 @@ evolutionThread mmc jobs dir replies overviewRef rng pop0 sc = go pop0 where
 				gs <- initialState (ExactLevel rng lev)
 				lk <- replicateM (mmcPillCycleLength mmc) (sampleRNG' rng)
 				pure (gs, lk)
-		print (length gslks)
 		tid <- forkIO $ forM_ gslks \(gs0, lks) -> V.iforM_ pop \i genome -> do
 			gs <- cloneGameState gs0
 			putMVar jobs Job
