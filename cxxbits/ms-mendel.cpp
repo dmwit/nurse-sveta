@@ -4,9 +4,6 @@
 #include "constants.hpp"
 #include "debugging.hpp"
 
-// TODO: delete?
-#include <fstream>
-
 using namespace std;
 using namespace torch;
 
@@ -28,7 +25,7 @@ class Boards {
 		// 	* the empty cell is represented by the byte 0b00010011 (= 0x13 = SHAPES << 2 | COLORS)
 		// 	* bottom two bits are color
 		// 	* next two bits are shape
-		// (we could in principle back two cells into each byte, but the extra
+		// (we could in principle pack two cells into each byte, but the extra
 		// complications in encoding and decoding don't seem worth it)
 		//
 		// diffs is a sequence of modifications, with each modification being a
@@ -86,7 +83,7 @@ class ibitstream {
 
 	protected:
 		istream &s_;
-		uint8_t next_byte_;
+		char next_byte_;
 		int next_bit_;
 };
 
@@ -558,7 +555,7 @@ void Chromosome::encode_patterns(obitstream &s) const {
 void Chromosome::decode_scores(istream &s) {
 	float scores[size()];
 	for(int i = 0; i < sizeof(scores); ++i)
-		s >> reinterpret_cast<char *>(scores)[i];
+		s.get(reinterpret_cast<char *>(scores)[i]);
 	pattern_score_ = torch::from_blob(scores, {size()}, CPU_FLOAT).to(kCUDA).clone();
 	assert(all((pattern_score_ <= 1) * (pattern_score_ >= -1)).item<bool>());
 	assert(any((pattern_score_ == 1) + (pattern_score_ == -1)).item<bool>());
@@ -646,12 +643,12 @@ void Genome::encode(ostream &s) const {
 void Genome::decode(istream &s) {
 	chromosomes_.clear();
 	auto it = chromosomes_.begin();
-	uint8_t sz_;
+	char sz_;
 
-	while(s >> sz_, ConvolutionSize::valid(sz_) && s.good()) {
+	while(s.get(sz_) && ConvolutionSize::valid(sz_)) {
 		int64_t shift = 0, n = 0;
-		uint8_t partial_n;
-		while(s >> partial_n, (partial_n & 0x80) && shift <= 35) {
+		char partial_n;
+		while(s.get(partial_n) && (partial_n & 0x80) && shift <= 35) {
 			n |= int64_t(partial_n & 0x7f) << shift;
 			shift += 7;
 		}
@@ -692,7 +689,7 @@ obitstream &obitstream::operator<<(bool b) {
 }
 
 bool ibitstream::get() {
-	if(!next_bit_) s_ >> next_byte_;
+	if(!next_bit_) s_.get(next_byte_);
 	bool ret = next_byte_ & 1;
 	next_byte_ >>= 1;
 	if(++next_bit_ >= 8) next_bit_ = 0;
@@ -749,35 +746,4 @@ Chromosome *chromosome_indices(Chromosome *g, int *is, int is_size) {
 void evaluate(Chromosome *g, Boards *bs, float *out) {
 	Tensor out_tensor = g->evaluate(*bs).to(kCPU).contiguous();
 	copy(out_tensor.data_ptr<float>(), out_tensor.data_ptr<float>() + bs->size(), out);
-}
-
-int main() {
-	Genome g;
-	g = g + Chromosome(2, 2, 4, 0.1);
-	g = g + Chromosome(3, 3, 2, 0.1);
-	g = g + Chromosome(3, 3, 2, 0.9);
-	cout << g << endl;
-
-	{
-	ofstream o("/tmp/ms-mendel.bin", ios_base::binary);
-	g.encode(o);
-	o.close();
-	}
-
-	{
-	ifstream i("/tmp/ms-mendel.bin", ios_base::binary);
-	g.decode(i);
-	i.close();
-	cout << g << endl;
-	}
-
-	{
-	Genome g2;
-	ifstream i("/tmp/ms-mendel.bin", ios_base::binary);
-	g2.decode(i);
-	i.close();
-	cout << g2 << endl;
-	}
-
-	return 0;
 }
