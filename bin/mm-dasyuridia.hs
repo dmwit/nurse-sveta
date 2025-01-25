@@ -81,7 +81,7 @@ ppStep = \case
 	Blink -> "(<ab)"
 	Down -> "v"
 	MidStep mdir mrot -> case foldMap ppDirection mdir <> foldMap ppRotation mrot of
-		[] -> "-"
+		[] -> "e"
 		s@[_] -> s
 		s -> "(" ++ s ++ ")"
 
