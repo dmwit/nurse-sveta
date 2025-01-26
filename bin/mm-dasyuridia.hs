@@ -41,7 +41,10 @@ main = do
 			ELookahead lk -> possiblyEmit' s { sLookahead = Just lk }
 			ESpeed spd -> possiblyEmit' s { sSpeed = Just spd }
 			ERelax{} -> pure state0
-			ENextControl fc -> possiblyEmit' s { sControl = Just fc }
+			ENextControl fc -> pure state0
+				{ sControl = Just fc
+				, sPills = sPills s
+				}
 			_ -> s <$ putStrLn ("I " ++ show e)
 		Nothing -> s <$ putStrLn ("E " ++ show ln)
 
@@ -68,9 +71,13 @@ possiblyEmit h g (State (Just b) (Just lk) (Just fc) (Just spd) pu) = do
 	    bestIndices = V.findIndices (V.maximum scores==) scores
 	    ((bestPath, bestPill), _bestB) = pbs V.! V.head bestIndices
 	    request = ppPath fc bestPath
-	hPutStrLn h request
-	printf "R %s: %s\n" (show bestPill) request
-	pure state0 { sPills = pu+1 }
+	case (bestIndices V.!? 0) >>= (pbs V.!?) of
+		Nothing -> pure state0 { sPills = pu }
+		Just ((bestPath, bestPill), _bestB) -> do
+			hPutStrLn h request
+			printf "R %s: %s\n" (show bestPill) request
+			pure state0 { sPills = pu+1 }
+			where request = ppPath fc bestPath
 possiblyEmit _ _ s = pure s
 
 ppPath :: FrameCount -> MidPath -> String
