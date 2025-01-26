@@ -37,14 +37,15 @@ main = do
 	let possiblyEmit' = possiblyEmit i genome
 	fforever state0 \s -> hGetLine o >>= \ln -> case parseEvent ln of
 		Just e -> case e of
-			EBoard b -> possiblyEmit' s { sBoard = Just b }
-			ELookahead lk -> possiblyEmit' s { sLookahead = Just lk }
-			ESpeed spd -> possiblyEmit' s { sSpeed = Just spd }
+			EBoard b -> putStrLn ("B " ++ ln) >> possiblyEmit' s { sBoard = Just b }
+			ELookahead lk -> putStrLn ("M " ++ show (ELookahead lk)) >> possiblyEmit' s { sLookahead = Just lk }
+			ESpeed spd -> putStrLn ("M " ++ show (ESpeed spd)) >> possiblyEmit' s { sSpeed = Just spd }
 			ERelax{} -> pure state0
-			ENextControl fc -> pure state0
+			ENextControl fc -> putStrLn ("M " ++ show (ENextControl fc)) >> pure state0
 				{ sControl = Just fc
 				, sPills = sPills s
 				}
+			ELock fc pill -> s <$ printf "I ELock %d %s\n" fc (ppPill pill)
 			_ -> s <$ putStrLn ("I " ++ show e)
 		Nothing -> s <$ putStrLn ("E " ++ show ln)
 
@@ -74,8 +75,11 @@ possiblyEmit h g (State (Just b) (Just lk) (Just fc) (Just spd) pu) = do
 	case (bestIndices V.!? 0) >>= (pbs V.!?) of
 		Nothing -> pure state0 { sPills = pu }
 		Just ((bestPath, bestPill), _bestB) -> do
+			ppIO b
+			printf "P sensitive %s gravity %d\n" (show (even fc)) (gravity spd pu)
+			putStr $ unlines [printf "P %s: %s" (ppPill pill) (ppPath 0 path) | ((path, pill), _) <- V.toList pbs]
 			hPutStrLn h request
-			printf "R %s: %s\n" (show bestPill) request
+			printf "R %s@%d: %s\n" (ppPill bestPill) (fc + mpPathLength bestPath) request
 			pure state0 { sPills = pu+1 }
 			where request = ppPath fc bestPath
 possiblyEmit _ _ s = pure s
@@ -97,6 +101,26 @@ ppDirection = \case L -> "<"; R -> ">"
 
 ppRotation :: Rotation -> String
 ppRotation = \case Clockwise -> "a"; Counterclockwise -> "b"
+
+ppPill :: Pill -> String
+ppPill p = ppPillContent (content p) ++ "@" ++ ppPosition (bottomLeftPosition p)
+
+ppPillContent :: PillContent -> String
+ppPillContent pc = ppOrientation (orientation pc) ++ ppColor (bottomLeftColor pc) ++ ppColor (otherColor pc)
+
+ppOrientation :: Orientation -> String
+ppOrientation = \case
+	Horizontal -> "↔"
+	Vertical -> "↕"
+
+ppColor :: Color -> String
+ppColor = \case
+	Blue -> "b"
+	Red -> "r"
+	Yellow -> "y"
+
+ppPosition :: Position -> String
+ppPosition pos = printf "(%d,%2d)" (x pos) (y pos)
 
 type FrameCount = Int
 data Event
