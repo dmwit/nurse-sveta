@@ -1,3 +1,11 @@
+-- debug output first letter guide:
+-- (B)oard in machine-readable form
+-- (E)rror
+-- (I)gnored message passed through from dasyuridia
+-- (M)essage acted on and passed through from dasyuridia
+-- (P)athfinding arguments or results
+-- (R)equest sent to dasyuridia
+
 import Control.Applicative
 import Control.Concurrent
 import Control.Monad
@@ -23,6 +31,8 @@ import qualified Data.Map as M
 import qualified Data.Vector as V
 import qualified Data.HashMap.Strict as HM
 
+-- TODO: how come we never place the very first pill right? like not the first
+-- pill every level, just the first pill in the run of the program
 main :: IO ()
 main = do
 	dir <- getXdgDirectory XdgData "ms-mendel"
