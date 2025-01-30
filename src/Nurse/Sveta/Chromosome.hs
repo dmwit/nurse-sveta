@@ -58,7 +58,7 @@ foreign import ccall "chromosome_append" cxx_chromosome_append :: Ptr Chromosome
 foreign import ccall "chromosome_dump" cxx_chromosome_dump :: Ptr Chromosome -> IO ()
 foreign import ccall "chromosome_sketch" cxx_chromosome_sketch :: Ptr Chromosome -> IO ()
 
-foreign import ccall "evaluate" cxx_evaluate :: Ptr Chromosome -> Ptr Boards -> Ptr CFloat -> IO ()
+foreign import ccall "chromosome_evaluate" cxx_chromosome_evaluate :: Ptr Chromosome -> Ptr Boards -> Ptr CFloat -> IO ()
 
 newtype Boards = Boards (ForeignPtr Boards)
 newtype Chromosome = Chromosome (ForeignPtr Chromosome)
@@ -153,7 +153,7 @@ cEvaluateIO (Chromosome g) b bs | invalid = fail "cEvaluate only works on 8x16 b
 				for_ [0..15] \y ->
 					pokeElemOff cxx_base_board (x + 8*y) . fromIntegral . word8FromCell  . unsafeGet b $ Position x y
 			cxx_bs <- cxx_boards_new cxx_base_board cxx_diffs
-			cxx_evaluate cxx_g cxx_bs cxx_out
+			cxx_chromosome_evaluate cxx_g cxx_bs cxx_out
 			cxx_boards_delete cxx_bs
 			V.iforM bs \i _ -> realToFrac <$> peekElemOff cxx_out i
 	where

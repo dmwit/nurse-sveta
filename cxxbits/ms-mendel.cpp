@@ -48,8 +48,8 @@ class Boards {
 		int64_t size() const { return color_.size(INDEX_DIM); }
 
 		// these are padded appropriately for the given convolution size
-		const Tensor &p_color(int64_t conv_width, int64_t conv_height) const;
-		const Tensor &p_shape(int64_t conv_width, int64_t conv_height) const;
+		const Tensor p_color(int64_t conv_width, int64_t conv_height) const;
+		const Tensor p_shape(int64_t conv_width, int64_t conv_height) const;
 
 		string sketch() const;
 		friend ostream &operator<<(ostream &o, const Boards &g);
@@ -155,6 +155,9 @@ class ConvolutionSize {
 		int64_t width() const { return 1 + ((sz_ & kWidthMask) >> kWidthShift); }
 		int64_t height() const { return 1 + ((sz_ & kHeightMask) >> kHeightShift); }
 
+		// become the larger width of the two, and the larger height of the two
+		void join(const ConvolutionSize &other);
+
 		strong_ordering operator<=>(const ConvolutionSize &other) const = default;
 
 		uint8_t encode() const { return sz_; }
@@ -173,25 +176,29 @@ class ConvolutionSize {
 class Genome {
 	public:
 		Genome() {}
-		Genome(const Chromosome &c) : chromosomes_({pair(c, c)}) {}
-		Genome(const Genome &g) : chromosomes_(g.chromosomes_) {}
+		Genome clone() const;
 
 		Genome operator+(const Genome &other) const;
 		Tensor evaluate(const Boards &bs) const;
 
 		vector<ConvolutionSize> sizes() const;
-		Chromosome &get_chromosome(ConvolutionSize sz);
+		Chromosome &get_chromosome(int64_t w, int64_t h);
+		void set_chromosome(const Chromosome &c);
+		Genome &operator+=(const Chromosome &c);
 
 		void encode(ostream &s) const;
 		void decode(istream &s);
 
+		string sketch() const;
 		friend ostream &operator<<(ostream &o, const Genome &g);
 
 	protected:
 		map<ConvolutionSize, Chromosome> chromosomes_;
 };
 
-Boards::Boards(char *base_board, char *diffs) {
+Boards::Boards(char *base_board, char *diffs)
+	: p_conv_width_(0), p_conv_height_(0)
+{
 	int num_boards = 0, i = 0;
 	while(diffs[i] != '\xfe') {
 		if(diffs[i] == '\xff') ++num_boards;
@@ -237,6 +244,9 @@ Boards::Boards(char *base_board, char *diffs) {
 }
 
 void Boards::generate_padding_cache(int64_t w, int64_t h) const {
+	w = std::max(p_conv_width_, w);
+	h = std::max(p_conv_height_, h);
+
 	int64_t x = (w-1)/2, y = (h-1)/2;
 	indexing::Slice all, board_x(x, x+BOARD_WIDTH), board_y(y, y+BOARD_HEIGHT);
 	p_conv_width_ = w;
@@ -249,22 +259,37 @@ void Boards::generate_padding_cache(int64_t w, int64_t h) const {
 	p_shape_.index_put_({all, all, board_x, board_y}, shape_);
 }
 
-const Tensor &Boards::p_color(int64_t w, int64_t h) const {
-	if(!p_color_.defined() || p_conv_width_ != w || p_conv_height_ != h) {
+indexing::Slice recenter(int64_t length, int64_t cache_sz, int64_t req_sz) {
+	int64_t offset = (cache_sz-1)/2 - (req_sz-1)/2;
+	return indexing::Slice(offset, offset+length+req_sz-1);
+}
+
+const Tensor Boards::p_color(int64_t w, int64_t h) const {
+	if(!p_color_.defined() || p_conv_width_ < w || p_conv_height_ < h) {
 		// we sort of assume that if you're asking for p_color(), you're about
 		// to ask for p_shape(), and generate 'em both
 		generate_padding_cache(w, h);
 	}
-	return p_color_;
+	return p_color_.index({
+		indexing::Slice(), // number of boards
+		indexing::Slice(), // color
+		recenter(BOARD_WIDTH, p_conv_width_, w),
+		recenter(BOARD_HEIGHT, p_conv_height_, h),
+	});
 }
 
-const Tensor &Boards::p_shape(int64_t w, int64_t h) const {
-	if(!p_shape_.defined() || p_conv_width_ != w || p_conv_height_ != h) {
+const Tensor Boards::p_shape(int64_t w, int64_t h) const {
+	if(!p_shape_.defined() || p_conv_width_ < w || p_conv_height_ < h) {
 		// we sort of assume that if you're asking for p_shape(), you're about
 		// to ask for p_color(), and generate 'em both
 		generate_padding_cache(w, h);
 	}
-	return p_shape_;
+	return p_shape_.index({
+		indexing::Slice(), // number of boards
+		indexing::Slice(), // shape
+		recenter(BOARD_WIDTH, p_conv_width_, w),
+		recenter(BOARD_HEIGHT, p_conv_height_, h),
+	});
 }
 
 string Boards::sketch() const {
@@ -581,26 +606,55 @@ ConvolutionSize::ConvolutionSize(int64_t w, int64_t h) {
 	sz_ = (w << kWidthShift) | (h << kHeightShift);
 }
 
+void ConvolutionSize::join(const ConvolutionSize &other) {
+	sz_ = std::max(sz_ & kWidthMask, other.sz_ & kWidthMask)
+		| std::max(sz_ & kHeightMask, other.sz_ & kHeightMask)
+		;
+}
+
+ConvolutionSize join(const std::vector<ConvolutionSize> &sizes) {
+	ConvolutionSize ret = ConvolutionSize(0);
+	for(const auto &size : sizes) ret.join(size);
+	return ret;
+}
+
 ostream &operator<<(ostream &o, const ConvolutionSize &sz) {
 	return o << sz.width() << "x" << sz.height();
 }
 
+Genome Genome::clone() const {
+	Genome ret;
+	map<ConvolutionSize, Chromosome>::const_iterator this_it = chromosomes_.begin();
+	map<ConvolutionSize, Chromosome>::iterator ret_it = ret.chromosomes_.begin();
+	while(this_it != chromosomes_.end()) {
+		if(this_it->second.size())
+			ret_it = ret.chromosomes_.insert(ret_it, pair(this_it->first, this_it->second.clone()));
+		++this_it;
+	}
+	return ret;
+}
+
 Genome Genome::operator+(const Genome &other) const {
-	Genome ret(other);
+	Genome ret(other.clone());
 	map<ConvolutionSize, Chromosome>::const_iterator src = chromosomes_.begin();
 	map<ConvolutionSize, Chromosome>::iterator dst = ret.chromosomes_.begin();
-
-	while(src != chromosomes_.end() && dst != ret.chromosomes_.end()) {
-		strong_ordering cmp = src->first <=> dst->first;
-		if(cmp < 0) ret.chromosomes_.insert(dst, *src++);
-		else if (cmp > 0) ++dst;
-		else dst++->second += src++->second;
-	}
-
+	while(src != chromosomes_.end())
+		if(src->second.size()) {
+			dst = ret.chromosomes_.insert(dst, pair(src->first, src->second.clone()));
+			++src;
+		}
 	return ret;
 }
 
 Tensor Genome::evaluate(const Boards &bs) const {
+	ConvolutionSize max_size = join(sizes());
+	bs.p_color(max_size.width(), max_size.height());
+	// Semantically, we should make a second call here:
+	//     bs.p_shape(max_size.width(), max_size.height());
+	// But since we're already relying on internal implementation details by
+	// pre-requesting/generating the padding caches, we go ahead and rely on
+	// another internal detail: either call generates the cache for the other.
+
 	Tensor out = torch::zeros({bs.size()}, GPU_FLOAT);
 	for(auto [_, c] : chromosomes_) out += c.evaluate(bs);
 	return out;
@@ -614,10 +668,21 @@ vector<ConvolutionSize> Genome::sizes() const {
 	return out;
 }
 
-Chromosome &Genome::get_chromosome(ConvolutionSize sz) {
-	auto it = chromosomes_.find(sz);
-	assert(it != chromosomes_.end());
-	return it->second;
+Chromosome &Genome::get_chromosome(int64_t w, int64_t h) {
+	return chromosomes_.try_emplace(ConvolutionSize(w, h), w, h).first->second;
+}
+
+void Genome::set_chromosome(const Chromosome &c) {
+	chromosomes_.erase(c);
+	if(c.size()) chromosomes_.emplace(c, c.clone());
+}
+
+Genome &Genome::operator+=(const Chromosome &c) {
+	map<ConvolutionSize, Chromosome>::iterator it = chromosomes_.find(c);
+	if(it == chromosomes_.end())
+		if(c.size()) chromosomes_.emplace(c, c.clone());
+	else it->second += c;
+	return *this;
 }
 
 void Genome::encode(ostream &s) const {
@@ -667,10 +732,25 @@ void Genome::decode(istream &s) {
 	assert(s.good());
 }
 
+string Genome::sketch() const {
+	stringstream o;
+	string prefix;
+
+	o << "{ ";
+	for(auto [sz, c] : chromosomes_)
+		if(c.size()) {
+			o << prefix << sz << ": " << c.sketch() << endl;
+			prefix = ", ";
+		}
+	o << "}";
+
+	return o.str();
+}
+
 ostream &operator<<(ostream &o, const Genome &g) {
 	o << "Genome {" << endl;
 	for(const auto &[k, v] : g.chromosomes_)
-		o << "\t" << k << ": " << v << endl;
+		if(v.size()) o << "\t" << k << ": " << v << endl;
 	return o << "}" << endl;
 }
 
@@ -725,8 +805,24 @@ extern "C" {
 
 	void chromosome_dump(Chromosome *g) { cout << *g << endl; }
 	void chromosome_sketch(Chromosome *g) { cout << g->sketch() << endl; }
+	void chromosome_evaluate(Chromosome *g, Boards *bs, float *out);
 
-	void evaluate(Chromosome *g, Boards *bs, float *out);
+	Genome *genome_new() { return new Genome(); }
+	Genome *genome_clone(Genome *g) { return new Genome(g->clone()); }
+	Genome *genome_from_chromosomes(Chromosome **cs, int size);
+	void genome_delete(Genome *g) { delete g; }
+
+	int genome_size(Genome *g) { return g->sizes().size(); }
+	int genome_conv_width(Genome *g, int i) { return g->sizes()[i].width(); }
+	int genome_conv_height(Genome *g, int i) { return g->sizes()[i].height(); }
+
+	Chromosome *genome_get_chromosome(Genome *g, int w, int h) { return &g->get_chromosome(w, h); }
+	void genome_set_chromosome(Genome *g, Chromosome *c) { g->set_chromosome(*c); }
+
+	void genome_evaluate(Genome *g, Boards *bs, float *out);
+
+	void genome_dump(Genome *g) { cout << *g << endl; }
+	void genome_sketch(Genome *g) { cout << g->sketch() << endl; }
 }
 
 char *chromosome_encode_patterns(Chromosome *g, int *o_length) {
@@ -743,7 +839,18 @@ Chromosome *chromosome_indices(Chromosome *g, int *is, int is_size) {
 	return new Chromosome(g->indices(is_vec));
 }
 
-void evaluate(Chromosome *g, Boards *bs, float *out) {
+void chromosome_evaluate(Chromosome *g, Boards *bs, float *out) {
+	Tensor out_tensor = g->evaluate(*bs).to(kCPU).contiguous();
+	copy(out_tensor.data_ptr<float>(), out_tensor.data_ptr<float>() + bs->size(), out);
+}
+
+Genome *genome_from_chromosomes(Chromosome **cs, int size) {
+	Genome *g = new Genome();
+	for(int i = 0; i < size; ++i) *g += *cs[i];
+	return g;
+}
+
+void genome_evaluate(Genome *g, Boards *bs, float *out) {
 	Tensor out_tensor = g->evaluate(*bs).to(kCPU).contiguous();
 	copy(out_tensor.data_ptr<float>(), out_tensor.data_ptr<float>() + bs->size(), out);
 }
