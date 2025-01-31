@@ -830,7 +830,6 @@ extern "C" {
 
 	Genome *genome_new() { return new Genome(); }
 	Genome *genome_clone(Genome *g) { return new Genome(g->clone()); }
-	Genome *genome_from_chromosomes(Chromosome **cs, int size);
 	void genome_delete(Genome *g) { delete g; }
 
 	int genome_size(Genome *g) { return g->sizes().size(); }
@@ -867,12 +866,6 @@ Chromosome *chromosome_indices(Chromosome *g, int *is, int is_size) {
 void chromosome_evaluate(Chromosome *g, Boards *bs, float *out) {
 	Tensor out_tensor = g->evaluate(*bs).to(kCPU).contiguous();
 	copy(out_tensor.data_ptr<float>(), out_tensor.data_ptr<float>() + bs->size(), out);
-}
-
-Genome *genome_from_chromosomes(Chromosome **cs, int size) {
-	Genome *g = new Genome();
-	for(int i = 0; i < size; ++i) *g += *cs[i];
-	return g;
 }
 
 void genome_evaluate(Genome *g, Boards *bs, float *out) {

@@ -1,4 +1,10 @@
 module Nurse.Sveta.Genome (
+	Genome, newGenome, gClone,
+	gSize, gConvWidth, gConvHeight,
+	gGet, gSet,
+	gEvaluate,
+	gDump, gSketch,
+	pSave, pLoad,
 	Chromosome, newChromosome, cClone,
 	cSize, cConvWidth, cConvHeight,
 	cEvaluate,
@@ -60,8 +66,33 @@ foreign import ccall "chromosome_sketch" cxx_chromosome_sketch :: Ptr Chromosome
 
 foreign import ccall "chromosome_evaluate" cxx_chromosome_evaluate :: Ptr Chromosome -> Ptr Boards -> Ptr CFloat -> IO ()
 
+foreign import ccall "genome_new" cxx_genome_new :: IO (Ptr Genome)
+foreign import ccall "genome_clone" cxx_genome_clone :: Ptr Genome -> IO (Ptr Genome)
+foreign import ccall "&genome_delete" cxx_genome_delete :: FinalizerPtr Genome
+
+foreign import ccall "genome_size" cxx_genome_size :: Ptr Genome -> IO CInt
+foreign import ccall "genome_conv_width" cxx_genome_conv_width :: Ptr Genome -> CInt -> IO CInt
+foreign import ccall "genome_conv_height" cxx_genome_conv_height :: Ptr Genome -> CInt -> IO CInt
+
+foreign import ccall "genome_get_chromosome" cxx_genome_get_chromosome :: Ptr Genome -> CInt -> CInt -> IO (Ptr Chromosome)
+foreign import ccall "genome_set_chromosome" cxx_genome_set_chromosome :: Ptr Genome -> Ptr Chromosome -> IO ()
+
+foreign import ccall "genome_evaluate" cxx_genome_evaluate :: Ptr Genome -> Ptr Boards -> Ptr CFloat -> IO ()
+
+foreign import ccall "genome_dump" cxx_genome_dump :: Ptr Genome -> IO ()
+foreign import ccall "genome_sketch" cxx_genome_sketch :: Ptr Genome -> IO ()
+
+foreign import ccall "population_save" cxx_population_save :: Ptr CChar -> Ptr (Ptr Genome) -> CInt -> IO ()
+foreign import ccall "population_load" cxx_population_load :: Ptr CChar -> Ptr (Ptr (Ptr Genome)) -> Ptr CInt -> IO ()
+foreign import ccall "population_delete" cxx_population_delete :: Ptr (Ptr Genome) -> IO ()
+
 newtype Boards = Boards (ForeignPtr Boards)
 newtype Chromosome = Chromosome (ForeignPtr Chromosome)
+newtype Genome = Genome (ForeignPtr Genome)
+data OChromosome = OChromosome
+	{ ocOwner :: ForeignPtr Genome
+	, ocOwned :: ForeignPtr Chromosome
+	}
 
 newChromosome :: Int -> Int -> Int -> Float -> IO Chromosome
 newChromosome w h n p = gcChromosome (cxx_chromosome_new (fromIntegral w) (fromIntegral h) (fromIntegral n) (realToFrac p))
@@ -143,19 +174,24 @@ cEvaluate :: Chromosome -> Board -> Vector Board -> Vector Float
 cEvaluate g b bs = unsafePerformIO $ cEvaluateIO g b bs
 
 cEvaluateIO :: Chromosome -> Board -> Vector Board -> IO (Vector Float)
-cEvaluateIO (Chromosome g) b bs | invalid = fail "cEvaluate only works on 8x16 boards (because the underlying C++ function does)"
+cEvaluateIO (Chromosome g) b bs =
+	withBoards b bs \cxx_bs ->
+	withForeignPtr g \cxx_g ->
+	allocaArray (V.length bs) \cxx_out -> do
+		cxx_chromosome_evaluate cxx_g cxx_bs cxx_out
+		V.iforM bs \i _ -> realToFrac <$> peekElemOff cxx_out i
+
+withBoards :: Board -> Vector Board -> (Ptr Boards -> IO a) -> IO a
+withBoards b bs f | invalid = fail "cEvaluate only works on 8x16 boards (because the underlying C++ function does)"
 	| otherwise =
-		withForeignPtr g \cxx_g ->
-		allocaArray 128 \cxx_base_board ->
-		allocaArray (V.length bs) \cxx_out ->
-		BS.useAsCStringLen diffsBS \(cxx_diffs, _len) -> do
-			for_ [0..7] \x ->
-				for_ [0..15] \y ->
-					pokeElemOff cxx_base_board (x + 8*y) . fromIntegral . word8FromCell  . unsafeGet b $ Position x y
-			cxx_bs <- cxx_boards_new cxx_base_board cxx_diffs
-			cxx_chromosome_evaluate cxx_g cxx_bs cxx_out
-			cxx_boards_delete cxx_bs
-			V.iforM bs \i _ -> realToFrac <$> peekElemOff cxx_out i
+	allocaArray 128 \cxx_b ->
+	BS.useAsCString diffsBS \cxx_diffs -> do
+		for_ [0..7] \x ->
+			for_ [0..15] \y ->
+				pokeElemOff cxx_b (x + 8*y) . fromIntegral . word8FromCell  . unsafeGet b $ Position x y
+		cxx_bs <- cxx_boards_new cxx_b cxx_diffs
+		a <- f cxx_bs
+		a <$ cxx_boards_delete cxx_bs
 	where
 	invalidBoard b = width b /= 8 || height b /= 16
 	invalid = invalidBoard b || any invalidBoard bs
@@ -174,6 +210,70 @@ cEvaluateIO (Chromosome g) b bs | invalid = fail "cEvaluate only works on 8x16 b
 		Occupied col sh -> word8FromColor col .|. word8FromShape sh
 	word8FromColor = colorIndex
 	word8FromShape = (`shiftL` 2) . shapeIndex
+
+newGenome :: IO Genome
+newGenome = gcGenome cxx_genome_new
+
+gcGenome :: IO (Ptr Genome) -> IO Genome
+gcGenome act = Genome <$> (act >>= newForeignPtr cxx_genome_delete)
+
+gClone :: Genome -> IO Genome
+gClone (Genome g) = withForeignPtr g (gcGenome . cxx_genome_clone)
+
+gSize :: Genome -> IO Int
+gSize (Genome g) = fromIntegral <$> withForeignPtr g cxx_genome_size
+
+gConvWidth :: Genome -> Int -> IO Int
+gConvWidth (Genome g) i = fromIntegral <$> withForeignPtr g (flip cxx_genome_conv_width (fromIntegral i))
+
+gConvHeight :: Genome -> Int -> IO Int
+gConvHeight (Genome g) i = fromIntegral <$> withForeignPtr g (flip cxx_genome_conv_height (fromIntegral i))
+
+gGet :: Genome -> Int -> Int -> IO OChromosome
+gGet (Genome g) w h = withForeignPtr g \cxx_g -> do
+	c <- cxx_genome_get_chromosome cxx_g (fromIntegral w) (fromIntegral h)
+	OChromosome g <$> newForeignPtr_ c
+
+gSet :: Genome -> Chromosome -> IO ()
+gSet (Genome g) (Chromosome c) = withForeignPtr g $ withForeignPtr c . cxx_genome_set_chromosome
+
+gEvaluate :: Genome -> Board -> Vector Board -> IO (Vector Float)
+gEvaluate (Genome g) b bs =
+	withBoards b bs \cxx_bs ->
+	withForeignPtr g \cxx_g ->
+	allocaArray (V.length bs) \cxx_out -> do
+		cxx_genome_evaluate cxx_g cxx_bs cxx_out
+		V.iforM bs \i _ -> realToFrac <$> peekElemOff cxx_out i
+
+gDump :: Genome -> IO ()
+gDump (Genome g) = withForeignPtr g cxx_genome_dump
+
+gSketch :: Genome -> IO ()
+gSketch (Genome g) = withForeignPtr g cxx_genome_sketch
+
+withOChromosome :: OChromosome -> (Chromosome -> IO a) -> IO a
+withOChromosome oc f = withForeignPtr (ocOwner oc) \_ -> f (Chromosome (ocOwned oc))
+
+pSave :: FilePath -> Vector Genome -> IO ()
+pSave fp gs =
+	withCString fp \cxx_fp ->
+	allocaArray (V.length gs) \cxx_gs ->
+	let go (-1) = cxx_population_save cxx_fp cxx_gs (fromIntegral (V.length gs))
+	    go i = let Genome g = gs V.! i in withForeignPtr g \cxx_g -> do
+	    	pokeElemOff cxx_gs i cxx_g
+	    	go (i-1)
+	in go (V.length gs - 1)
+
+pLoad :: FilePath -> IO (Vector Genome)
+pLoad fp =
+	withCString fp \cxx_fp ->
+	alloca \cxx_gs_ptr ->
+	alloca \cxx_n_ptr -> do
+	cxx_population_load cxx_fp cxx_gs_ptr cxx_n_ptr
+	n <- fromIntegral <$> peek cxx_n_ptr
+	cxx_gs <- peek cxx_gs_ptr
+	gs <- V.generateM n (gcGenome . peekElemOff cxx_gs)
+	gs <$ cxx_population_delete cxx_gs
 
 data WithSentinels a = NonSentinel a | EmptySentinel | OutOfBoundsSentinel deriving (Eq, Ord, Read, Show)
 
