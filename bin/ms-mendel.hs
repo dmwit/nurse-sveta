@@ -18,8 +18,8 @@ import Dr.Mario.Model
 import Dr.Mario.Pathfinding
 import GHC.Generics
 import GI.Gtk
-import Nurse.Sveta.Chromosome
 import Nurse.Sveta.Files
+import Nurse.Sveta.Genome
 import Nurse.Sveta.STM
 import Nurse.Sveta.Tomcats
 import Nurse.Sveta.Util

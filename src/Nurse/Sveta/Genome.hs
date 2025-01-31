@@ -1,4 +1,4 @@
-module Nurse.Sveta.Chromosome (
+module Nurse.Sveta.Genome (
 	Chromosome, newChromosome, cClone,
 	cSize, cConvWidth, cConvHeight,
 	cEvaluate,

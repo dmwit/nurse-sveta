@@ -18,7 +18,7 @@ import Data.Vector (Vector)
 import Dr.Mario.Model
 import Dr.Mario.Pathfinding
 import Nurse.Sveta.Files
-import Nurse.Sveta.Chromosome
+import Nurse.Sveta.Genome
 import System.Environment
 import System.Process
 import System.IO
