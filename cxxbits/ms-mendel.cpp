@@ -1,5 +1,6 @@
 #include <compare>
 #include <iostream>
+#include <fstream>
 
 #include "constants.hpp"
 #include "debugging.hpp"
@@ -187,7 +188,7 @@ class Genome {
 		Genome &operator+=(const Chromosome &c);
 
 		void encode(ostream &s) const;
-		void decode(istream &s);
+		static Genome decode(istream &s);
 
 		string sketch() const;
 		friend ostream &operator<<(ostream &o, const Genome &g);
@@ -705,9 +706,9 @@ void Genome::encode(ostream &s) const {
 	}
 }
 
-void Genome::decode(istream &s) {
-	chromosomes_.clear();
-	auto it = chromosomes_.begin();
+Genome Genome::decode(istream &s) {
+	Genome ret;
+	auto it = ret.chromosomes_.begin();
 	char sz_;
 
 	while(s.get(sz_) && ConvolutionSize::valid(sz_)) {
@@ -721,15 +722,17 @@ void Genome::decode(istream &s) {
 		assert(n);
 		assert(shift <= 35);
 		ConvolutionSize sz(sz_);
-		it = chromosomes_.emplace_hint(it, sz, Chromosome(sz.width(), sz.height(), n, 0));
+		it = ret.chromosomes_.emplace_hint(it, sz, Chromosome(sz.width(), sz.height(), n, 0));
 		it++->second.decode_scores(s);
 	}
 	assert(s.good());
 
 	ibitstream bits(s);
-	for(auto &[sz, c] : chromosomes_)
+	for(auto &[sz, c] : ret.chromosomes_)
 		c.decode_patterns(bits);
 	assert(s.good());
+
+	return ret;
 }
 
 string Genome::sketch() const {
@@ -752,6 +755,24 @@ ostream &operator<<(ostream &o, const Genome &g) {
 	for(const auto &[k, v] : g.chromosomes_)
 		if(v.size()) o << "\t" << k << ": " << v << endl;
 	return o << "}" << endl;
+}
+
+void save_population(ostream &file, const vector<Genome> &pop) {
+	assert(pop.size() < 0x10000);
+	file << uint8_t(pop.size() >> 8) << uint8_t(pop.size());
+	for(const Genome &g : pop) g.encode(file);
+}
+
+vector<Genome> load_population(istream &file) {
+	char byte;
+	int sz;
+	file.get(byte); sz = byte;
+	file.get(byte); sz = (sz << 8) | byte;
+
+	vector<Genome> ret; ret.reserve(sz);
+	for(int i = 0; i < sz; ++i) ret.push_back(Genome::decode(file));
+
+	return ret;
 }
 
 obitstream::~obitstream() {
@@ -823,6 +844,10 @@ extern "C" {
 
 	void genome_dump(Genome *g) { cout << *g << endl; }
 	void genome_sketch(Genome *g) { cout << g->sketch() << endl; }
+
+	void population_save(char *path, Genome **pop, int n);
+	void population_load(char *path, Genome ***pop, int *n);
+	void population_delete(Genome **pop) { delete[](pop); }
 }
 
 char *chromosome_encode_patterns(Chromosome *g, int *o_length) {
@@ -853,4 +878,19 @@ Genome *genome_from_chromosomes(Chromosome **cs, int size) {
 void genome_evaluate(Genome *g, Boards *bs, float *out) {
 	Tensor out_tensor = g->evaluate(*bs).to(kCPU).contiguous();
 	copy(out_tensor.data_ptr<float>(), out_tensor.data_ptr<float>() + bs->size(), out);
+}
+
+void population_save(char *path, Genome **pop, int n) {
+	ofstream o(path, ofstream::out | ofstream::binary);
+	vector<Genome> pop_vec; pop_vec.reserve(n);
+	for(int i = 0; i < n; ++i) pop_vec.push_back(*pop[i]);
+	save_population(o, pop_vec);
+}
+
+void population_load(char *path, Genome ***pop, int *n) {
+	ifstream i(path, ifstream::in | ifstream::binary);
+	vector<Genome> pop_vec = load_population(i);
+	*n = pop_vec.size();
+	*pop = new Genome *[pop_vec.size()];
+	for(int i = 0; i < pop_vec.size(); ++i) (*pop)[i] = new Genome(pop_vec[i]);
 }
