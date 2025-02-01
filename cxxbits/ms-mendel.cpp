@@ -110,6 +110,9 @@ class Chromosome {
 		void set_pattern_score(int64_t pattern, float v);
 		void decode_patterns(string ps);
 
+		Tensor score_scaling() const { return pattern_score_.abs().max(); }
+		void scale_scores(Tensor &scale);
+
 		const Tensor &p_color_pattern() const;
 		const Tensor &p_shape_pattern() const;
 		const Tensor &p_pattern_score() const;
@@ -127,7 +130,6 @@ class Chromosome {
 		friend ostream &operator<<(ostream &o, const Chromosome &g);
 
 	protected:
-		void normalize_scores();
 		static void assert_compatible(const Tensor &t, const TensorOptions &o);
 
 		// patterns have a 1 where that color/shape is forbidden and a 0 where
@@ -176,15 +178,18 @@ class ConvolutionSize {
 
 class Genome {
 	public:
-		Genome() {}
+		Genome(bool normalizing = true) : normalizing_(normalizing) {}
 		Genome clone() const;
 
-		Genome operator+(const Genome &other) const;
 		Tensor evaluate(const Boards &bs) const;
 
+		int size() const { return chromosomes_.size(); }
 		vector<ConvolutionSize> sizes() const;
 		Chromosome get_chromosome(int64_t w, int64_t h) const;
 		void set_chromosome(const Chromosome &c);
+
+		void disable_normalization() { normalizing_ = false; }
+		void enable_normalization() { normalizing_ = true; normalize_scores(); }
 
 		void encode(ostream &s) const;
 		static Genome decode(istream &s);
@@ -193,8 +198,11 @@ class Genome {
 		friend ostream &operator<<(ostream &o, const Genome &g);
 
 	protected:
+		void normalize_scores();
+
 		// invariant: no empty chromosomes (i.e. with size 0)
 		map<ConvolutionSize, Chromosome> chromosomes_;
+		bool normalizing_;
 };
 
 Boards::Boards(char *base_board, char *diffs)
@@ -317,7 +325,6 @@ Chromosome::Chromosome(int64_t w, int64_t h, int64_t n, float p) {
 	color_pattern_ = (torch::rand({n, COLORS + SENTINELS, w, h}, GPU_FLOAT) < p).to(GPU_BOOL_REP);
 	shape_pattern_ = (torch::rand({n, SHAPES + SENTINELS, w, h}, GPU_FLOAT) < p).to(GPU_BOOL_REP);
 	pattern_score_ = torch::randn({n}, GPU_FLOAT);
-	normalize_scores();
 
 	assert(!color_pattern_.requires_grad());
 	assert(!shape_pattern_.requires_grad());
@@ -342,8 +349,6 @@ Chromosome::Chromosome(const Tensor &co, const Tensor &sh, const Tensor &sc)
 	assert(co.size(CONV_WIDTH_DIM) == sh.size(CONV_WIDTH_DIM));
 	assert(co.size(CONV_HEIGHT_DIM) == sh.size(CONV_HEIGHT_DIM));
 
-	normalize_scores();
-
 	assert(!color_pattern_.requires_grad());
 	assert(!shape_pattern_.requires_grad());
 	assert(!pattern_score_.requires_grad());
@@ -354,7 +359,7 @@ Chromosome Chromosome::clone() const {
 	// we always set these fields back to Tensor() before modifying them, so no need to clone
 	result.p_color_pattern_ = p_color_pattern_;
 	result.p_shape_pattern_ = p_shape_pattern_;
-	result.p_pattern_score_ = p_pattern_score_;
+	// can't share p_pattern_score_, it could get scaled
 	return result;
 }
 
@@ -412,7 +417,7 @@ void Chromosome::set_shape_pattern(int64_t pattern, int64_t shape, int64_t w, in
 
 void Chromosome::set_pattern_score(int64_t pattern, float v) {
 	pattern_score_[pattern] = v;
-	normalize_scores(); // this clears p_pattern_score_
+	p_pattern_score_ = Tensor();
 }
 
 void Chromosome::decode_patterns(string ps) {
@@ -538,9 +543,8 @@ ostream &operator<<(ostream &o, const Chromosome &g) {
 	return o;
 }
 
-void Chromosome::normalize_scores() {
-	if(size() <= 0) return;
-	pattern_score_ /= pattern_score_.abs().max();
+void Chromosome::scale_scores(Tensor &scale) {
+	pattern_score_ /= scale;
 	p_pattern_score_ = Tensor();
 }
 
@@ -624,7 +628,7 @@ ostream &operator<<(ostream &o, const ConvolutionSize &sz) {
 }
 
 Genome Genome::clone() const {
-	Genome ret;
+	Genome ret(normalizing_);
 	map<ConvolutionSize, Chromosome>::const_iterator this_it = chromosomes_.begin();
 	map<ConvolutionSize, Chromosome>::iterator ret_it = ret.chromosomes_.begin();
 	while(this_it != chromosomes_.end()) {
@@ -634,18 +638,8 @@ Genome Genome::clone() const {
 	return ret;
 }
 
-Genome Genome::operator+(const Genome &other) const {
-	Genome ret(other.clone());
-	map<ConvolutionSize, Chromosome>::const_iterator src = chromosomes_.begin();
-	map<ConvolutionSize, Chromosome>::iterator dst = ret.chromosomes_.begin();
-	while(src != chromosomes_.end()) {
-		dst = ret.chromosomes_.insert(dst, pair(src->first, src->second.clone()));
-		++src;
-	}
-	return ret;
-}
-
 Tensor Genome::evaluate(const Boards &bs) const {
+	assert(normalizing_);
 	ConvolutionSize max_size = join(sizes());
 	bs.p_color(max_size.width(), max_size.height());
 	// Semantically, we should make a second call here:
@@ -674,9 +668,11 @@ Chromosome Genome::get_chromosome(int64_t w, int64_t h) const {
 void Genome::set_chromosome(const Chromosome &c) {
 	chromosomes_.erase(c);
 	if(c.size()) chromosomes_.emplace(c, c.clone());
+	normalize_scores();
 }
 
 void Genome::encode(ostream &s) const {
+	assert(normalizing_);
 	for(const auto &[sz, c] : chromosomes_) {
 		int64_t n = c.size();
 		s << sz.encode();
@@ -717,7 +713,22 @@ Genome Genome::decode(istream &s) {
 	for(auto &[sz, c] : ret.chromosomes_) c.decode_patterns(bits);
 	assert(s.good());
 
+	ret.normalize_scores();
 	return ret;
+}
+
+void Genome::normalize_scores() {
+	if(normalizing_ && size()) {
+		Tensor scale = torch::zeros({}, GPU_FLOAT);
+		for(auto [_, c] : chromosomes_) scale = scale.max(c.score_scaling());
+		if(scale.item<float>() > 0) {
+			for(auto [_, c] : chromosomes_) c.scale_scores(scale);
+		} else {
+			cerr << "Max chromosome scaling factor doesn't seem right: " << scale << endl;
+			cerr << *this << endl;
+			throw 0;
+		}
+	}
 }
 
 string Genome::sketch() const {
@@ -729,13 +740,13 @@ string Genome::sketch() const {
 		o << prefix << sz << ": " << c.sketch() << endl;
 		prefix = ", ";
 	}
-	o << "}";
+	o << "}" << (normalizing_?"":"!");
 
 	return o.str();
 }
 
 ostream &operator<<(ostream &o, const Genome &g) {
-	o << "Genome {" << endl;
+	o << "Genome { " << (g.normalizing_?"":"not ") << "normalizing" << endl;
 	for(const auto &[k, v] : g.chromosomes_)
 		o << "\t" << k << ": " << v << endl;
 	return o << "}" << endl;
@@ -816,12 +827,15 @@ extern "C" {
 	Genome *genome_clone(Genome *g) { return new Genome(g->clone()); }
 	void genome_delete(Genome *g) { delete g; }
 
-	int genome_size(Genome *g) { return g->sizes().size(); }
+	int genome_size(Genome *g) { return g->size(); }
 	int genome_conv_width(Genome *g, int i) { return g->sizes()[i].width(); }
 	int genome_conv_height(Genome *g, int i) { return g->sizes()[i].height(); }
 
 	Chromosome *genome_get_chromosome(Genome *g, int w, int h) { return new Chromosome(g->get_chromosome(w, h).clone()); }
 	void genome_set_chromosome(Genome *g, Chromosome *c) { g->set_chromosome(*c); }
+
+	void genome_enable_normalization(Genome *g) { g->enable_normalization(); }
+	void genome_disable_normalization(Genome *g) { g->disable_normalization(); }
 
 	void genome_evaluate(Genome *g, Boards *bs, float *out);
 

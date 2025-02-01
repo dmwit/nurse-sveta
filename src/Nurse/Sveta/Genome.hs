@@ -1,7 +1,7 @@
 module Nurse.Sveta.Genome (
 	Genome, newGenome, gClone,
 	gSize, gConvWidth, gConvHeight,
-	gGet, gSet,
+	gGet, gSet, gWithoutNormalization,
 	gEvaluate,
 	gDump, gSketch,
 	pSave, pLoad,
@@ -76,6 +76,9 @@ foreign import ccall "genome_conv_height" cxx_genome_conv_height :: Ptr Genome -
 
 foreign import ccall "genome_get_chromosome" cxx_genome_get_chromosome :: Ptr Genome -> CInt -> CInt -> IO (Ptr Chromosome)
 foreign import ccall "genome_set_chromosome" cxx_genome_set_chromosome :: Ptr Genome -> Ptr Chromosome -> IO ()
+
+foreign import ccall "genome_disable_normalization" cxx_genome_disable_normalization :: Ptr Genome -> IO ()
+foreign import ccall "genome_enable_normalization" cxx_genome_enable_normalization :: Ptr Genome -> IO ()
 
 foreign import ccall "genome_evaluate" cxx_genome_evaluate :: Ptr Genome -> Ptr Boards -> Ptr CFloat -> IO ()
 
@@ -228,6 +231,12 @@ gGet (Genome g) w h = withForeignPtr g \cxx_g ->
 
 gSet :: Genome -> Chromosome -> IO ()
 gSet (Genome g) (Chromosome c) = withForeignPtr g $ withForeignPtr c . cxx_genome_set_chromosome
+
+gWithoutNormalization :: Genome -> IO a -> IO a
+gWithoutNormalization (Genome g) act = withForeignPtr g \cxx_g -> do
+	cxx_genome_disable_normalization cxx_g
+	a <- act
+	a <$ cxx_genome_enable_normalization cxx_g
 
 gEvaluate :: Genome -> Board -> Vector Board -> IO (Vector Float)
 gEvaluate (Genome g) b bs =
