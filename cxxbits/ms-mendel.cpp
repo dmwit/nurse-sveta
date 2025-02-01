@@ -193,6 +193,7 @@ class Genome {
 		friend ostream &operator<<(ostream &o, const Genome &g);
 
 	protected:
+		// invariant: no empty chromosomes (i.e. with size 0)
 		map<ConvolutionSize, Chromosome> chromosomes_;
 };
 
@@ -627,8 +628,7 @@ Genome Genome::clone() const {
 	map<ConvolutionSize, Chromosome>::const_iterator this_it = chromosomes_.begin();
 	map<ConvolutionSize, Chromosome>::iterator ret_it = ret.chromosomes_.begin();
 	while(this_it != chromosomes_.end()) {
-		if(this_it->second.size())
-			ret_it = ret.chromosomes_.insert(ret_it, pair(this_it->first, this_it->second.clone()));
+		ret_it = ret.chromosomes_.insert(ret_it, pair(this_it->first, this_it->second.clone()));
 		++this_it;
 	}
 	return ret;
@@ -638,11 +638,10 @@ Genome Genome::operator+(const Genome &other) const {
 	Genome ret(other.clone());
 	map<ConvolutionSize, Chromosome>::const_iterator src = chromosomes_.begin();
 	map<ConvolutionSize, Chromosome>::iterator dst = ret.chromosomes_.begin();
-	while(src != chromosomes_.end())
-		if(src->second.size()) {
-			dst = ret.chromosomes_.insert(dst, pair(src->first, src->second.clone()));
-			++src;
-		}
+	while(src != chromosomes_.end()) {
+		dst = ret.chromosomes_.insert(dst, pair(src->first, src->second.clone()));
+		++src;
+	}
 	return ret;
 }
 
@@ -662,9 +661,7 @@ Tensor Genome::evaluate(const Boards &bs) const {
 
 vector<ConvolutionSize> Genome::sizes() const {
 	vector<ConvolutionSize> out; out.reserve(chromosomes_.size());
-	for(const auto &[sz, c] : chromosomes_)
-		if(c.size())
-			out.push_back(sz);
+	for(const auto &[sz, c] : chromosomes_) out.push_back(sz);
 	return out;
 }
 
@@ -682,7 +679,6 @@ void Genome::set_chromosome(const Chromosome &c) {
 void Genome::encode(ostream &s) const {
 	for(const auto &[sz, c] : chromosomes_) {
 		int64_t n = c.size();
-		if(!n) continue;
 		s << sz.encode();
 		while(n > 0x7f) {
 			s << uint8_t(0x80 | n);
@@ -693,10 +689,7 @@ void Genome::encode(ostream &s) const {
 	}
 	s << ConvolutionSize::kInvalidEncoding;
 	obitstream bits(s);
-	for(const auto &[sz, c] : chromosomes_) {
-		if(!c.size()) continue;
-		c.encode_patterns(bits);
-	}
+	for(const auto &[sz, c] : chromosomes_) c.encode_patterns(bits);
 }
 
 Genome Genome::decode(istream &s) {
@@ -721,8 +714,7 @@ Genome Genome::decode(istream &s) {
 	assert(s.good());
 
 	ibitstream bits(s);
-	for(auto &[sz, c] : ret.chromosomes_)
-		c.decode_patterns(bits);
+	for(auto &[sz, c] : ret.chromosomes_) c.decode_patterns(bits);
 	assert(s.good());
 
 	return ret;
@@ -733,11 +725,10 @@ string Genome::sketch() const {
 	string prefix;
 
 	o << "{ ";
-	for(auto [sz, c] : chromosomes_)
-		if(c.size()) {
-			o << prefix << sz << ": " << c.sketch() << endl;
-			prefix = ", ";
-		}
+	for(auto [sz, c] : chromosomes_) {
+		o << prefix << sz << ": " << c.sketch() << endl;
+		prefix = ", ";
+	}
 	o << "}";
 
 	return o.str();
@@ -746,7 +737,7 @@ string Genome::sketch() const {
 ostream &operator<<(ostream &o, const Genome &g) {
 	o << "Genome {" << endl;
 	for(const auto &[k, v] : g.chromosomes_)
-		if(v.size()) o << "\t" << k << ": " << v << endl;
+		o << "\t" << k << ": " << v << endl;
 	return o << "}" << endl;
 }
 
