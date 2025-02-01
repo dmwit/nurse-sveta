@@ -183,9 +183,8 @@ class Genome {
 		Tensor evaluate(const Boards &bs) const;
 
 		vector<ConvolutionSize> sizes() const;
-		Chromosome &get_chromosome(int64_t w, int64_t h);
+		Chromosome get_chromosome(int64_t w, int64_t h) const;
 		void set_chromosome(const Chromosome &c);
-		Genome &operator+=(const Chromosome &c);
 
 		void encode(ostream &s) const;
 		static Genome decode(istream &s);
@@ -669,21 +668,15 @@ vector<ConvolutionSize> Genome::sizes() const {
 	return out;
 }
 
-Chromosome &Genome::get_chromosome(int64_t w, int64_t h) {
-	return chromosomes_.try_emplace(ConvolutionSize(w, h), w, h).first->second;
+Chromosome Genome::get_chromosome(int64_t w, int64_t h) const {
+	map<ConvolutionSize, Chromosome>::const_iterator it = chromosomes_.find(ConvolutionSize(w, h));
+	if(it == chromosomes_.end()) return Chromosome(w, h);
+	return it->second;
 }
 
 void Genome::set_chromosome(const Chromosome &c) {
 	chromosomes_.erase(c);
 	if(c.size()) chromosomes_.emplace(c, c.clone());
-}
-
-Genome &Genome::operator+=(const Chromosome &c) {
-	map<ConvolutionSize, Chromosome>::iterator it = chromosomes_.find(c);
-	if(it == chromosomes_.end())
-		if(c.size()) chromosomes_.emplace(c, c.clone());
-	else it->second += c;
-	return *this;
 }
 
 void Genome::encode(ostream &s) const {
@@ -836,7 +829,7 @@ extern "C" {
 	int genome_conv_width(Genome *g, int i) { return g->sizes()[i].width(); }
 	int genome_conv_height(Genome *g, int i) { return g->sizes()[i].height(); }
 
-	Chromosome *genome_get_chromosome(Genome *g, int w, int h) { return &g->get_chromosome(w, h); }
+	Chromosome *genome_get_chromosome(Genome *g, int w, int h) { return new Chromosome(g->get_chromosome(w, h).clone()); }
 	void genome_set_chromosome(Genome *g, Chromosome *c) { g->set_chromosome(*c); }
 
 	void genome_evaluate(Genome *g, Boards *bs, float *out);

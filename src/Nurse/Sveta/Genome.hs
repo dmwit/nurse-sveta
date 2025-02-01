@@ -89,10 +89,6 @@ foreign import ccall "population_delete" cxx_population_delete :: Ptr (Ptr Genom
 newtype Boards = Boards (ForeignPtr Boards)
 newtype Chromosome = Chromosome (ForeignPtr Chromosome)
 newtype Genome = Genome (ForeignPtr Genome)
-data OChromosome = OChromosome
-	{ ocOwner :: ForeignPtr Genome
-	, ocOwned :: ForeignPtr Chromosome
-	}
 
 newChromosome :: Int -> Int -> Int -> Float -> IO Chromosome
 newChromosome w h n p = gcChromosome (cxx_chromosome_new (fromIntegral w) (fromIntegral h) (fromIntegral n) (realToFrac p))
@@ -229,10 +225,9 @@ gConvWidth (Genome g) i = fromIntegral <$> withForeignPtr g (flip cxx_genome_con
 gConvHeight :: Genome -> Int -> IO Int
 gConvHeight (Genome g) i = fromIntegral <$> withForeignPtr g (flip cxx_genome_conv_height (fromIntegral i))
 
-gGet :: Genome -> Int -> Int -> IO OChromosome
-gGet (Genome g) w h = withForeignPtr g \cxx_g -> do
-	c <- cxx_genome_get_chromosome cxx_g (fromIntegral w) (fromIntegral h)
-	OChromosome g <$> newForeignPtr_ c
+gGet :: Genome -> Int -> Int -> IO Chromosome
+gGet (Genome g) w h = withForeignPtr g \cxx_g ->
+	gcChromosome (cxx_genome_get_chromosome cxx_g (fromIntegral w) (fromIntegral h))
 
 gSet :: Genome -> Chromosome -> IO ()
 gSet (Genome g) (Chromosome c) = withForeignPtr g $ withForeignPtr c . cxx_genome_set_chromosome
@@ -250,9 +245,6 @@ gDump (Genome g) = withForeignPtr g cxx_genome_dump
 
 gSketch :: Genome -> IO ()
 gSketch (Genome g) = withForeignPtr g cxx_genome_sketch
-
-withOChromosome :: OChromosome -> (Chromosome -> IO a) -> IO a
-withOChromosome oc f = withForeignPtr (ocOwner oc) \_ -> f (Chromosome (ocOwned oc))
 
 pSave :: FilePath -> Vector Genome -> IO ()
 pSave fp gs =
