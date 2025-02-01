@@ -182,8 +182,8 @@ evaluationThread mmc jobs psmRef sc = createSystemRandom >>= \rng -> forever do
 	    		gs' <- cloneGameState gs
 	    		playMove gs' path pill
 	    		mfreeze (board gs')
-	    	let scores = cEvaluate (jChromosome job) cur next
-	    	    bestScore = V.maximum scores
+	    	scores <- cEvaluate (jChromosome job) cur next
+	    	let bestScore = V.maximum scores
 	    	    bestIndices = V.findIndices (bestScore==) scores
 	    	    rateLimit = mmcEvaluationRateLimit mmc
 	    	(pill, path) <- (moves V.!) <$> uniformV' rng bestIndices
@@ -410,7 +410,8 @@ initializePopulation mmc dir rng = do
 		newJeffreysChromosome rng (mmcPatternWidth mmc) (mmcPatternHeight mmc) (mmcInitialPatterns mmc)
 
 savePopulation :: FilePath -> Vector Chromosome -> Int -> IO ()
-savePopulation dir gs generation = do
+savePopulation dir gs_ generation = do
+	gs <- traverse cSpec gs_
 	saveAtomically dir (show generation <.> "json") (RecordOfVectors gs)
 	saveAtomically dir "latest.json" generation
 
@@ -468,20 +469,20 @@ mutate mmc rng pop = do
 		x <- uniformIndex (mmcPatternWidth mmc)
 		y <- uniformIndex (mmcPatternHeight mmc)
 		case chan of
-			Left  color -> cSetColorPattern g pat color x y . not $ cGetColorPattern g pat color x y
-			Right shape -> cSetShapePattern g pat shape x y . not $ cGetShapePattern g pat shape x y
+			Left  color -> cSetColorPattern g pat color x y . not =<< cGetColorPattern g pat color x y
+			Right shape -> cSetShapePattern g pat shape x y . not =<< cGetShapePattern g pat shape x y
 		pure g
 	toggleScore = do
 		g <- uniformV' rng pop >>= cClone
 		pat <- uniformPattern g
-		cSetPatternScore g pat . negate $ cGetPatternScore g pat
+		cSetPatternScore g pat . negate =<< cGetPatternScore g pat
 		pure g
 	adjustScore = do
 		g <- uniformV' rng pop >>= cClone
 		pat <- uniformPattern g
 		let range = log (mmcMaxScoreAdjustmentFactor mmc)
 		factor <- exp <$> uniformRM (-range, range) rng
-		cSetPatternScore g pat . (factor*) $ cGetPatternScore g pat
+		cSetPatternScore g pat . (factor*) =<< cGetPatternScore g pat
 		pure g
 	bulkPatternToggle = do
 		g <- uniformV' rng pop >>= cClone
@@ -490,8 +491,8 @@ mutate mmc rng pop = do
 		let loop = do
 		    	x <- uniformIndex (cConvWidth g)
 		    	y <- uniformIndex (cConvHeight g)
-		    	for_ allColorSentinels \c -> cSetColorPattern g pat c x y (cGetColorPattern pat' 0 c x y)
-		    	for_ allShapeSentinels \s -> cSetShapePattern g pat s x y (cGetShapePattern pat' 0 s x y)
+		    	for_ allColorSentinels \c -> cSetColorPattern g pat c x y =<< cGetColorPattern pat' 0 c x y
+		    	for_ allShapeSentinels \s -> cSetShapePattern g pat s x y =<< cGetShapePattern pat' 0 s x y
 		    	n <- uniformFloat01M rng
 		    	when (n > pDone) loop
 		    -- this calculation isn't exactly correct because we make no

@@ -78,8 +78,8 @@ possiblyEmit h g (State (Just b) (Just lk) (Just fc) (Just spd) pu) = do
 	mb <- thaw b
 	placements <- mapproxReachable mb (even fc) (gravity spd pu)
 	let pbs = V.fromList [((path, pill), b') | (placement, path) <- HM.toList placements, let pill = mpPill placement lk, Just (_, b') <- [place b pill]]
-	    scores = cEvaluate g b (snd <$> pbs)
-	    bestIndices = V.findIndices (V.maximum scores==) scores
+	scores <- cEvaluate g b (snd <$> pbs)
+	let bestIndices = V.findIndices (V.maximum scores==) scores
 	    ((bestPath, bestPill), _bestB) = pbs V.! V.head bestIndices
 	    request = ppPath fc bestPath
 	case (bestIndices V.!? 0) >>= (pbs V.!?) of

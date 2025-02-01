@@ -108,20 +108,20 @@ cConvWidth (Chromosome g) = fromIntegral . unsafePerformIO $ withForeignPtr g cx
 cConvHeight :: Chromosome -> Int
 cConvHeight (Chromosome g) = fromIntegral . unsafePerformIO $ withForeignPtr g cxx_chromosome_conv_height
 
-cGetColorPattern :: Chromosome -> Int -> WithSentinels Color -> Int -> Int -> Bool
-cGetColorPattern (Chromosome g) n c w h = unsafePerformIO $ withForeignPtr g \cxx_g -> (0 /=) <$>
+cGetColorPattern :: Chromosome -> Int -> WithSentinels Color -> Int -> Int -> IO Bool
+cGetColorPattern (Chromosome g) n c w h = withForeignPtr g \cxx_g -> (0 /=) <$>
 	cxx_chromosome_get_color_pattern cxx_g (fromIntegral n) (colorSentinelIndex c) (fromIntegral w) (fromIntegral h)
 
-cGetShapePattern :: Chromosome -> Int -> WithSentinels Shape -> Int -> Int -> Bool
-cGetShapePattern (Chromosome g) n s w h = unsafePerformIO $ withForeignPtr g \cxx_g -> (0 /=) <$>
+cGetShapePattern :: Chromosome -> Int -> WithSentinels Shape -> Int -> Int -> IO Bool
+cGetShapePattern (Chromosome g) n s w h = withForeignPtr g \cxx_g -> (0 /=) <$>
 	cxx_chromosome_get_shape_pattern cxx_g (fromIntegral n) (shapeSentinelIndex s) (fromIntegral w) (fromIntegral h)
 
-cGetPatternScore :: Chromosome -> Int -> Float
-cGetPatternScore (Chromosome g) n = unsafePerformIO $ withForeignPtr g \cxx_g -> realToFrac <$>
+cGetPatternScore :: Chromosome -> Int -> IO Float
+cGetPatternScore (Chromosome g) n = withForeignPtr g \cxx_g -> realToFrac <$>
 	cxx_chromosome_get_pattern_score cxx_g (fromIntegral n)
 
-cEncodePatterns :: Chromosome -> [Word8]
-cEncodePatterns (Chromosome g) = unsafePerformIO $
+cEncodePatterns :: Chromosome -> IO [Word8]
+cEncodePatterns (Chromosome g) =
 	withForeignPtr g \cxx_g ->
 	alloca \cxx_length -> do
 	cxx_bytes <- cxx_chromosome_encode_patterns cxx_g cxx_length
@@ -166,11 +166,8 @@ cDump (Chromosome g) = withForeignPtr g cxx_chromosome_dump
 cSketch :: Chromosome -> IO ()
 cSketch (Chromosome g) = withForeignPtr g cxx_chromosome_sketch
 
-cEvaluate :: Chromosome -> Board -> Vector Board -> Vector Float
-cEvaluate g b bs = unsafePerformIO $ cEvaluateIO g b bs
-
-cEvaluateIO :: Chromosome -> Board -> Vector Board -> IO (Vector Float)
-cEvaluateIO (Chromosome g) b bs =
+cEvaluate :: Chromosome -> Board -> Vector Board -> IO (Vector Float)
+cEvaluate (Chromosome g) b bs =
 	withBoards b bs \cxx_bs ->
 	withForeignPtr g \cxx_g ->
 	allocaArray (V.length bs) \cxx_out -> do
@@ -349,22 +346,21 @@ instance FromJSON ConvolutionsSpec where
 		<*> parseJSON (Array (V.drop 1 vs))
 	parseJSON o = typeMismatch "ConvolutionsSpec (an array with a string and some floats)" o
 
-instance ToJSON Chromosome where
-	toJSON = toJSON . cSpec
-	toEncoding = toEncoding . cSpec
-
 type ChromosomeSpec = Map ConvolutionSize ConvolutionsSpec
 
-cSpec :: Chromosome -> ChromosomeSpec
-cSpec g = M.singleton
-	ConvolutionSize
-		{ csWidth = cConvWidth g
-		, csHeight = cConvHeight g
-		}
-	ConvolutionsSpec
-		{ csPatterns = cEncodePatterns g
-		, csScores = cGetPatternScore g <$> [0..cSize g-1]
-		}
+cSpec :: Chromosome -> IO ChromosomeSpec
+cSpec g = do
+	pats <- cEncodePatterns g
+	scores <- traverse (cGetPatternScore g) [0..cSize g-1]
+	pure $ M.singleton
+		ConvolutionSize
+			{ csWidth = cConvWidth g
+			, csHeight = cConvHeight g
+			}
+		ConvolutionsSpec
+			{ csPatterns = pats
+			, csScores = scores
+			}
 
 cFromSpec :: ChromosomeSpec -> IO Chromosome
 cFromSpec gs = case M.toList gs of
