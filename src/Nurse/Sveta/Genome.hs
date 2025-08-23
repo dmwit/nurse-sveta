@@ -1,12 +1,13 @@
 module Nurse.Sveta.Genome (
-	Genome, newGenome, gClone,
+	Individual, Genome, newGenome, gClone,
 	gSize, gConvWidth, gConvHeight,
-	gEvaluate,
+	iEvaluate,
 	gIndices, gAppend,
 	gGetColorPattern, gGetShapePattern, gGetPatternScore,
 	gSetColorPattern, gSetShapePattern, gSetPatternScore,
-	GenomeSpec, gSpec, gFromSpec,
+	IndividualSpec, iSpec, iFromSpec,
 	gDump, gSketch,
+	ConvolutionSize(..),
 	WithSentinels(..),
 	allColorsWithSentinels, allShapesWithSentinels,
 	) where
@@ -15,7 +16,10 @@ import Control.Monad
 import Data.Aeson
 import Data.Aeson.Types
 import Data.ByteString.Builder
+import Data.Coerce
 import Data.Foldable
+import Data.Hashable (Hashable(..))
+import Data.HashMap.Strict (HashMap)
 import Data.Map (Map)
 import Data.String
 import Data.Vector (Vector)
@@ -27,9 +31,11 @@ import Text.Read
 
 import qualified Data.Aeson.Encoding as A
 import qualified Data.ByteString as BS
+import qualified Data.HashMap.Strict as HM
 import qualified Data.Map as M
 import qualified Data.Text as T
 import qualified Data.Vector as V
+import qualified Data.Vector.Mutable as MV
 
 foreign import ccall "boards_new" cxx_boards_new :: Ptr CChar -> Ptr CChar -> IO (Ptr Boards)
 foreign import ccall unsafe "boards_delete" cxx_boards_delete :: Ptr Boards -> IO ()
@@ -64,8 +70,13 @@ foreign import ccall "evaluate" cxx_evaluate :: Ptr Genome -> Ptr Boards -> Ptr 
 newtype Boards = Boards (ForeignPtr Boards)
 newtype Genome = Genome (ForeignPtr Genome)
 
-newGenome :: Int -> Int -> Int -> Float -> IO Genome
-newGenome w h n p = gcGenome (cxx_genome_new (fromIntegral w) (fromIntegral h) (fromIntegral n) (realToFrac p))
+-- | Intended invariant: for all @ind :: Individual@,
+--
+-- @and [gConvWidth g == csWidth cs && gConvHeight g == csHeight cs | (cs, g) <- HM.toList ind]@
+type Individual = HashMap ConvolutionSize Genome
+
+newGenome :: ConvolutionSize -> Int -> Float -> IO Genome
+newGenome cs n p = gcGenome (cxx_genome_new (fromIntegral (csWidth cs)) (fromIntegral (csHeight cs)) (fromIntegral n) (realToFrac p))
 
 gcGenome :: IO (Ptr Genome) -> IO Genome
 gcGenome act = Genome <$> (act >>= newForeignPtr cxx_genome_delete)
@@ -140,13 +151,12 @@ gDump (Genome g) = withForeignPtr g cxx_genome_dump
 gSketch :: Genome -> IO ()
 gSketch (Genome g) = withForeignPtr g cxx_genome_sketch
 
-gEvaluate :: Genome -> Board -> Vector Board -> Vector Float
-gEvaluate g b bs = unsafePerformIO $ gEvaluateIO g b bs
+iEvaluate :: Individual -> Board -> Vector Board -> Vector Float
+iEvaluate ind b bs = unsafePerformIO $ iEvaluateIO ind b bs
 
-gEvaluateIO :: Genome -> Board -> Vector Board -> IO (Vector Float)
-gEvaluateIO (Genome g) b bs | invalid = fail "gEvaluate only works on 8x16 boards (because the underlying C++ function does)"
+iEvaluateIO :: Individual -> Board -> Vector Board -> IO (Vector Float)
+iEvaluateIO ind b bs | invalid = fail "iEvaluate only works on 8x16 boards (because the underlying C++ function does)"
 	| otherwise =
-		withForeignPtr g \cxx_g ->
 		allocaArray 128 \cxx_base_board ->
 		allocaArray (V.length bs) \cxx_out ->
 		BS.useAsCStringLen diffsBS \(cxx_diffs, _len) -> do
@@ -154,10 +164,14 @@ gEvaluateIO (Genome g) b bs | invalid = fail "gEvaluate only works on 8x16 board
 				for_ [0..15] \y ->
 					pokeElemOff cxx_base_board (x + 8*y) . fromIntegral . word8FromCell  . unsafeGet b $ Position x y
 			cxx_bs <- cxx_boards_new cxx_base_board cxx_diffs
-			cxx_evaluate cxx_g cxx_bs cxx_out
+			hs_out <- MV.replicate n 0
+			forM_ ind \(Genome g) -> withForeignPtr g \cxx_g -> do
+				cxx_evaluate cxx_g cxx_bs cxx_out
+				forM_ [0..n-1] \i -> flip (MV.modify hs_out) i . (+) =<< peekElemOff cxx_out i
 			cxx_boards_delete cxx_bs
-			V.iforM bs \i _ -> realToFrac <$> peekElemOff cxx_out i
+			coerce (V.unsafeFreeze @IO hs_out)
 	where
+	n = V.length bs
 	invalidBoard b = width b /= 8 || height b /= 16
 	invalid = invalidBoard b || any invalidBoard bs
 	diffsBS = (BS.toStrict . toLazyByteString) diffsBuilder
@@ -245,6 +259,9 @@ instance FromJSONKey ConvolutionSize where
 		_ -> typeMismatch "ConvolutionSize (a string of the form \"wxh\" where w and h are ints)" (toJSON t)
 		where treadMaybe = readMaybe . T.unpack
 
+instance Hashable ConvolutionSize where
+	s `hashWithSalt` cs = s `hashWithSalt` (2059915244 :: Int) `hashWithSalt` csWidth cs `hashWithSalt` csHeight cs
+
 data ConvolutionsSpec = ConvolutionsSpec
 	{ csPatterns :: [Word8]
 	, csScores :: [Float]
@@ -264,33 +281,22 @@ instance FromJSON ConvolutionsSpec where
 		<*> parseJSON (Array (V.drop 1 vs))
 	parseJSON o = typeMismatch "ConvolutionsSpec (an array with a string and some floats)" o
 
-instance ToJSON Genome where
-	toJSON = toJSON . gSpec
-	toEncoding = toEncoding . gSpec
+type IndividualSpec = HashMap ConvolutionSize ConvolutionsSpec
 
-type GenomeSpec = Map ConvolutionSize ConvolutionsSpec
+iSpec :: Individual -> IndividualSpec
+iSpec = fmap \g -> ConvolutionsSpec
+	{ csPatterns = gEncodePatterns g
+	, csScores = gGetPatternScore g <$> [0..gSize g-1]
+	}
 
-gSpec :: Genome -> GenomeSpec
-gSpec g = M.singleton
-	ConvolutionSize
-		{ csWidth = gConvWidth g
-		, csHeight = gConvHeight g
-		}
-	ConvolutionsSpec
-		{ csPatterns = gEncodePatterns g
-		, csScores = gGetPatternScore g <$> [0..gSize g-1]
-		}
-
-gFromSpec :: GenomeSpec -> IO Genome
-gFromSpec gs = case M.toList gs of
-	[(sz, conv)] -> do
-		let len = length (csScores conv)
-		g <- newGenome (csWidth sz) (csHeight sz) len 0
-		gDecodePatterns g (csPatterns conv)
-		gSetPatternScore g (len-1) 1 -- avoid rescaling until we're done
-		zipWithM_ (gSetPatternScore g) [0..] (csScores conv)
-		pure g
-	_ -> fail $ "Building a genome with more (or fewer) than one size of convolution is not (yet) supported. (Saw " ++ show (M.size gs) ++ " sizes.)"
+iFromSpec :: IndividualSpec -> IO Individual
+iFromSpec = HM.traverseWithKey \sz conv -> do
+	let len = length (csScores conv)
+	g <- newGenome sz len 0
+	gDecodePatterns g (csPatterns conv)
+	gSetPatternScore g (len-1) 1 -- avoid rescaling until we're done
+	zipWithM_ (gSetPatternScore g) [0..] (csScores conv)
+	pure g
 
 -- encodePrintable and decodePrintable convert between unconstrained byte
 -- sequences and sequences of bytes that JSON can represent in one byte each:

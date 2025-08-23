@@ -7,6 +7,7 @@ import Data.Aeson
 import Data.Bits
 import Data.Char
 import Data.Foldable
+import Data.HashMap.Strict (HashMap)
 import Data.Int
 import Data.IORef
 import Data.List
@@ -89,12 +90,17 @@ main = do
 	args <- getArgs
 	() <$ #run app (Just args)
 
+data GenomeConfig = GenomeConfig
+	{ gcInitialPatterns :: Int
+	, gcMaxPatterns :: Int
+	} deriving (Eq, Ord, Read, Show, Generic)
+
+instance FromJSON GenomeConfig where parseJSON = genericParseJSON (dashParseJSONOptions "GenomeConfig" "gc")
+
 data MsMendelConfig = MsMendelConfig
 	{ mmcInitialEvaluationThreads :: Int
 	, mmcInitialEvolutionThreads :: Int
 	, mmcInitialPopulation :: Int
-	, mmcPatternWidth, mmcPatternHeight :: Int
-	, mmcInitialPatterns :: Int
 	, mmcPillCycleLength :: Int
 	, mmcEvaluationRateLimit :: Int
 	, mmcRunsPerGeneration :: Int
@@ -111,21 +117,14 @@ data MsMendelConfig = MsMendelConfig
 	, mmcBulkPatternToggles :: Int
 	, mmcTypicalPatternToggleBatchSize :: Float
 	, mmcMaxLevel :: Int
-	, mmcMaxGenomeSize :: Int
+	, mmcGenomeConfig :: HashMap ConvolutionSize GenomeConfig
 	, mmcMaxPillsPerKill :: Int
 	} deriving (Eq, Ord, Read, Show, Generic)
 
-instance FromJSON MsMendelConfig where
-	parseJSON = genericParseJSON defaultOptions
-		{ fieldLabelModifier = \case
-			'm':'m':'c':s -> drop 1 [c' | c <- s, c' <- ['-' | isUpper c] ++ [toLower c]]
-			other -> error $ "unexpected field name " ++ show other ++ " in parseJSON @MsMendelConfig"
-		, allowOmittedFields = False
-		, rejectUnknownFields = True
-		}
+instance FromJSON MsMendelConfig where parseJSON = genericParseJSON (dashParseJSONOptions "MsMendelConfig" "mmc")
 
 data Job = Job
-	{ jGenome :: Genome
+	{ jIndividual :: Individual
 	, jGame :: GameState
 	, jLookaheads :: [Lookahead]
 	, jID :: Int
@@ -143,6 +142,15 @@ instance Semigroup Evaluation where
 		{ eViruses = eViruses e + eViruses e'
 		, eFramesToLastKill = eFramesToLastKill e + eFramesToLastKill e'
 		}
+
+dashParseJSONOptions :: String -> String -> Options
+dashParseJSONOptions typeName prefix = defaultOptions
+	{ fieldLabelModifier = \fieldName -> case stripPrefix prefix fieldName of
+		Just s -> drop 1 [c' | c <- s, c' <- ['-' | isUpper c] ++ [toLower c]]
+		Nothing -> error $ "unexpected field name " ++ show fieldName ++ " in parseJSON @" ++ typeName
+	, allowOmittedFields = False
+	, rejectUnknownFields = True
+	}
 
 evaluationThreadView :: MsMendelConfig -> MVar Job -> IO ThreadView
 evaluationThreadView mmc jobs = do
@@ -182,7 +190,7 @@ evaluationThread mmc jobs psmRef sc = createSystemRandom >>= \rng -> forever do
 	    		gs' <- cloneGameState gs
 	    		playMove gs' path pill
 	    		mfreeze (board gs')
-	    	let scores = gEvaluate (jGenome job) cur next
+	    	let scores = iEvaluate (jIndividual job) cur next
 	    	    bestScore = V.maximum scores
 	    	    bestIndices = V.findIndices (bestScore==) scores
 	    	    rateLimit = mmcEvaluationRateLimit mmc
@@ -223,8 +231,11 @@ goVirusesAvailableEstimate go = (goRunsPerGeneration go *) . (\lev -> 2 * (lev+1
 
 -- use the Jeffreys prior for Bernoulli distributions, β(½,½), to choose the
 -- Bernoulli parameter
-newJeffreysGenome :: GenIO -> Int -> Int -> Int -> IO Genome
-newJeffreysGenome rng w h n = newGenome w h n . realToFrac =<< beta 0.5 0.5 rng
+newJeffreysGenome :: GenIO -> ConvolutionSize -> Int -> IO Genome
+newJeffreysGenome rng cs n = newGenome cs n . realToFrac =<< beta 0.5 0.5 rng
+
+newJeffreysIndividual :: GenIO -> HashMap ConvolutionSize GenomeConfig -> IO Individual
+newJeffreysIndividual rng = HM.traverseWithKey \cs -> newJeffreysGenome rng cs . gcInitialPatterns
 
 data Table = Table
 	{ tNextRow :: IORef Int32
@@ -313,7 +324,7 @@ asMinutes frames = tshow wholeMinutes <> ":" <> zeroPad 2 (tshow wholeSeconds) <
 	wholeMillis = round millis
 	zeroPad n t = T.replicate (n - T.length t) "0" <> t
 
-evolutionThread :: MsMendelConfig -> MVar Job -> FilePath -> MVar Evaluation -> TVar GenerationOverview -> GenIO -> Vector Genome -> StatusCheck -> IO ()
+evolutionThread :: MsMendelConfig -> MVar Job -> FilePath -> MVar Evaluation -> TVar GenerationOverview -> GenIO -> Vector Individual -> StatusCheck -> IO ()
 evolutionThread mmc jobs dir replies overviewRef rng pop0 sc = go pop0 where
 	go pop = do
 		readTVarIO overviewRef >>= savePopulation dir pop . goID
@@ -323,10 +334,10 @@ evolutionThread mmc jobs dir replies overviewRef rng pop0 sc = go pop0 where
 				gs <- initialState (ExactLevel rng lev)
 				lk <- replicateM (mmcPillCycleLength mmc) (sampleRNG' rng)
 				pure (gs, lk)
-		tid <- forkIO $ forM_ gslks \(gs0, lks) -> V.iforM_ pop \i genome -> do
+		tid <- forkIO $ forM_ gslks \(gs0, lks) -> V.iforM_ pop \i ind -> do
 			gs <- cloneGameState gs0
 			putMVar jobs Job
-				{ jGenome = genome
+				{ jIndividual = ind
 				, jGame = gs
 				, jLookaheads = lks
 				, jID = i
@@ -358,13 +369,13 @@ evolutionThread mmc jobs dir replies overviewRef rng pop0 sc = go pop0 where
 		report "sortedIDs" sortedIDs
 		report "eViruses" (eViruses <$> frozenEvals)
 		report "eFramesToLastKill" (eFramesToLastKill <$> frozenEvals)
-		report "sizes" (gSize <$> sortedPop)
+		report "sizes" (iSize <$> sortedPop)
 		putStrLn ""
 
 		offspring <- breed mmc rng (V.take (mmcBreeders mmc) sortedPop)
 		mutations <- mutate mmc rng (V.take (mmcMutators mmc) sortedPop)
 		let pop' = survivors <> offspring <> mutations
-		    sizes = sort . V.toList $ gSize <$> pop'
+		    sizes = sort . V.toList $ iSize <$> pop'
 		    quartile n = case (V.length pop' * n) `quotRem` 4 of
 		    	(q, r) -> fromIntegral (sizes !!  q   ) * (fromIntegral (4-r) / 4)
 		    	        + fromIntegral (sizes !! (q+1)) * (fromIntegral    r  / 4)
@@ -383,7 +394,7 @@ evolutionThread mmc jobs dir replies overviewRef rng pop0 sc = go pop0 where
 			}
 		go pop'
 
-initializePopulation :: MsMendelConfig -> FilePath -> GenIO -> IO (Int, Vector Genome)
+initializePopulation :: MsMendelConfig -> FilePath -> GenIO -> IO (Int, Vector Individual)
 initializePopulation mmc dir rng = do
 	let generationFilename = dir </> "latest.json"
 	handle (missing generationFilename) do
@@ -395,7 +406,7 @@ initializePopulation mmc dir rng = do
 				bsSpecs <- LBS.readFile specsFilename
 				handle (corrupt specsFilename) do
 					RecordOfVectors specs <- throwDecode bsSpecs
-					population <- traverse gFromSpec specs
+					population <- traverse iFromSpec specs
 					pure (generation, population)
 	where
 	corrupt fp (AesonException e) = do
@@ -407,11 +418,11 @@ initializePopulation mmc dir rng = do
 			freshPopulation
 		else throw e
 	freshPopulation = fmap ((,)0) . V.replicateM (mmcInitialPopulation mmc) $
-		newJeffreysGenome rng (mmcPatternWidth mmc) (mmcPatternHeight mmc) (mmcInitialPatterns mmc)
+		newJeffreysIndividual rng (mmcGenomeConfig mmc)
 
-savePopulation :: FilePath -> Vector Genome -> Int -> IO ()
-savePopulation dir gs generation = do
-	saveAtomically dir (show generation <.> "json") (RecordOfVectors gs)
+savePopulation :: FilePath -> Vector Individual -> Int -> IO ()
+savePopulation dir pop generation = do
+	saveAtomically dir (show generation <.> "json") (RecordOfVectors (iSpec <$> pop))
 	saveAtomically dir "latest.json" generation
 
 saveAtomically :: ToJSON a => FilePath -> FilePath -> a -> IO ()
@@ -419,27 +430,37 @@ saveAtomically dir nm a = do
 	encodeFile (dir </> "." ++ nm) a
 	renameFile (dir </> "." ++ nm) (dir </> nm)
 
-what'sBad :: Vector Genome -> Evaluation -> (Int, Int, Int)
-what'sBad pop e = (-eViruses e, eFramesToLastKill e, gSize (pop V.! eID e))
+iSize :: Individual -> Int
+iSize = sum . fmap gSize
 
-breed :: MsMendelConfig -> GenIO -> Vector Genome -> IO (Vector Genome)
+iGenome :: Individual -> ConvolutionSize -> IO Genome
+iGenome ind cs = case HM.lookup cs ind of
+	Just g -> pure g
+	Nothing -> newGenome cs 0 0
+
+what'sBad :: Vector Individual -> Evaluation -> (Int, Int, Int)
+what'sBad pop e = (-eViruses e, eFramesToLastKill e, iSize (pop V.! eID e))
+
+breed :: MsMendelConfig -> GenIO -> Vector Individual -> IO (Vector Individual)
 breed mmc rng pop
 	| V.length pop < 2 = pure V.empty
 	| otherwise = V.replicateM (mmcOffspring mmc) do
-		(g, g') <- chooseTwo
-		shuffledIndices <- uniformShuffle ((Left <$> V.generate (gSize g) id) <> (Right <$> V.generate (gSize g') id)) rng
-		len <- min (mmcMaxGenomeSize mmc) . (1+) <$> uniformVI' rng shuffledIndices
-		let (indices, indices') = V.partitionWith id (V.take len shuffledIndices)
-		liftJ2 gAppend (gIndices g (V.toList indices)) (gIndices g' (V.toList indices'))
+		(ind, ind') <- chooseTwo
+		HM.traverseWithKey (\cs cfg -> liftJ2 (breedGenome cfg) (iGenome ind cs) (iGenome ind' cs)) (mmcGenomeConfig mmc)
 	where
 	chooseTwo = do
 		[a, b] <- replicateM 2 (uniformVI' rng pop)
 		if a == b then chooseTwo else pure (pop V.! a, pop V.! b)
+	breedGenome cfg g g' = do
+		shuffledIndices <- uniformShuffle ((Left <$> V.generate (gSize g) id) <> (Right <$> V.generate (gSize g') id)) rng
+		len <- min (gcMaxPatterns cfg) . (1+) <$> uniformVI' rng shuffledIndices
+		let (indices, indices') = V.partitionWith id (V.take len shuffledIndices)
+		liftJ2 gAppend (gIndices g (V.toList indices)) (gIndices g' (V.toList indices'))
 
-mutate :: MsMendelConfig -> GenIO -> Vector Genome -> IO (Vector Genome)
+mutate :: MsMendelConfig -> GenIO -> Vector Individual -> IO (Vector Individual)
 mutate mmc rng pop = do
 	ins <- V.replicateM (mmcGeneReplacements mmc) replaceGene
-	del <- if any (>0) (gSize <$> pop)
+	del <- if any (>0) (iSize <$> pop)
 		then V.replicateM (mmcGeneDeletions mmc) deleteGene
 		else pure V.empty -- should never happen
 	pat <- V.replicateM (mmcPatternToggles mmc) togglePattern
@@ -448,48 +469,43 @@ mutate mmc rng pop = do
 	blk <- V.replicateM (mmcBulkPatternToggles mmc) bulkPatternToggle
 	pure $ mconcat [ins, del, pat, sco, adj, blk]
 	where
-	replaceGene = do
-		g <- uniformV' rng pop
-		let sz = gSize g
-		n <- uniformIndex sz
+	replaceGene = onUniformIndividual'sGene rng pop \cs n sz g -> do
 		g' <- gIndices g $ [0..n-1] ++ [n+1..sz-1]
-		g'' <- newJeffreysGenome rng (mmcPatternWidth mmc) (mmcPatternHeight mmc) 1
+		g'' <- newJeffreysGenome rng cs 1
 		gAppend g' g''
 	deleteGene = do
-		g <- uniformV' rng pop
-		let sz = gSize g
-		if sz <= 1 then deleteGene else do
-			n <- uniformIndex sz
+		ind <- uniformV' rng pop
+		if iSize ind <= 1 then deleteGene else onUniformGene rng ind \_cs n sz g ->
 			gIndices g $ [0..n-1] ++ [n+1..sz-1]
-	togglePattern = do
-		g <- uniformV' rng pop >>= gClone
+	togglePattern = onUniformIndividual'sGene rng pop \cs _n _sz g_ -> do
+		g <- gClone g_
 		pat <- uniformPattern g
 		chan <- uniformV' rng allChannels
-		x <- uniformIndex (mmcPatternWidth mmc)
-		y <- uniformIndex (mmcPatternHeight mmc)
+		x <- uniformIndex (csWidth cs)
+		y <- uniformIndex (csHeight cs)
 		case chan of
 			Left  color -> gSetColorPattern g pat color x y . not $ gGetColorPattern g pat color x y
 			Right shape -> gSetShapePattern g pat shape x y . not $ gGetShapePattern g pat shape x y
 		pure g
-	toggleScore = do
-		g <- uniformV' rng pop >>= gClone
+	toggleScore = onUniformIndividual'sGene rng pop \_cs _n _sz g_ -> do
+		g <- gClone g_
 		pat <- uniformPattern g
 		gSetPatternScore g pat . negate $ gGetPatternScore g pat
 		pure g
-	adjustScore = do
-		g <- uniformV' rng pop >>= gClone
+	adjustScore = onUniformIndividual'sGene rng pop \_cs _n _sz g_ -> do
+		g <- gClone g_
 		pat <- uniformPattern g
 		let range = log (mmcMaxScoreAdjustmentFactor mmc)
 		factor <- exp <$> uniformRM (-range, range) rng
 		gSetPatternScore g pat . (factor*) $ gGetPatternScore g pat
 		pure g
-	bulkPatternToggle = do
-		g <- uniformV' rng pop >>= gClone
+	bulkPatternToggle = onUniformIndividual'sGene rng pop \cs _n _sz g_ -> do
+		g <- gClone g_
 		pat <- uniformPattern g
-		pat' <- newJeffreysGenome rng (gConvWidth g) (gConvHeight g) 1
+		pat' <- newJeffreysGenome rng cs 1
 		let loop = do
-		    	x <- uniformIndex (gConvWidth g)
-		    	y <- uniformIndex (gConvHeight g)
+		    	x <- uniformIndex (csWidth cs)
+		    	y <- uniformIndex (csHeight cs)
 		    	for_ allColorsWithSentinels \c -> gSetColorPattern g pat c x y (gGetColorPattern pat' 0 c x y)
 		    	for_ allShapesWithSentinels \s -> gSetShapePattern g pat s x y (gGetShapePattern pat' 0 s x y)
 		    	n <- uniformFloat01M rng
@@ -501,6 +517,24 @@ mutate mmc rng pop = do
 		g <$ loop
 	uniformPattern = uniformIndex . gSize
 	uniformIndex n = uniformRM (0, n-1) rng
+
+uniformGene :: GenIO -> Individual -> IO (ConvolutionSize, Int, Int, Genome)
+uniformGene rng ind = uniformV' rng . V.fromList $
+	[ (cs, i, sz, g)
+	| (cs, g) <- HM.toList ind
+	, let sz = gSize g
+	, i <- [0..sz-1]
+	]
+
+onUniformGene :: GenIO -> Individual -> (ConvolutionSize -> Int -> Int -> Genome -> IO Genome) -> IO Individual
+onUniformGene rng ind f = do
+	(cs, n, sz, g) <- uniformGene rng ind
+	flip (HM.insert cs) ind <$> f cs n sz g
+
+onUniformIndividual'sGene :: GenIO -> Vector Individual -> (ConvolutionSize -> Int -> Int -> Genome -> IO Genome) -> IO Individual
+onUniformIndividual'sGene rng pop f = do
+	ind <- uniformV' rng pop
+	onUniformGene rng ind f
 
 allChannels :: Vector (Either (WithSentinels Color) (WithSentinels Shape))
 allChannels = fmap Left allColorSentinels <> fmap Right allShapeSentinels
