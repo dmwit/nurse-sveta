@@ -451,6 +451,7 @@ void Genome::assert_compatible(const Tensor &t, const TensorOptions &o) {
 }
 
 Tensor evaluate(const Genome &g, const Boards &bs) {
+	if(g.size() == 0) return torch::zeros({bs.size()}, CPU_FLOAT /* we're about to move it to the CPU anyway */);
 	const int64_t cw = g.conv_width(), ch = g.conv_height();
 	Tensor mismatch_color = conv2d(bs.p_color(cw, ch), g.p_color_pattern()),
 	       mismatch_shape = conv2d(bs.p_shape(cw, ch), g.p_shape_pattern());

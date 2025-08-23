@@ -294,7 +294,7 @@ iFromSpec = HM.traverseWithKey \sz conv -> do
 	let len = length (csScores conv)
 	g <- newGenome sz len 0
 	gDecodePatterns g (csPatterns conv)
-	gSetPatternScore g (len-1) 1 -- avoid rescaling until we're done
+	when (len > 0) (gSetPatternScore g (len-1) 1) -- avoid rescaling until we're done
 	zipWithM_ (gSetPatternScore g) [0..] (csScores conv)
 	pure g
 
