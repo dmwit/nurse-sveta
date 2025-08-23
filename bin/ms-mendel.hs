@@ -26,6 +26,7 @@ import Nurse.Sveta.Tomcats
 import Nurse.Sveta.Util
 import Nurse.Sveta.Widget
 import System.Environment
+import System.IO
 import System.IO.Error
 import System.Random.MWC
 import System.Random.MWC.Distributions
@@ -371,6 +372,7 @@ evolutionThread mmc jobs dir replies overviewRef rng pop0 sc = go pop0 where
 		report "eFramesToLastKill" (eFramesToLastKill <$> frozenEvals)
 		report "sizes" (iSize <$> sortedPop)
 		putStrLn ""
+		hFlush stdout
 
 		offspring <- breed mmc rng (V.take (mmcBreeders mmc) sortedPop)
 		mutations <- mutate mmc rng (V.take (mmcMutators mmc) sortedPop)
