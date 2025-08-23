@@ -387,7 +387,7 @@ Genome Genome::operator+(const Genome &other) const {
 	int64_t sz = size(), new_sz = size() + other.size(), w = conv_width(), h = conv_height();
 
 	assert(other.conv_width() == w);
-	assert(other.conv_height() == w);
+	assert(other.conv_height() == h);
 
 	Tensor co, sh, sc;
 	co = torch::zeros({new_sz, COLORS+SENTINELS, w, h}, GPU_BOOL_REP);
