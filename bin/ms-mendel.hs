@@ -111,6 +111,7 @@ data MsMendelConfig = MsMendelConfig
 	, mmcOffspring :: Int
 	, mmcGeneReplacements :: Int
 	, mmcGeneDeletions :: Int
+	, mmcGeneAdditions :: Int
 	, mmcPatternToggles :: Int
 	, mmcScoreAdjustments :: Int
 	, mmcScoreAdjustmentVariance :: Float
@@ -375,7 +376,8 @@ evolutionThread mmc jobs dir replies overviewRef rng pop0 sc = go pop0 where
 
 		offspring <- breed mmc rng (V.take (mmcBreeders mmc) sortedPop)
 		mutations <- mutate mmc rng (V.take (mmcMutators mmc) sortedPop)
-		let pop' = survivors <> offspring <> mutations
+		additions <- addGenes mmc rng (V.take (mmcMutators mmc) sortedPop)
+		let pop' = mconcat [survivors, offspring, mutations, additions]
 		    sizes = sort . V.toList $ iSize <$> pop'
 		    quartile n = case (V.length pop' * n) `quotRem` 4 of
 		    	(q, r) -> fromIntegral (sizes !!  q   ) * (fromIntegral (4-r) / 4)
@@ -497,6 +499,18 @@ mutate mmc rng pop = do
 		    pDone = recip (mmcTypicalPatternToggleBatchSize mmc)
 		loop
 	uniformIndex n = uniformRM (0, n-1) rng
+
+addGenes :: MsMendelConfig -> GenIO -> Vector Individual -> IO (Vector Individual)
+addGenes mmc _rng pop | all ((sum (gcMaxPatterns <$> mmcGenomeConfig mmc)==) . iSize) pop = pure V.empty -- this should never happen
+addGenes mmc rng pop = V.replicateM (mmcGeneAdditions mmc) addGene where
+	convolutionSizes = V.fromList (HM.toList (mmcGenomeConfig mmc))
+	addGene = do
+		ind <- uniformV' rng pop
+		(cs, gc) <- uniformV' rng convolutionSizes
+		g <- maybe (newGenome cs 0 0) pure (HM.lookup cs ind)
+		if gSize g < gcMaxPatterns gc
+			then pure . flip (HM.insert cs) ind =<< gAppend g =<< newJeffreysGenome rng cs 1
+			else addGene
 
 tweakScore :: MsMendelConfig -> Double -> Float -> Float
 tweakScore mmc delta score = tanh (mmcScoreAdjustmentVariance mmc * realToFrac delta + atanh (min 0.9999999 (max (-0.9999999) score)))
