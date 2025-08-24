@@ -112,9 +112,8 @@ data MsMendelConfig = MsMendelConfig
 	, mmcGeneReplacements :: Int
 	, mmcGeneDeletions :: Int
 	, mmcPatternToggles :: Int
-	, mmcScoreToggles :: Int
 	, mmcScoreAdjustments :: Int
-	, mmcMaxScoreAdjustmentFactor :: Float
+	, mmcScoreAdjustmentVariance :: Float
 	, mmcBulkPatternToggles :: Int
 	, mmcTypicalPatternToggleBatchSize :: Float
 	, mmcMaxLevel :: Int
@@ -460,50 +459,30 @@ breed mmc rng pop
 		liftJ2 gAppend (gIndices g (V.toList indices)) (gIndices g' (V.toList indices'))
 
 mutate :: MsMendelConfig -> GenIO -> Vector Individual -> IO (Vector Individual)
+mutate _mmc _rng pop | all ((0==) . iSize) pop = pure V.empty -- this should never happen
 mutate mmc rng pop = do
 	ins <- V.replicateM (mmcGeneReplacements mmc) replaceGene
-	del <- if any (>0) (iSize <$> pop)
-		then V.replicateM (mmcGeneDeletions mmc) deleteGene
-		else pure V.empty -- should never happen
+	del <- V.replicateM (mmcGeneDeletions mmc) deleteGene
 	pat <- V.replicateM (mmcPatternToggles mmc) togglePattern
-	sco <- V.replicateM (mmcScoreToggles mmc) toggleScore
 	adj <- V.replicateM (mmcScoreAdjustments mmc) adjustScore
 	blk <- V.replicateM (mmcBulkPatternToggles mmc) bulkPatternToggle
-	pure $ mconcat [ins, del, pat, sco, adj, blk]
+	pure $ mconcat [ins, del, pat, adj, blk]
 	where
-	replaceGene = onUniformIndividual'sGene rng pop \cs n sz g -> do
-		g' <- gIndices g $ [0..n-1] ++ [n+1..sz-1]
-		g'' <- newJeffreysGenome rng cs 1
-		gAppend g' g''
-	deleteGene = do
-		ind <- uniformV' rng pop
-		if iSize ind <= 1 then deleteGene else onUniformGene rng ind \_cs n sz g ->
-			gIndices g $ [0..n-1] ++ [n+1..sz-1]
-	togglePattern = onUniformIndividual'sGene rng pop \cs _n _sz g_ -> do
-		g <- gClone g_
-		pat <- uniformPattern g
+	replaceGene = onGene rng pop \cs pat sz g -> liftJ2 gAppend
+		(gIndices g $ [0..pat-1] ++ [pat+1..sz-1])
+		(newJeffreysGenome rng cs 1)
+	deleteGene = onGene rng pop \_cs pat sz g -> gIndices g $ [0..pat-1] ++ [pat+1..sz-1]
+	togglePattern = onGeneClone rng pop \cs pat _sz g -> do
 		chan <- uniformV' rng allChannels
 		x <- uniformIndex (csWidth cs)
 		y <- uniformIndex (csHeight cs)
 		case chan of
 			Left  color -> gSetColorPattern g pat color x y . not $ gGetColorPattern g pat color x y
 			Right shape -> gSetShapePattern g pat shape x y . not $ gGetShapePattern g pat shape x y
-		pure g
-	toggleScore = onUniformIndividual'sGene rng pop \_cs _n _sz g_ -> do
-		g <- gClone g_
-		pat <- uniformPattern g
-		gSetPatternScore g pat . negate $ gGetPatternScore g pat
-		pure g
-	adjustScore = onUniformIndividual'sGene rng pop \_cs _n _sz g_ -> do
-		g <- gClone g_
-		pat <- uniformPattern g
-		let range = log (mmcMaxScoreAdjustmentFactor mmc)
-		factor <- exp <$> uniformRM (-range, range) rng
-		gSetPatternScore g pat . (factor*) $ gGetPatternScore g pat
-		pure g
-	bulkPatternToggle = onUniformIndividual'sGene rng pop \cs _n _sz g_ -> do
-		g <- gClone g_
-		pat <- uniformPattern g
+	adjustScore = onGeneClone rng pop \_cs pat _sz g -> do
+		delta <- standard rng
+		gSetPatternScore g pat . tweakScore mmc delta $ gGetPatternScore g pat
+	bulkPatternToggle = onGeneClone rng pop \cs pat _sz g -> do
 		pat' <- newJeffreysGenome rng cs 1
 		let loop = do
 		    	x <- uniformIndex (csWidth cs)
@@ -516,27 +495,28 @@ mutate mmc rng pop = do
 		    -- attempt to choose unique locations each time, but meh, close
 		    -- enough
 		    pDone = recip (mmcTypicalPatternToggleBatchSize mmc)
-		g <$ loop
-	uniformPattern = uniformIndex . gSize
+		loop
 	uniformIndex n = uniformRM (0, n-1) rng
 
-uniformGene :: GenIO -> Individual -> IO (ConvolutionSize, Int, Int, Genome)
-uniformGene rng ind = uniformV' rng . V.fromList $
-	[ (cs, i, sz, g)
-	| (cs, g) <- HM.toList ind
-	, let sz = gSize g
-	, i <- [0..sz-1]
-	]
+tweakScore :: MsMendelConfig -> Double -> Float -> Float
+tweakScore mmc delta score = tanh (mmcScoreAdjustmentVariance mmc * realToFrac delta + atanh (min 0.9999999 (max (-0.9999999) score)))
 
-onUniformGene :: GenIO -> Individual -> (ConvolutionSize -> Int -> Int -> Genome -> IO Genome) -> IO Individual
-onUniformGene rng ind f = do
-	(cs, n, sz, g) <- uniformGene rng ind
-	flip (HM.insert cs) ind <$> f cs n sz g
-
-onUniformIndividual'sGene :: GenIO -> Vector Individual -> (ConvolutionSize -> Int -> Int -> Genome -> IO Genome) -> IO Individual
-onUniformIndividual'sGene rng pop f = do
+onGene :: GenIO -> Vector Individual -> (ConvolutionSize -> Int -> Int -> Genome -> IO Genome) -> IO Individual
+onGene rng pop f = do
 	ind <- uniformV' rng pop
-	onUniformGene rng ind f
+	if iSize ind == 0 then onGene rng pop f else do
+		(cs, pat, sz, g) <- uniformV' rng . V.fromList $
+			[ (cs, pat, sz, g)
+			| (cs, g) <- HM.toList ind
+			, let sz = gSize g
+			, pat <- [0..sz-1]
+			]
+		flip (HM.insert cs) ind <$> f cs pat sz g
+
+onGeneClone :: GenIO -> Vector Individual -> (ConvolutionSize -> Int -> Int -> Genome -> IO ()) -> IO Individual
+onGeneClone rng pop f = onGene rng pop \cs pat sz g_ -> do
+	g <- gClone g_
+	g <$ f cs pat sz g
 
 allChannels :: Vector (Either (WithSentinels Color) (WithSentinels Shape))
 allChannels = fmap Left allColorSentinels <> fmap Right allShapeSentinels

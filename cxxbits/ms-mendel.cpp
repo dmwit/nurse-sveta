@@ -94,7 +94,6 @@ class Genome {
 		friend ostream &operator<<(ostream &o, const Genome &g);
 
 	protected:
-		void normalize_scores();
 		static void assert_compatible(const Tensor &t, const TensorOptions &o);
 
 		// patterns have a 1 where that color/shape is forbidden and a 0 where
@@ -215,8 +214,7 @@ ostream &operator<<(ostream &o, const Boards &bs) {
 Genome::Genome(int64_t w, int64_t h, int64_t n, float p) {
 	color_pattern_ = (torch::rand({n, COLORS + SENTINELS, w, h}, GPU_FLOAT) < p).to(GPU_BOOL_REP);
 	shape_pattern_ = (torch::rand({n, SHAPES + SENTINELS, w, h}, GPU_FLOAT) < p).to(GPU_BOOL_REP);
-	pattern_score_ = torch::randn({n}, GPU_FLOAT);
-	normalize_scores();
+	pattern_score_ = 2*torch::rand({n}, GPU_FLOAT) - 1;
 
 	assert(!color_pattern_.requires_grad());
 	assert(!shape_pattern_.requires_grad());
@@ -240,8 +238,6 @@ Genome::Genome(const Tensor &co, const Tensor &sh, const Tensor &sc)
 	assert(sh.size(ONEHOT_DIM) == SHAPES + SENTINELS);
 	assert(co.size(CONV_WIDTH_DIM) == sh.size(CONV_WIDTH_DIM));
 	assert(co.size(CONV_HEIGHT_DIM) == sh.size(CONV_HEIGHT_DIM));
-
-	normalize_scores();
 
 	assert(!color_pattern_.requires_grad());
 	assert(!shape_pattern_.requires_grad());
@@ -311,7 +307,7 @@ void Genome::set_shape_pattern(int64_t pattern, int64_t shape, int64_t w, int64_
 
 void Genome::set_pattern_score(int64_t pattern, float v) {
 	pattern_score_[pattern] = v;
-	normalize_scores(); // this clears p_pattern_score_
+	p_pattern_score_ = Tensor();
 }
 
 void Genome::decode_patterns(string ps) {
@@ -437,12 +433,6 @@ ostream &operator<<(ostream &o, const Genome &g) {
 	}
 	o << prefix << "}";
 	return o;
-}
-
-void Genome::normalize_scores() {
-	if(size() <= 0) return;
-	pattern_score_ /= pattern_score_.abs().max();
-	p_pattern_score_ = Tensor();
 }
 
 void Genome::assert_compatible(const Tensor &t, const TensorOptions &o) {
