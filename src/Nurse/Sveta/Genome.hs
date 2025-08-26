@@ -7,7 +7,7 @@ module Nurse.Sveta.Genome (
 	gSetColorPattern, gSetShapePattern, gSetPatternScore,
 	IndividualSpec, iSpec, iFromSpec,
 	gDump, gSketch,
-	ConvolutionSize(..),
+	ConvolutionSize(..), csPretty,
 	WithSentinels(..),
 	allColorsWithSentinels, allShapesWithSentinels,
 	) where
@@ -241,6 +241,9 @@ csToTuple cs = (csWidth cs, csHeight cs)
 csFromTuple :: (Int, Int) -> ConvolutionSize
 csFromTuple (w, h) = ConvolutionSize { csWidth = w, csHeight = h }
 
+csPretty :: ConvolutionSize -> String
+csPretty cs = show (csWidth cs) ++ "x" ++ show (csHeight cs)
+
 instance ToJSON ConvolutionSize where
 	toEncoding = toEncoding . csToTuple
 	toJSON = toJSON . csToTuple
@@ -249,9 +252,7 @@ instance FromJSON ConvolutionSize where
 	parseJSON v = csFromTuple <$> parseJSON v
 
 instance ToJSONKey ConvolutionSize where
-	toJSONKey = ToJSONKeyText
-		(\cs -> fromString $ show (csWidth cs) ++ "x" ++ show (csHeight cs))
-		(\cs -> fromString $ show (csWidth cs) ++ "x" ++ show (csHeight cs))
+	toJSONKey = ToJSONKeyText (fromString . csPretty) (fromString . csPretty)
 
 instance FromJSONKey ConvolutionSize where
 	fromJSONKey = FromJSONKeyTextParser \t -> case T.breakOnAll "x" t of

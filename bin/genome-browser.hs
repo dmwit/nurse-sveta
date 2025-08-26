@@ -4,6 +4,8 @@ import Control.Monad
 import Data.Aeson
 import Data.Foldable
 import Data.IORef
+import Data.List
+import Data.String
 import Data.Traversable
 import Data.Vector (Vector)
 import GI.Gtk
@@ -15,6 +17,8 @@ import System.Environment
 import System.Mem
 import Util
 
+import qualified Data.HashMap.Strict as HM
+import qualified Data.Text as T
 import qualified Data.Vector as V
 import qualified GI.Cairo.Render as C
 import qualified Nurse.Sveta.Cairo as NC
@@ -24,6 +28,8 @@ import qualified Nurse.Sveta.Cairo as NC
 -- ││╭╴gen╶╮││
 -- ││╰─────╯││
 -- ││╭╴ivd╶╮││
+-- ││╰─────╯││
+-- ││╭╴cnv╶╮││
 -- ││╰─────╯││
 -- ││╭╴hgv╶╮││
 -- ││╰─────╯││
@@ -42,17 +48,21 @@ main = do
 		top <- new Box [#orientation := OrientationVertical, #spacing := 4]
 		gen <- new SpinButton [#adjustment :=> new Adjustment [#upper := genF0, #stepIncrement := 1], #value := genF0]
 		ivd <- new SpinButton [#adjustment :=> new Adjustment [#upper := fromIntegral (V.length pop0 - 1), #stepIncrement := 1]]
+		cnv <- dropDownNewFromStrings . iSizesText . V.head $ pop0
 		hgv <- newHomogeneousGridView
 
 		let refreshGrid = do
 		    	ivdI <- round <$> #getValue ivd
 		    	pop <- readIORef popRef
-		    	let ivdG = pop V.! ivdI
-		    	    ivdW = fromIntegral (gConvWidth ivdG)
-		    	    ivdH = fromIntegral (gConvHeight ivdG)
-		    	    w = max 3 ivdW
-		    	    h = ivdH + 1
-		    	children <- for [0..gSize ivdG-1] \i -> patternWidget ivdG i ivdW ivdH w h
+		    	cnvI <- fromIntegral <$> get cnv #selected
+		    	let ivdV = pop V.! ivdI
+		    	    cnvV = iSizes ivdV !! cnvI
+		    	    cnvG = ivdV HM.! cnvV
+		    	    cnvW = fromIntegral (csWidth cnvV)
+		    	    cnvH = fromIntegral (csHeight cnvV)
+		    	    w = cnvW
+		    	    h = cnvH + 1
+		    	children <- for [0..gSize cnvG-1] \i -> patternWidget cnvG i cnvW cnvH w h
 		    	hgvSetModel hgv HGM
 		    		{ hgmIndividualWidth = w
 		    		, hgmIndividualHeight = h
@@ -61,6 +71,7 @@ main = do
 
 		#append top gen
 		#append top ivd
+		#append top cnv
 		#append top =<< hgvWidget hgv
 		refreshGrid
 
@@ -74,7 +85,13 @@ main = do
 			set adj [#upper := bound, #value := min ivdF bound]
 			refreshGrid
 
-		on ivd #valueChanged refreshGrid
+		on ivd #valueChanged do
+			ivdI <- round <$> #getValue ivd
+			pop <- readIORef popRef
+			updateStrings cnv (iSizesText (pop V.! ivdI))
+			refreshGrid
+
+		on cnv (PropertyNotify #selected) \_ -> refreshGrid
 
 		w <- new Window $ tail [undefined
 			, #title := "Ms. Mendel Genome Browser"
@@ -89,10 +106,42 @@ main = do
 	args <- getArgs
 	() <$ #run app (Just args)
 
-loadPopulation :: FilePath -> Integer -> IO (Vector Genome)
+loadPopulation :: FilePath -> Integer -> IO (Vector Individual)
 loadPopulation dir gen = eitherDecodeFileStrict (dir </> show gen <.> "json") >>= \case
 	Left err -> fail err
-	Right (RecordOfVectors pop) -> traverse gFromSpec pop
+	Right (RecordOfVectors pop) -> traverse iFromSpec pop
+
+iSizes :: Individual -> [ConvolutionSize]
+iSizes = sort . HM.keys
+
+iSizesText :: Individual -> [T.Text]
+iSizesText = map (fromString . csPretty) . iSizes
+
+updateStrings :: DropDown -> [T.Text] -> IO ()
+updateStrings cnv lbls0 = do
+	Just model_ <- get cnv #model
+	Just model <- castTo StringList model_
+	n <- get model #nItems
+	-- TODO: test this lmao
+	let loopForward i []
+	    	| i == n = pure ()
+	    	| otherwise = #splice model i (n-i) Nothing
+	    loopForward i (lbl:lbls)
+	    	| i == n = #splice model i 0 (Just (lbl:lbls))
+	    	| otherwise = do
+	    		Just lbl' <- #getString model i
+	    		if lbl == lbl'
+	    			then loopForward (i+1) lbls
+	    			else loopBackward i n (reverse (lbl:lbls))
+	    loopBackward i j [] = #splice model i (j-i) Nothing
+	    loopBackward i j (lbl:lbls)
+	    	| i == j = #splice model i 0 (Just (reverse (lbl:lbls)))
+	    	| otherwise = do
+	    		Just lbl' <- #getString model j
+	    		if lbl == lbl'
+	    			then loopBackward i (j-1) lbls
+	    			else #splice model i (j-i) (Just (reverse (lbl:lbls)))
+	loopForward 0 lbls0
 
 -- genome, pattern index, convolution width, convolution height, widget width, widget height
 patternWidget :: Genome -> Int -> Double -> Double -> Double -> Double -> IO Widget
