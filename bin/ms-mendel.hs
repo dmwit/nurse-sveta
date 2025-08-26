@@ -34,7 +34,7 @@ import System.Random.Stateful (uniformFloat01M)
 import System.Mem
 import Util
 
-import qualified Data.ByteString.Lazy as LBS
+import qualified Data.ByteString.Lazy.Char8 as LBS
 import qualified Data.HashMap.Strict as HM
 import qualified Data.Text as T
 import qualified Data.Vector as V
@@ -97,6 +97,7 @@ data GenomeConfig = GenomeConfig
 	} deriving (Eq, Ord, Read, Show, Generic)
 
 instance FromJSON GenomeConfig where parseJSON = genericParseJSON (dashParseJSONOptions "GenomeConfig" "gc")
+instance ToJSON GenomeConfig where toEncoding = genericToEncoding (dashParseJSONOptions "GenomeConfig" "gc")
 
 data MsMendelConfig = MsMendelConfig
 	{ mmcInitialEvaluationThreads :: Int
@@ -123,6 +124,7 @@ data MsMendelConfig = MsMendelConfig
 	} deriving (Eq, Ord, Read, Show, Generic)
 
 instance FromJSON MsMendelConfig where parseJSON = genericParseJSON (dashParseJSONOptions "MsMendelConfig" "mmc")
+instance ToJSON MsMendelConfig where toEncoding = genericToEncoding (dashParseJSONOptions "MsMendelConfig" "mmc")
 
 data Job = Job
 	{ jIndividual :: Individual
@@ -280,6 +282,12 @@ evolutionThreadView mmc jobs = do
 		, goLastQuartileSize = 0
 		, goMaxSize = 0
 		}
+
+	getCurrentTime >>= print
+	putStrLn $ "generation: " ++ show generation
+	putStr $ "configuration: "
+	LBS.putStrLn $ encode mmc
+	putStrLn ""
 
 	t <- newTable
 	tAddRow t "generation" (tshow . goID)
