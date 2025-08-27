@@ -21,11 +21,13 @@ import Data.Foldable
 import Data.Hashable (Hashable(..))
 import Data.HashMap.Strict (HashMap)
 import Data.Map (Map)
+import Data.Set (Set)
 import Data.String
 import Data.Vector (Vector)
 import Dr.Mario.Model
 import Foreign
 import Foreign.C
+import Nurse.Sveta.Util
 import System.IO.Unsafe
 import Text.Read
 
@@ -33,6 +35,7 @@ import qualified Data.Aeson.Encoding as A
 import qualified Data.ByteString as BS
 import qualified Data.HashMap.Strict as HM
 import qualified Data.Map as M
+import qualified Data.Set as S
 import qualified Data.Text as T
 import qualified Data.Vector as V
 import qualified Data.Vector.Mutable as MV
@@ -190,17 +193,20 @@ iEvaluateIO ind b bs | invalid = fail "iEvaluate only works on 8x16 boards (beca
 	word8FromColor = colorIndex
 	word8FromShape = (`shiftL` 2) . shapeIndex
 
-data WithSentinels a = NonSentinel a | EmptySentinel | OutOfBoundsSentinel deriving (Eq, Ord, Read, Show)
+data WithSentinels a = NonSentinel a | EmptySentinel | OutOfBoundsSentinel deriving (Eq, Ord, Read, Show, Functor)
 
 instance Bounded a => Bounded (WithSentinels a) where
 	minBound = NonSentinel minBound
 	maxBound = OutOfBoundsSentinel
 
+withSentinels :: [a] -> [WithSentinels a]
+withSentinels as = map NonSentinel as ++ [EmptySentinel, OutOfBoundsSentinel]
+
 allColorsWithSentinels :: [WithSentinels Color]
-allColorsWithSentinels = map NonSentinel [minBound..maxBound] ++ [EmptySentinel, OutOfBoundsSentinel]
+allColorsWithSentinels = withSentinels [minBound..maxBound]
 
 allShapesWithSentinels :: [WithSentinels Shape]
-allShapesWithSentinels = map NonSentinel [Virus, Disconnected, East, West] ++ [EmptySentinel, OutOfBoundsSentinel]
+allShapesWithSentinels = withSentinels [Virus, Disconnected, East, West]
 
 {-# Specialize colorIndex :: Color -> CInt #-}
 {-# Specialize colorIndex :: Color -> Word8 #-}
@@ -322,3 +328,108 @@ decodePrintable = expand . contract . map fromEnum where
 
 	expand 0 = []
 	expand n = fromInteger n : expand (shiftR n 8)
+
+data CellDisjunct
+	= CDBlue
+	| CDRed
+	| CDYellow
+	| CDVirus
+	| CDWest
+	| CDEast
+	| CDDisconnected
+	deriving (Bounded, Enum, Eq, Ord, Read, Show)
+
+colorDisjunct :: Color -> CellDisjunct
+colorDisjunct = \case
+	Blue -> CDBlue
+	Red -> CDRed
+	Yellow -> CDYellow
+
+shapeDisjunct :: Shape -> CellDisjunct
+shapeDisjunct = \case
+	Virus -> CDVirus
+	Disconnected -> CDDisconnected
+	North -> CDDisconnected
+	South -> CDDisconnected
+	East -> CDEast
+	West -> CDWest
+
+newtype PatternCell = PatternCell { allowed :: Set (WithSentinels CellDisjunct) } deriving (Eq, Ord, Read, Show)
+
+allDisjuncts :: Set (WithSentinels CellDisjunct)
+allDisjuncts = S.fromList . withSentinels $ [minBound..maxBound]
+
+anythingCell :: PatternCell
+anythingCell = PatternCell allDisjuncts
+
+instance FromJSON PatternCell where
+	parseJSON json = do
+		t <- parseJSON json
+		PatternCell <$> T.foldlM' (\s c -> do
+			disjunct <- case c of
+				'b' -> pure $ NonSentinel CDBlue
+				'r' -> pure $ NonSentinel CDRed
+				'y' -> pure $ NonSentinel CDYellow
+				'x' -> pure $ NonSentinel CDVirus
+				'<' -> pure $ NonSentinel CDWest
+				'>' -> pure $ NonSentinel CDEast
+				'o' -> pure $ NonSentinel CDDisconnected
+				'|' -> pure $ OutOfBoundsSentinel
+				'e' -> pure $ EmptySentinel
+				'*' -> pure $ EmptySentinel -- we'll fix this up later
+				_ -> fail $ "expected one of b, r, y, x, <, >, o, |, e, or *, but got " ++ [c]
+			pure $ if c == '*' then allDisjuncts else S.insert disjunct s
+			) S.empty t
+
+-- | Intended invariants: @pHeight p == length (pCells p)@ and @all ((pWidth p
+-- ==) . length) (pCells p)@. The first element of 'pCells' is the highest row
+-- of the pattern.
+data Pattern = Pattern
+	{ pWidth, pHeight :: Int
+	, pCells :: [[PatternCell]]
+	} deriving (Eq, Ord, Read, Show)
+
+instance FromJSON Pattern where
+	parseJSON json = do
+		cells <- parseJSON json
+		when (all null cells) (fail "empty patterns are not supported")
+		let h = length cells
+		    w = maximum (map length cells)
+		pure Pattern
+			{ pWidth = w
+			, pHeight = h
+			, pCells =
+				[ row ++ replicate (w - length row) anythingCell
+				| row <- cells
+				]
+			}
+
+-- | Intended invariant: @all ((csWidth cs ==) . pWidth) (patterns p ! cs)@ and
+-- @all ((csHeight cs ==) . pHeight) (patterns p ! cs)@.
+newtype Patterns = Patterns { patterns :: HashMap ConvolutionSize [Pattern] } deriving (Eq, Ord, Read, Show)
+
+instance FromJSON Patterns where
+	parseJSON json = do
+		patterns <- parseJSON json
+		pure . Patterns $ HM.fromListWith (++) [(ConvolutionSize { csWidth = pWidth p, csHeight = pHeight p }, [p]) | p <- patterns]
+
+-- | Not intended for external consumption.
+gFromPatterns :: ConvolutionSize -> [Pattern] -> IO Genome
+gFromPatterns cs ps = do
+	g <- newGenome cs (length ps) 0
+	forZipWithM_ [0..] ps \pat p ->
+		-- TODO: check if this is upside down
+		forZipWithM_ [0..] (pCells p) \r row ->
+			forZipWithM_ [0..] row \c cell -> do
+				-- TODO: could probably make this more efficient by
+				-- initializing to the all-disallowed genome and only setting
+				-- the allowed colors/shapes
+				for_ allColorsWithSentinels \color ->
+					gSetColorPattern g pat color c r (fmap colorDisjunct color `S.notMember` allowed cell)
+				for_ allShapesWithSentinels \shape ->
+					gSetShapePattern g pat shape c r (fmap shapeDisjunct shape `S.notMember` allowed cell)
+	pure g
+
+-- | Scores are iid, uniform between -1 and 1.
+iFromPatterns :: Patterns -> IO Individual
+iFromPatterns = HM.traverseWithKey gFromPatterns . patterns
