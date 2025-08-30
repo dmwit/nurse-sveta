@@ -109,7 +109,7 @@ main = do
 loadPopulation :: FilePath -> Integer -> IO (Vector Individual)
 loadPopulation dir gen = eitherDecodeFileStrict (dir </> show gen <.> "json") >>= \case
 	Left err -> fail err
-	Right (RecordOfVectors pop) -> traverse iFromSpec pop
+	Right (RecordOfVectors pop) -> traverse (iFromSpec False) pop
 
 iSizes :: Individual -> [ConvolutionSize]
 iSizes = sort . HM.keys

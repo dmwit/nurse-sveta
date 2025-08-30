@@ -36,9 +36,10 @@ import qualified Data.HashMap.Strict as HM
 main :: IO ()
 main = do
 	dir <- getXdgDirectory XdgData "ms-mendel"
+	mirroring <- readFile (dir </> "mirroring.txt") >>= readIO @Bool
 	generation <- readFile (dir </> "latest.json") >>= readIO @Int
 	Just (RecordOfVectors specs) <- A.decodeFileStrict (dir </> show generation <.> "json")
-	genome <- iFromSpec (V.head specs)
+	genome <- iFromSpec mirroring (V.head specs)
 
 	args <- getArgs
 	(i, o, e, _p) <- runInteractiveProcess "dasyuridia" args Nothing Nothing

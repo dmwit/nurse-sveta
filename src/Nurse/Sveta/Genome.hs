@@ -43,7 +43,7 @@ import qualified Data.Vector.Mutable as MV
 foreign import ccall "boards_new" cxx_boards_new :: Ptr CChar -> Ptr CChar -> IO (Ptr Boards)
 foreign import ccall unsafe "boards_delete" cxx_boards_delete :: Ptr Boards -> IO ()
 
-foreign import ccall "genome_new" cxx_genome_new :: CInt -> CInt -> CInt -> CFloat -> IO (Ptr Genome)
+foreign import ccall "genome_new" cxx_genome_new :: CInt -> CInt -> CInt -> CFloat -> CBool -> IO (Ptr Genome)
 foreign import ccall "genome_clone" cxx_genome_clone :: Ptr Genome -> IO (Ptr Genome)
 foreign import ccall "&genome_delete" cxx_genome_delete :: FinalizerPtr Genome
 
@@ -78,8 +78,8 @@ newtype Genome = Genome (ForeignPtr Genome)
 -- @and [gConvWidth g == csWidth cs && gConvHeight g == csHeight cs | (cs, g) <- HM.toList ind]@
 type Individual = HashMap ConvolutionSize Genome
 
-newGenome :: ConvolutionSize -> Int -> Float -> IO Genome
-newGenome cs n p = gcGenome (cxx_genome_new (fromIntegral (csWidth cs)) (fromIntegral (csHeight cs)) (fromIntegral n) (realToFrac p))
+newGenome :: Bool -> ConvolutionSize -> Int -> Float -> IO Genome
+newGenome mirroring cs n p = gcGenome (cxx_genome_new (fromIntegral (csWidth cs)) (fromIntegral (csHeight cs)) (fromIntegral n) (realToFrac p) (fromIntegral (fromEnum mirroring)))
 
 gcGenome :: IO (Ptr Genome) -> IO Genome
 gcGenome act = Genome <$> (act >>= newForeignPtr cxx_genome_delete)
@@ -296,10 +296,10 @@ iSpec = fmap \g -> ConvolutionsSpec
 	, csScores = gGetPatternScore g <$> [0..gSize g-1]
 	}
 
-iFromSpec :: IndividualSpec -> IO Individual
-iFromSpec = HM.traverseWithKey \sz conv -> do
+iFromSpec :: Bool -> IndividualSpec -> IO Individual
+iFromSpec mirroring = HM.traverseWithKey \sz conv -> do
 	let len = length (csScores conv)
-	g <- newGenome sz len 0
+	g <- newGenome mirroring sz len 0
 	gDecodePatterns g (csPatterns conv)
 	zipWithM_ (gSetPatternScore g) [0..] (csScores conv)
 	pure g
@@ -414,9 +414,9 @@ instance FromJSON Patterns where
 		pure . Patterns $ HM.fromListWith (++) [(ConvolutionSize { csWidth = pWidth p, csHeight = pHeight p }, [p]) | p <- patterns]
 
 -- | Not intended for external consumption.
-gFromPatterns :: ConvolutionSize -> [Pattern] -> IO Genome
-gFromPatterns cs ps = do
-	g <- newGenome cs (length ps) 0
+gFromPatterns :: Bool -> ConvolutionSize -> [Pattern] -> IO Genome
+gFromPatterns mirroring cs ps = do
+	g <- newGenome mirroring cs (length ps) 0
 	forZipWithM_ [0..] ps \pat p ->
 		-- TODO: check if this is upside down
 		forZipWithM_ [0..] (pCells p) \r row ->
@@ -431,5 +431,5 @@ gFromPatterns cs ps = do
 	pure g
 
 -- | Scores are iid, uniform between -1 and 1.
-iFromPatterns :: Patterns -> IO Individual
-iFromPatterns = HM.traverseWithKey gFromPatterns . patterns
+iFromPatterns :: Bool -> Patterns -> IO Individual
+iFromPatterns mirroring = HM.traverseWithKey (gFromPatterns mirroring) . patterns

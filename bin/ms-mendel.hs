@@ -120,6 +120,7 @@ data MsMendelConfig = MsMendelConfig
 	, mmcTypicalPatternToggleBatchSize :: Float
 	, mmcMaxLevel :: Int
 	, mmcGenomeConfig :: HashMap ConvolutionSize GenomeConfig
+	, mmcGeneMirroring :: Bool
 	, mmcMaxPillsPerKill :: Int
 	} deriving (Eq, Ord, Read, Show, Generic)
 
@@ -234,11 +235,13 @@ goVirusesAvailableEstimate go = (goRunsPerGeneration go *) . (\lev -> 2 * (lev+1
 
 -- use the Jeffreys prior for Bernoulli distributions, β(½,½), to choose the
 -- Bernoulli parameter
-newJeffreysGenome :: GenIO -> ConvolutionSize -> Int -> IO Genome
-newJeffreysGenome rng cs n = newGenome cs n . realToFrac =<< beta 0.5 0.5 rng
+newJeffreysGenome :: MsMendelConfig -> GenIO -> ConvolutionSize -> Int -> IO Genome
+newJeffreysGenome mmc rng cs n = newGenome (mmcGeneMirroring mmc) cs n . realToFrac =<< beta 0.5 0.5 rng
 
-newJeffreysIndividual :: GenIO -> HashMap ConvolutionSize GenomeConfig -> IO Individual
-newJeffreysIndividual rng = HM.traverseWithKey \cs -> newJeffreysGenome rng cs . gcInitialPatterns
+newJeffreysIndividual :: MsMendelConfig -> GenIO -> IO Individual
+newJeffreysIndividual mmc rng = HM.traverseWithKey
+	(\cs -> newJeffreysGenome mmc rng cs . gcInitialPatterns)
+	(mmcGenomeConfig mmc)
 
 data Table = Table
 	{ tNextRow :: IORef Int32
@@ -417,7 +420,7 @@ initializePopulation mmc dir rng = do
 				bsSpecs <- LBS.readFile specsFilename
 				handle (corrupt specsFilename) do
 					RecordOfVectors specs <- throwDecode bsSpecs
-					population <- traverse iFromSpec specs
+					population <- traverse (iFromSpec (mmcGeneMirroring mmc)) specs
 					pure (generation, population)
 	where
 	corrupt fp (AesonException e) = do
@@ -428,8 +431,7 @@ initializePopulation mmc dir rng = do
 			putStrLn $ prefix ++ " does not exist; creating a fresh population"
 			freshPopulation
 		else throw e
-	freshPopulation = fmap ((,)0) . V.replicateM (mmcInitialPopulation mmc) $
-		newJeffreysIndividual rng (mmcGenomeConfig mmc)
+	freshPopulation = fmap ((,)0) . V.replicateM (mmcInitialPopulation mmc) $ newJeffreysIndividual mmc rng
 
 savePopulation :: FilePath -> Vector Individual -> Int -> IO ()
 savePopulation dir pop generation = do
@@ -444,10 +446,10 @@ saveAtomically dir nm a = do
 iSize :: Individual -> Int
 iSize = sum . fmap gSize
 
-iGenome :: Individual -> ConvolutionSize -> IO Genome
-iGenome ind cs = case HM.lookup cs ind of
+iGenome :: MsMendelConfig -> Individual -> ConvolutionSize -> IO Genome
+iGenome mmc ind cs = case HM.lookup cs ind of
 	Just g -> pure g
-	Nothing -> newGenome cs 0 0
+	Nothing -> newGenome (mmcGeneMirroring mmc) cs 0 0
 
 what'sBad :: Vector Individual -> Evaluation -> (Int, Int, Int)
 what'sBad pop e = (-eViruses e, eFramesToLastKill e, iSize (pop V.! eID e))
@@ -457,7 +459,7 @@ breed mmc rng pop
 	| V.length pop < 2 = pure V.empty
 	| otherwise = V.replicateM (mmcOffspring mmc) do
 		(ind, ind') <- chooseTwo
-		HM.traverseWithKey (\cs cfg -> liftJ2 (breedGenome cfg) (iGenome ind cs) (iGenome ind' cs)) (mmcGenomeConfig mmc)
+		HM.traverseWithKey (\cs cfg -> liftJ2 (breedGenome cfg) (iGenome mmc ind cs) (iGenome mmc ind' cs)) (mmcGenomeConfig mmc)
 	where
 	chooseTwo = do
 		[a, b] <- replicateM 2 (uniformVI' rng pop)
@@ -480,7 +482,7 @@ mutate mmc rng pop = do
 	where
 	replaceGene = onGene rng pop \cs pat sz g -> liftJ2 gAppend
 		(gIndices g $ [0..pat-1] ++ [pat+1..sz-1])
-		(newJeffreysGenome rng cs 1)
+		(newJeffreysGenome mmc rng cs 1)
 	deleteGene = onGene rng pop \_cs pat sz g -> gIndices g $ [0..pat-1] ++ [pat+1..sz-1]
 	togglePattern = onGeneClone rng pop \cs pat _sz g -> do
 		chan <- uniformV' rng allChannels
@@ -493,7 +495,7 @@ mutate mmc rng pop = do
 		delta <- standard rng
 		gSetPatternScore g pat . tweakScore mmc delta $ gGetPatternScore g pat
 	bulkPatternToggle = onGeneClone rng pop \cs pat _sz g -> do
-		pat' <- newJeffreysGenome rng cs 1
+		pat' <- newJeffreysGenome mmc rng cs 1
 		let loop = do
 		    	x <- uniformIndex (csWidth cs)
 		    	y <- uniformIndex (csHeight cs)
@@ -515,9 +517,9 @@ addGenes mmc rng pop = V.replicateM (mmcGeneAdditions mmc) addGene where
 	addGene = do
 		ind <- uniformV' rng pop
 		(cs, gc) <- uniformV' rng convolutionSizes
-		g <- maybe (newGenome cs 0 0) pure (HM.lookup cs ind)
+		g <- iGenome mmc ind cs
 		if gSize g < gcMaxPatterns gc
-			then pure . flip (HM.insert cs) ind =<< gAppend g =<< newJeffreysGenome rng cs 1
+			then pure . flip (HM.insert cs) ind =<< gAppend g =<< newJeffreysGenome mmc rng cs 1
 			else addGene
 
 tweakScore :: MsMendelConfig -> Double -> Float -> Float
