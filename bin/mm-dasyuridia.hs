@@ -8,6 +8,7 @@
 
 import Control.Applicative
 import Control.Concurrent
+import Control.Exception
 import Control.Monad
 import Data.Bits
 import Data.Foldable
@@ -31,8 +32,6 @@ import qualified Data.Map as M
 import qualified Data.Vector as V
 import qualified Data.HashMap.Strict as HM
 
--- TODO: how come we never place the very first pill right? like not the first
--- pill every level, just the first pill in the run of the program
 main :: IO ()
 main = do
 	dir <- getXdgDirectory XdgData "ms-mendel"
@@ -40,6 +39,11 @@ main = do
 	generation <- readFile (dir </> "latest.json") >>= readIO @Int
 	Just (RecordOfVectors specs) <- A.decodeFileStrict (dir </> show generation <.> "json")
 	genome <- iFromSpec mirroring (V.head specs)
+	-- The very first genome evaluation of the program takes a little while.
+	-- I'm not 100% sure about why, but at a guess libtorch is a largish
+	-- library and it gets loaded lazily. In any case, let's do one straight
+	-- away to reduce the likelihood of missing a deadline later.
+	evaluate $ iEvaluate genome (emptyBoard 8 16) (V.singleton (emptyBoard 8 16))
 
 	args <- getArgs
 	(i, o, e, _p) <- runInteractiveProcess "dasyuridia" args Nothing Nothing
