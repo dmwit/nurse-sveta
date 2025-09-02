@@ -10,11 +10,15 @@ import Control.Applicative
 import Control.Concurrent
 import Control.Exception
 import Control.Monad
+import Control.Monad.ST
 import Data.Bits
 import Data.Foldable
 import Data.Function
+import Data.IORef
 import Data.List
 import Data.Map (Map)
+import Data.Ord (comparing)
+import Data.Traversable
 import Data.Vector (Vector)
 import Dr.Mario.Model
 import Dr.Mario.Pathfinding
@@ -25,12 +29,14 @@ import System.Process
 import System.IO
 import Text.Printf
 import Text.Read
+import Util
 
 import qualified Data.ByteString.Lazy.Char8 as LBS8
 import qualified Data.Aeson as A
 import qualified Data.Map as M
 import qualified Data.Vector as V
 import qualified Data.HashMap.Strict as HM
+import qualified Nurse.Sveta.Tomcats as Tomcats
 
 main :: IO ()
 main = do
@@ -80,24 +86,159 @@ state0 = State Nothing Nothing Nothing Nothing 0
 
 possiblyEmit :: Handle -> Individual -> State -> IO State
 possiblyEmit h g (State (Just b) (Just lk) (Just fc) (Just spd) pu) = do
-	mb <- thaw b
-	placements <- mapproxReachable mb (even fc) (gravity spd pu)
-	let pbs = V.fromList [((path, pill), b') | (placement, path) <- HM.toList placements, let pill = mpPill placement lk, Just (_, b') <- [place b pill]]
-	    scores = iEvaluate g b (snd <$> pbs)
-	    bestIndices = V.findIndices (V.maximum scores==) scores
-	    ((bestPath, bestPill), _bestB) = pbs V.! V.head bestIndices
+	tlt <- iterate (>>= tltVisit g) (tltNew g (b, even fc, spd) lk pu) !! 0
+	let bestPath = lrtBestChild (tltChild tlt)
 	    request = ppPath fc bestPath
-	case (bestIndices V.!? 0) >>= (pbs V.!?) of
-		Nothing -> pure state0 { sPills = pu }
-		Just ((bestPath, bestPill), _bestB) -> do
-			ppIO b
-			printf "P sensitive %s gravity %d\n" (show (even fc)) (gravity spd pu)
-			putStr $ unlines [printf "P %s: %s" (ppPill pill) (ppPath 0 path) | ((path, pill), _) <- V.toList pbs]
-			hPutStrLn h request
-			printf "R %s@%d: %s\n" (ppPill bestPill) (fc + mpPathLength bestPath) request
-			pure state0 { sPills = pu+1 }
-			where request = ppPath fc bestPath
+	ppIO b
+	printf "P sensitive %s gravity %d\n" (show (even fc)) (gravity spd pu)
+	hPutStrLn h request
+	printf "R %d: %s\n" (fc + mpPathLength bestPath) request
+	pure state0 { sPills = pu + 1 }
 possiblyEmit _ _ s = pure s
+
+data PillResultTree = PillResultTree
+	{ prtShallowChildren :: [LookaheadResultTree]
+	, prtDeepChildren :: [LookaheadResultTree]
+	, prtIncomingPill :: Pill
+	, prtIncomingPath :: MidPath
+	, prtEvaluation :: !Double
+	} deriving (Eq, Ord, Read, Show)
+
+data LookaheadResultTree = LookaheadResultTree
+	-- TODO: move to NonEmpty to make the invariant known to the compiler?
+	{ lrtShallowChildren :: [PillResultTree] -- ^ Invariant: never empty
+	, lrtDeepChildren :: [PillResultTree]
+	, lrtIncomingLookahead :: Lookahead
+	, lrtEvaluation :: !Double
+	, lrtBestChild :: MidPath
+	} deriving (Eq, Ord, Read, Show)
+
+data TopLevelTree = TopLevelTree
+	{ tltChild :: LookaheadResultTree
+	, tltGameState :: Tomcats.GameState
+	}
+
+tltNew :: Tomcats.GameStateSeed seed => Individual -> seed -> Lookahead -> Int -> IO TopLevelTree
+tltNew i seed lk pu = do
+	gs <- Tomcats.initialState seed
+	writeIORef (Tomcats.pillsUsed gs) pu
+	placements <- HM.toList . (if leftColor lk == rightColor lk then fst else snd) <$> Tomcats.gameStateApproxReachable gs
+	pillsAndBoards <- for placements \(mp, path) -> do
+		let pill = mpPill mp lk
+		-- TODO: there must be some way to share this stuff with ms-mendel
+		gs' <- Tomcats.cloneGameState gs
+		Tomcats.playMove gs' path pill
+		b <- mfreeze (Tomcats.board gs')
+		pure (pill, path, b)
+	pure TopLevelTree
+		{ tltChild = lrtNew lk $ zipWith
+			(\(pill, path, _b) eval -> prtFromEvaluation pill path eval)
+			pillsAndBoards
+			(V.toList $ iEvaluate i (thrd (head pillsAndBoards)) (V.fromList (thrd <$> pillsAndBoards)))
+		, tltGameState = gs
+		}
+
+lrtNew :: Lookahead -> [PillResultTree] -> LookaheadResultTree
+lrtNew lk prts = LookaheadResultTree
+	{ lrtShallowChildren = prts
+	, lrtDeepChildren = []
+	, lrtIncomingLookahead = lk
+	, lrtEvaluation = prtEvaluation best
+	, lrtBestChild = prtIncomingPath best
+	} where
+	best = maximumBy (comparing prtEvaluation) prts
+
+prtFromChildren :: Pill -> MidPath -> [LookaheadResultTree] -> PillResultTree
+prtFromChildren pill path lrts = PillResultTree
+	{ prtShallowChildren = lrts
+	, prtDeepChildren = []
+	, prtIncomingPill = pill
+	, prtIncomingPath = path
+	, prtEvaluation = sum (lrtEvaluation <$> lrts) / fromIntegral (max 1 (length lrts))
+	}
+
+prtFromEvaluation :: Pill -> MidPath -> Float -> PillResultTree
+prtFromEvaluation pill path eval = PillResultTree
+	{ prtShallowChildren = []
+	, prtDeepChildren = []
+	, prtIncomingPill = pill
+	, prtIncomingPath = path
+	, prtEvaluation = realToFrac eval
+	}
+
+tltVisit :: Individual -> TopLevelTree -> IO TopLevelTree
+tltVisit i tlt = do
+	gs <- Tomcats.cloneGameState (tltGameState tlt)
+	(_, lrt') <- lrtVisit i gs (tltChild tlt)
+	pure tlt { tltChild = lrt' }
+
+-- TODO: Right now, evaluations only get updated when we've completed a
+-- subtree. We could probably benefit from updating them as we go. If we go
+-- that route, we may also want to randomize the order we visit children in.
+
+-- the bool is True if this visit makes the tree have the same depth everywhere
+lrtVisit :: Individual -> Tomcats.GameState -> LookaheadResultTree -> IO (Bool, LookaheadResultTree)
+lrtVisit i gs lrt = do
+	Tomcats.playMove gs (prtIncomingPath prt) (prtIncomingPill prt)
+	(expanded, prt') <- prtVisit i gs prt
+	pure case (expanded, shallow) of
+		(True , []) -> (True , lrtNew lk (prt':deep))
+		(True , _ ) -> (False, lrt { lrtShallowChildren = shallow, lrtDeepChildren = prt':deep })
+		(False, _ ) -> (False, lrt { lrtShallowChildren = prt':shallow })
+	where
+	deep = lrtDeepChildren lrt
+	prt:shallow = lrtShallowChildren lrt
+	lk = lrtIncomingLookahead lrt
+
+-- the bool is True if this visit makes the tree have the same depth everywhere
+prtVisit :: Individual -> Tomcats.GameState -> PillResultTree -> IO (Bool, PillResultTree)
+prtVisit i gs prt = Tomcats.finished gs >>= \case
+	True -> pure (True, prt)
+	False -> case prtShallowChildren prt of
+		lrt:shallow -> do
+			Tomcats.playRNG gs (lrtIncomingLookahead lrt)
+			(expanded, lrt') <- lrtVisit i gs lrt
+			pure case (expanded, shallow) of
+				(True , []) -> (True , prtFromChildren (prtIncomingPill prt) (prtIncomingPath prt) (lrt':prtDeepChildren prt))
+				(True , _ ) -> (False, prt { prtShallowChildren = shallow, prtDeepChildren = lrt':prtDeepChildren prt })
+				(False, _ ) -> (False, prt { prtShallowChildren = lrt':shallow })
+		[] -> do
+			(symm_, asymm_) <- Tomcats.gameStateApproxReachable gs
+			let symm = HM.toList symm_
+			    asymm = HM.toList asymm_
+			b <- mfreeze (Tomcats.board gs)
+			-- TODO: A common case is that every pill placement is orientable,
+			-- and so pills and their mirrors can share evaluations. Think
+			-- about how to take advantage of that.
+			pillsAndBoards <- for (liftA2 Lookahead [minBound..maxBound] [minBound..maxBound]) \lk ->
+				(,) lk <$> for (if leftColor lk == rightColor lk then symm else asymm) \(mp, path) -> do
+					let pill = mpPill mp lk
+					gs' <- Tomcats.cloneGameState gs
+					Tomcats.playMove gs' path pill
+					b' <- mfreeze (Tomcats.board gs')
+					pure (pill, path, b')
+			let evals = V.toList . iEvaluate i b . V.fromList $ [b' | (_, children) <- pillsAndBoards, (_, _, b') <- children]
+			    match vs ((lk, pbs):rest) = lrtNew lk (zipWith (\v (pill, path, _) -> prtFromEvaluation pill path v) vs pbs)
+			    	: match (drop (length pbs) vs) rest
+			    match _ [] = []
+			pure . (,) True . prtFromChildren (prtIncomingPill prt) (prtIncomingPath prt) $ match evals pillsAndBoards
+
+tltDepth :: Int -> TopLevelTree -> TopLevelTree
+tltDepth n tlt = tlt { tltChild = lrtDepth n (tltChild tlt) }
+
+lrtDepth :: Int -> LookaheadResultTree -> LookaheadResultTree
+lrtDepth 0 lrt = lrt { lrtShallowChildren = [], lrtDeepChildren = [] }
+lrtDepth n lrt = lrt
+	{ lrtShallowChildren = map (prtDepth (n-1)) (lrtShallowChildren lrt)
+	, lrtDeepChildren = map (prtDepth (n-1)) (lrtDeepChildren lrt)
+	}
+
+prtDepth :: Int -> PillResultTree -> PillResultTree
+prtDepth 0 prt = prt { prtShallowChildren = [], prtDeepChildren = [] }
+prtDepth n prt = prt
+	{ prtShallowChildren = map (lrtDepth (n-1)) (prtShallowChildren prt)
+	, prtDeepChildren = map (lrtDepth (n-1)) (prtDeepChildren prt)
+	}
 
 ppPath :: FrameCount -> MidPath -> String
 ppPath fc = printf "%d %s" fc . concatMap ppStep . mpSteps
@@ -136,6 +277,46 @@ ppColor = \case
 
 ppPosition :: Position -> String
 ppPosition pos = printf "(%d,%2d)" (x pos) (y pos)
+
+ppTopLevelTree :: TopLevelTree -> String
+ppTopLevelTree = ppLookaheadResultTree "" . tltChild
+
+ppLookaheadResultTrees :: String -> [LookaheadResultTree] -> String
+ppLookaheadResultTrees indent = unlines . map (ppLookaheadResultTree ('\t':indent))
+
+ppLookaheadResultTree :: String -> LookaheadResultTree -> String
+ppLookaheadResultTree indent lrt = printf
+	"%s%s => %f (%s)%s"
+	indent
+	(ppLookahead (lrtIncomingLookahead lrt))
+	(lrtEvaluation lrt)
+	(drop 2 . ppPath 0 $ lrtBestChild lrt)
+	case lrtShallowChildren lrt ++ lrtDeepChildren lrt of
+		[] -> "" :: String
+		_ -> printf "\n%s%s---\n%s"
+			(ppPillResultTrees indent (lrtShallowChildren lrt))
+			indent
+			(ppPillResultTrees indent (lrtDeepChildren lrt))
+
+ppPillResultTrees :: String -> [PillResultTree] -> String
+ppPillResultTrees indent = unlines . map (ppPillResultTree ('\t':indent))
+
+ppPillResultTree :: String -> PillResultTree -> String
+ppPillResultTree indent prt = printf
+	"%s%s => %f (%s)%s"
+	indent
+	(ppPill (prtIncomingPill prt))
+	(prtEvaluation prt)
+	(drop 2 . ppPath 0 $ prtIncomingPath prt)
+	case prtShallowChildren prt ++ prtDeepChildren prt of
+		[] -> "" :: String
+		_ -> printf "\n%s%s---\n%s"
+			(ppLookaheadResultTrees indent (prtShallowChildren prt))
+			indent
+			(ppLookaheadResultTrees indent (prtDeepChildren prt))
+
+ppLookahead :: Lookahead -> String
+ppLookahead lk = ppColor (leftColor lk) ++ ppColor (rightColor lk)
 
 type FrameCount = Int
 data Event

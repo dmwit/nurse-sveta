@@ -161,7 +161,7 @@ iEvaluateIO :: Individual -> Board -> Vector Board -> IO (Vector Float)
 iEvaluateIO ind b bs | invalid = fail "iEvaluate only works on 8x16 boards (because the underlying C++ function does)"
 	| otherwise =
 		allocaArray 128 \cxx_base_board ->
-		allocaArray (V.length bs) \cxx_out ->
+		allocaArray n \cxx_out ->
 		BS.useAsCStringLen diffsBS \(cxx_diffs, _len) -> do
 			for_ [0..7] \x ->
 				for_ [0..15] \y ->

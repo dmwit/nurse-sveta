@@ -18,3 +18,12 @@ ensure p x = x <$ guard (p x)
 -- carefully supports multiple-use partial-application
 equating :: Eq b => (a -> b) -> a -> a -> Bool
 equating f a = (f a==) . f
+
+frst :: (a, b, c) -> a
+frst (a, _, _) = a
+
+scnd :: (a, b, c) -> b
+scnd (_, b, _) = b
+
+thrd :: (a, b, c) -> c
+thrd (_, _, c) = c

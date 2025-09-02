@@ -14,7 +14,7 @@ module Nurse.Sveta.Tomcats (
 	GameStateSeed(..), ExactLevel(..),
 	dumbEvaluation,
 	sampleRNG', uniformV, uniformV', uniformVI, uniformVI',
-	MidPath(..),
+	MidPath(..), MidPlacement(..), gameStateApproxReachable,
 	GameState(..), IGameState(..), cloneGameState, freezeGameState,
 	finished,
 	ppRNGTree, ppRNGTreeDebug, ppMoveTree, ppMoveTreeDebug,
@@ -110,6 +110,14 @@ playMove gs path pill = do
 		modifyIORef' (virusesKilled gs) (clears counts +)
 		modifyIORef' (pillsUsed gs) succ
 		modifyIORef' (framesPassed gs) (approximateCostModel path pill counts +)
+
+gameStateApproxReachable :: GameState -> IO (HashMap MidPlacement MidPath, HashMap MidPlacement MidPath)
+gameStateApproxReachable gs = do
+	fp <- readIORef (framesPassed gs)
+	pu <- readIORef (pillsUsed gs)
+	asymm <- mapproxReachable (board gs) (fp .&. 1 /= fromEnum (originalSensitive gs)) (gravity (speed gs) pu)
+	let symm = HM.fromListWith shorterPath [(placement { mpRotations = mpRotations placement .&. 1 }, path) | (placement, path) <- HM.toList asymm]
+	pure (symm, asymm)
 
 class GameStateSeed a where initialState :: a -> IO GameState
 
@@ -294,19 +302,15 @@ newRNGTreeFromSeed eval rng prior seed = do
 	gs <- initialState seed
 	future <- schedule eval =<< netInput gs
 	visitOrder <- uniformShuffle allLookaheads rng
-
-	fp <- readIORef (framesPassed gs)
-	pu <- readIORef (pillsUsed gs)
-	placements <- mapproxReachable (board gs) (fp .&. 1 /= fromEnum (originalSensitive gs)) (gravity (speed gs) pu)
-
+	(symm, asymm) <- gameStateApproxReachable gs
 	no <- future
 
 	let t = RNGTree
 	    	{ childrenRNG = HM.empty
 	    	, orderRNG = visitOrder
 	    	, nextLookaheadRNG = 0
-	    	, placementsRNG = placements
-	    	, symmetricPlacementsRNG = symmetrize placements
+	    	, placementsRNG = asymm
+	    	, symmetricPlacementsRNG = symm
 	    	, childPriorsRNG = noPriors no
 	    	, priorProbabilityRNG = prior
 	    	-- Normally the parent manages the cumulative valuation, because it
@@ -322,9 +326,6 @@ newRNGTreeFromSeed eval rng prior seed = do
 	    	}
 
 	pure (gs, t)
-	where
-	symmetrize :: HashMap MidPlacement MidPath -> HashMap MidPlacement MidPath
-	symmetrize moves = HM.fromListWith shorterPath [(placement { mpRotations = mpRotations placement .&. 1 }, path) | (placement, path) <- HM.toList moves]
 
 newMoveTree :: SearchContext -> HashMap MidPlacement MidPath -> EndpointMap Pill CFloat -> Lookahead -> IO MoveTree
 newMoveTree ctx pathCache priors lk = do
