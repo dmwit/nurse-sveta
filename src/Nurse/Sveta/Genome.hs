@@ -400,7 +400,7 @@ instance FromJSON Pattern where
 			, pHeight = h
 			, pCells =
 				[ row ++ replicate (w - length row) anythingCell
-				| row <- cells
+				| row <- reverse cells
 				]
 			}
 
