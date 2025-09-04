@@ -7,6 +7,7 @@ module Nurse.Sveta.Genome (
 	gSetColorPattern, gSetShapePattern, gSetPatternScore,
 	IndividualSpec, iSpec, iFromSpec,
 	gDump, gSketch,
+	Patterns, iFromPatterns,
 	ConvolutionSize(..), csPretty,
 	WithSentinels(..),
 	allColorsWithSentinels, allShapesWithSentinels,
