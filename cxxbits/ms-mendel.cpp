@@ -49,20 +49,16 @@ class Boards {
 		int64_t size() const { return color_.size(INDEX_DIM); }
 
 		// these are padded appropriately for the given convolution size
-		const Tensor &p_color(int64_t conv_width, int64_t conv_height) const;
-		const Tensor &p_shape(int64_t conv_width, int64_t conv_height) const;
+		Tensor p_color(int64_t conv_width, int64_t conv_height) const;
+		Tensor p_shape(int64_t conv_width, int64_t conv_height) const;
 
 		string sketch() const;
 		friend ostream &operator<<(ostream &o, const Boards &g);
 
 	protected:
-		void generate_padding_cache(int64_t conv_width, int64_t conv_height) const;
-
-		// num boards x ((COLORS or SHAPES) + SENTINELS) x BOARD_WIDTH x BOARD_HEIGHT
+		// TODO: could probably make this be (3w-2) x (3h-2) instead of 3w x 3h
+		// num boards x ((COLORS or SHAPES) + SENTINELS) x (3*BOARD_WIDTH) x (3*BOARD_HEIGHT)
 		Tensor color_, shape_;
-		// padded versions of color_ and shape_, together with the conv_width and conv_height they're padded for
-		mutable int64_t p_conv_width_, p_conv_height_;
-		mutable Tensor p_color_, p_shape_;
 };
 
 class Genome {
@@ -144,8 +140,8 @@ Boards::Boards(char *base_board, char *diffs) {
 		}
 	}
 
-	color_ = base_color.expand({num_boards, -1, -1, -1}).clone();
-	shape_ = base_shape.expand({num_boards, -1, -1, -1}).clone();
+	Tensor color = base_color.expand({num_boards, -1, -1, -1}).clone();
+	Tensor shape = base_shape.expand({num_boards, -1, -1, -1}).clone();
 
 	i = 0;
 	while(*diffs != '\xfe') {
@@ -156,65 +152,48 @@ Boards::Boards(char *base_board, char *diffs) {
 		}
 
 		int x = MASK_AND_SHIFT(diffs, X), y = MASK_AND_SHIFT(diffs, Y);
-		color_.index_put_({i, ALL, x, y}, 0);
-		shape_.index_put_({i, ALL, x, y}, 0);
+		color.index_put_({i, ALL, x, y}, 0);
+		shape.index_put_({i, ALL, x, y}, 0);
 		++diffs;
 
-		color_[i][MASK_AND_SHIFT(diffs, Color)][x][y] = 1;
-		shape_[i][MASK_AND_SHIFT(diffs, Shape)][x][y] = 1;
+		color[i][MASK_AND_SHIFT(diffs, Color)][x][y] = 1;
+		shape[i][MASK_AND_SHIFT(diffs, Shape)][x][y] = 1;
 		++diffs;
 	}
 #undef MASK_AND_SHIFT
+
+	indexing::Slice board_x(BOARD_WIDTH, 2*BOARD_WIDTH), board_y(BOARD_HEIGHT, 2*BOARD_HEIGHT);
+	color_ = torch::zeros({num_boards, COLORS+SENTINELS, 3*BOARD_WIDTH, 3*BOARD_HEIGHT}, GPU_BOOL_REP);
+	shape_ = torch::zeros({num_boards, SHAPES+SENTINELS, 3*BOARD_WIDTH, 3*BOARD_HEIGHT}, GPU_BOOL_REP);
+	color_.index_put_({ALL, COLOR_OUT_OF_BOUNDS, ALL, ALL}, 1);
+	shape_.index_put_({ALL, SHAPE_OUT_OF_BOUNDS, ALL, ALL}, 1);
+	color_.index_put_({ALL, ALL, board_x, board_y}, color);
+	shape_.index_put_({ALL, ALL, board_x, board_y}, shape);
 }
 
-void Boards::generate_padding_cache(int64_t w, int64_t h) const {
-	int64_t x = (w-1)/2, y = (h-1)/2;
-	indexing::Slice board_x(x, x+BOARD_WIDTH), board_y(y, y+BOARD_HEIGHT);
-	p_conv_width_ = w;
-	p_conv_height_ = h;
-	p_color_ = torch::zeros({size(), COLORS+SENTINELS, BOARD_WIDTH + w-1, BOARD_HEIGHT + h-1}, GPU_BOOL_REP);
-	p_shape_ = torch::zeros({size(), SHAPES+SENTINELS, BOARD_WIDTH + w-1, BOARD_HEIGHT + h-1}, GPU_BOOL_REP);
-	p_color_.index_put_({ALL, COLOR_OUT_OF_BOUNDS, ALL, ALL}, 1);
-	p_shape_.index_put_({ALL, SHAPE_OUT_OF_BOUNDS, ALL, ALL}, 1);
-	p_color_.index_put_({ALL, ALL, board_x, board_y}, color_);
-	p_shape_.index_put_({ALL, ALL, board_x, board_y}, shape_);
+Tensor Boards::p_color(int64_t w, int64_t h) const {
+	assert(0 < w && w <= BOARD_WIDTH && 0 < h && h <= BOARD_HEIGHT);
+	--w;
+	--h;
+	return color_.index({ALL, ALL, indexing::Slice(BOARD_WIDTH-w, 2*BOARD_WIDTH+w), indexing::Slice(BOARD_HEIGHT-h, 2*BOARD_HEIGHT+h)});
 }
 
-const Tensor &Boards::p_color(int64_t w, int64_t h) const {
-	if(!p_color_.defined() || p_conv_width_ != w || p_conv_height_ != h) {
-		// we sort of assume that if you're asking for p_color(), you're about
-		// to ask for p_shape(), and generate 'em both
-		generate_padding_cache(w, h);
-	}
-	return p_color_;
-}
-
-const Tensor &Boards::p_shape(int64_t w, int64_t h) const {
-	if(!p_shape_.defined() || p_conv_width_ != w || p_conv_height_ != h) {
-		// we sort of assume that if you're asking for p_shape(), you're about
-		// to ask for p_color(), and generate 'em both
-		generate_padding_cache(w, h);
-	}
-	return p_shape_;
+Tensor Boards::p_shape(int64_t w, int64_t h) const {
+	assert(0 < w && w <= BOARD_WIDTH && 0 < h && h <= BOARD_HEIGHT);
+	--w;
+	--h;
+	return shape_.index({ALL, ALL, indexing::Slice(BOARD_WIDTH-w, 2*BOARD_WIDTH+w), indexing::Slice(BOARD_HEIGHT-h, 2*BOARD_HEIGHT+h)});
 }
 
 string Boards::sketch() const {
 	stringstream o;
-	o << "{ color: " << TensorSketch(color_) << ", shape: " << TensorSketch(shape_);
-	if(p_color_.defined())
-		o << ", padded color: (" << p_conv_width_ << "x" << p_conv_height_ << ") => " << TensorSketch(p_color_);
-	if(p_shape_.defined())
-		o << ", padded shape: (" << p_conv_width_ << "x" << p_conv_height_ << ") => " << TensorSketch(p_shape_);
-	o << " }";
+	o << "{ color: " << TensorSketch(color_) << ", shape: " << TensorSketch(shape_) << " }";
 	return o.str();
 }
 
 ostream &operator<<(ostream &o, const Boards &bs) {
 	string prefix;
-	o << "Board { padding cache = {";
-	if(bs.p_color_.defined()) { o << prefix << "color"; prefix = ", "; }
-	if(bs.p_shape_.defined()) { o << prefix << "shape"; prefix = ", "; }
-	o << "}, color = " << bs.color_ << ", shape = " << bs.shape_ << " }";
+	o << "Board { color = " << bs.color_ << ", shape = " << bs.shape_ << " }";
 	return o;
 }
 
