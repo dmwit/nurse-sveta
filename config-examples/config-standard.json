@@ -1,0 +1,29 @@
+{ "initial-evaluation-threads": 8
+, "initial-evolution-threads": 1
+, "initial-population": 300
+, "pill-cycle-length": 128
+, "evaluation-rate-limit": 0
+, "runs-per-generation": 1
+, "survivors": 130
+, "breeders": 100
+, "mutators": 100
+, "offspring": 10
+, "gene-replacements": 30
+, "gene-deletions": 20
+, "gene-additions": 30
+, "pattern-toggles": 20
+, "score-adjustments": 50
+, "score-adjustment-variance": 0.2
+, "bulk-pattern-toggles": 10
+, "typical-pattern-toggle-batch-size": 10
+, "max-level": 20
+, "max-pills-per-kill": 256
+, "gene-mirroring": true
+, "genome-config":
+	{ "1x1": { "initial-patterns":  1, "max-patterns":  4 }
+	, "1x2": { "initial-patterns":  2, "max-patterns":  8 }
+	, "2x1": { "initial-patterns":  2, "max-patterns":  8 }
+	, "1x3": { "initial-patterns":  1, "max-patterns":  4 }
+	, "3x1": { "initial-patterns":  1, "max-patterns":  4 }
+	}
+}
