@@ -1,24 +1,7 @@
 module Main where
 
 import CategoryMetadata
-import Control.Applicative
-import Control.Concurrent
-import Control.Exception
-import Control.Monad
-import Data.Aeson
-import Data.Foldable
-import Data.Functor
-import Data.HashMap.Strict (HashMap)
-import Data.Int
-import Data.IORef
-import Data.List
-import Data.Maybe
-import Data.Sequence (Seq)
-import Data.Time (UTCTime)
-import Data.Vector (Vector)
-import Dr.Mario.Model
 import GI.Gtk as G
-import Numeric
 import Nurse.Sveta.Files
 import Nurse.Sveta.STM
 import Nurse.Sveta.STM.BatchProcessor
@@ -27,15 +10,6 @@ import Nurse.Sveta.Torch
 import Nurse.Sveta.Util
 import Nurse.Sveta.Widget
 import System.Clock.Seconds
-import System.Environment
-import System.IO
-import System.IO.Error
-import System.Mem
-import System.Process
-import System.Random.MWC
-import System.Random.MWC.Distributions
-import Text.Printf
-import Util
 
 import qualified Data.ByteString as BS
 import qualified Data.HashMap.Strict as HM
@@ -43,7 +17,6 @@ import qualified Data.IntMap as IM
 import qualified Data.Sequence as S
 import qualified Data.Text as T
 import qualified Data.Text.Internal.Encoding.Utf8 as T
-import qualified Data.Time as Time
 import qualified Data.Vector as V
 
 -- ╭╴w╶──────────────────────╮
@@ -173,9 +146,9 @@ generationThreadView eval hpRef = do
 
 renderSpeeds :: Grid -> [(T.Text, SearchSpeed)] -> IO ()
 renderSpeeds spd sss = do
-	now <- Time.getCurrentTime
+	now <- getCurrentTime
 	let row (nm, ss) = [nm, ": ", commaSeparatedNumber (searchIterations ss), " positions/", ms, "s = ", T.justifyRight 5 ' ' . tshow . precision 10 $ rate, " positions/s"] where
-	    	dt = realToFrac . Time.diffUTCTime now . searchStart $ ss :: Double
+	    	dt = realToFrac . diffUTCTime now . searchStart $ ss :: Double
 	    	ms = T.pack (showFFloat (Just 1) (realToFrac dt) "")
 	    	rate = fromIntegral (searchIterations ss) / dt
 	    	precision prec n = fromInteger (round (n*prec)) / prec
@@ -248,7 +221,7 @@ generationThread eval hpRef genRef sc = do
 recordGame :: GameState -> [GameStep] -> Lookahead -> HyperParameters -> IO ()
 recordGame gs steps lk hp = do
 	b <- mfreeze (board gs)
-	now <- Time.getCurrentTime
+	now <- getCurrentTime
 	-- The clever version uses BS.foldr (printf "%02x%s"). The mundane version
 	-- below is definitely linear-time in the length of the bytestring, because
 	-- ++ doesn't do a deep copy of its second argument. It's not so clear in
@@ -881,7 +854,7 @@ trainingThread log netUpdate ref sc = do
 	rng <- createSystemRandom
 	dir <- nsDataDir
 
-	threadStart <- Time.getCurrentTime
+	threadStart <- getCurrentTime
 	saveT <- newIORef threadStart
 	detailT <- newIORef threadStart
 	visualizationT <- newIORef threadStart
@@ -899,9 +872,9 @@ trainingThread log netUpdate ref sc = do
 	    	schedule log (Metric "System/Backprop Tensor Count" (fromInteger ten))
 	    	every (tcHoursPerSave cfg) saveT (saveWeights ten)
 	    	batch <- loadBatch rng sc dir "train" (tcBatchSizeTrain cfg)
-	    	before <- Time.getCurrentTime
+	    	before <- getCurrentTime
 	    	loss <- netTrain net sgd (tcPermuteColors cfg) (tcLossScaling cfg) batch
-	    	after <- Time.getCurrentTime
+	    	after <- getCurrentTime
 	    	schedule log (Metric "loss/train/sum" loss)
 
 	    	every (tcHoursPerDetailReport cfg) detailT $ do
@@ -929,7 +902,7 @@ trainingThread log netUpdate ref sc = do
 	    	timeoutRef <- newTVarIO False
 	    	timeoutID <- forkIO $ case sPayload (tcDutyCycle cfg) of
 	    		0 -> pure ()
-	    		d -> let t = realToFrac (Time.diffUTCTime after before) in do
+	    		d -> let t = realToFrac (diffUTCTime after before) in do
 	    			threadDelay (round (1000000*t*(1-d)/d))
 	    			atomically (writeTVar timeoutRef True)
 
@@ -961,8 +934,8 @@ trainingThread log netUpdate ref sc = do
 	where
 	every hours tref act = do
 		prev <- readIORef tref
-		now <- Time.getCurrentTime
-		when (Time.diffUTCTime now prev > realToFrac (60*60*hours)) $ do
+		now <- getCurrentTime
+		when (diffUTCTime now prev > realToFrac (60*60*hours)) $ do
 			act
 			writeIORef tref now
 
@@ -1023,7 +996,7 @@ loggingThread log sc = do
 
 	hPutStrLn h dir
 	hPutStrLn h "Nurse Sveta"
-	Time.getCurrentTime >>= hPrint h
+	getCurrentTime >>= hPrint h
 	hPutStrLn h "" -- no support for resuming (yet?)
 	hPutStrLn h "" -- no reporting of configuration data (yet?)
 
@@ -1093,7 +1066,7 @@ data SearchSpeed = SearchSpeed
 	} deriving (Eq, Ord, Read, Show)
 
 newSearchSpeed :: IO SearchSpeed
-newSearchSpeed = Time.getCurrentTime <&> \now -> SearchSpeed now 0
+newSearchSpeed = getCurrentTime <&> \now -> SearchSpeed now 0
 
 ssInc :: SearchSpeed -> SearchSpeed
 ssInc ss = ss { searchIterations = searchIterations ss + 1 }

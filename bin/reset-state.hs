@@ -1,8 +1,7 @@
 module Main where
 
-import Control.Exception
 import Nurse.Sveta.Files
-import System.IO.Error
+import Nurse.Sveta.Util
 
 main :: IO ()
 main = do

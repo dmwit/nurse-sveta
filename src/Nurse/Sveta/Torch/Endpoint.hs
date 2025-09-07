@@ -23,18 +23,10 @@ module Nurse.Sveta.Torch.Endpoint (
 	evalGameConstant, evalGameConstants, evalCGameConstant,
 	) where
 
-import Control.Applicative
-import Control.Exception
-import Control.Monad
-import Data.Foldable
-import Data.Maybe
-import Data.Traversable
 import Foreign
 import Foreign.C
-import GHC.Stack
 import Nurse.Sveta.Torch.CWrapper
-import Nurse.Sveta.Util
-import System.IO
+import Nurse.Sveta.Util hiding (withArray)
 import qualified Data.Vector.Storable as VS
 import qualified Data.Vector.Storable.Mutable as MVS
 

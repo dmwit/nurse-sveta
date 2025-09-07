@@ -30,17 +30,10 @@ module Nurse.Sveta.Cairo (
 	lookaheadFromPillContent, pillContentFromLookahead,
 	) where
 
-import Control.Applicative
-import Control.Monad
 import Data.Fixed
-import Data.Foldable
-import Data.Monoid
 import GI.Cairo.Render hiding (RectangleInt(..))
 import GI.Cairo.Render.Matrix (Matrix(..))
-import Dr.Mario.Model hiding (shape)
-import GHC.Stack
-import Numeric
-import Nurse.Sveta.Util
+import Nurse.Sveta.Util hiding (restore, save, shape)
 
 -- | Under normal circumstances, cairo coordinates are (0,0) at the top left,
 -- with x increasing to the right and y increasing down. This converts to (0,0)

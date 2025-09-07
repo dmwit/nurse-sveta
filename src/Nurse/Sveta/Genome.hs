@@ -13,24 +13,11 @@ module Nurse.Sveta.Genome (
 	allColorsWithSentinels, allShapesWithSentinels,
 	) where
 
-import Control.Monad
-import Data.Aeson
-import Data.Aeson.Types
 import Data.ByteString.Builder
-import Data.Coerce
-import Data.Foldable
-import Data.Hashable (Hashable(..))
-import Data.HashMap.Strict (HashMap)
-import Data.Map (Map)
-import Data.Set (Set)
-import Data.String
-import Data.Vector (Vector)
-import Dr.Mario.Model
 import Foreign
 import Foreign.C
 import Nurse.Sveta.Util
 import System.IO.Unsafe
-import Text.Read
 
 import qualified Data.Aeson.Encoding as A
 import qualified Data.ByteString as BS

@@ -1,9 +1,8 @@
 module CategoryMetadata where
 
-import Control.Applicative
-import Data.Aeson
+import Nurse.Sveta.Util
 import Data.Aeson.Encoding
-import Data.IntMap (IntMap)
+
 import qualified Data.IntMap as IM
 
 data LevelMetric = LevelMetric

@@ -1,16 +1,4 @@
-import Control.Monad
-import Control.Monad.Fix
-import Data.Default
-import Data.Foldable
-import Data.Functor
 import Data.GI.Base.Signals
-import Data.IORef
-import Data.List
-import Data.Maybe
-import Data.Text (Text)
-import Data.Traversable
-import Data.Vector (Vector)
-import GHC.Stack
 import GI.Gio (fileNewForPath)
 import GI.Gtk hiding (Text)
 import Nurse.Sveta.Torch.Endpoint
@@ -19,10 +7,7 @@ import Nurse.Sveta.Cairo
 import Nurse.Sveta.Files
 import Nurse.Sveta.Widget
 import Nurse.Sveta.Torch
-import Nurse.Sveta.Util
-import System.Environment
-import System.IO
-import Util
+import Nurse.Sveta.Util hiding (get)
 
 import qualified Data.Text as T
 import qualified Data.Vector as V

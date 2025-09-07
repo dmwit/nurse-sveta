@@ -6,30 +6,8 @@
 -- (P)athfinding arguments or results
 -- (R)equest sent to dasyuridia
 
-import Control.Applicative
-import Control.Concurrent
-import Control.Exception
-import Control.Monad
-import Control.Monad.ST
-import Data.Bits
-import Data.Foldable
-import Data.Function
-import Data.IORef
-import Data.List
-import Data.Map (Map)
-import Data.Ord (comparing)
-import Data.Traversable
-import Data.Vector (Vector)
-import Dr.Mario.Model
 import Dr.Mario.Pathfinding
-import Nurse.Sveta.Files
-import Nurse.Sveta.Genome
-import System.Environment
-import System.Process
-import System.IO
-import Text.Printf
-import Text.Read
-import Util
+import Ms.Mendel
 
 import qualified Data.ByteString.Lazy.Char8 as LBS8
 import qualified Data.Aeson as A
@@ -40,11 +18,10 @@ import qualified Nurse.Sveta.Tomcats as Tomcats
 
 main :: IO ()
 main = do
-	dir <- getXdgDirectory XdgData "ms-mendel"
-	mirroring <- readFile (dir </> "mirroring.txt") >>= readIO @Bool
-	generation <- readFile (dir </> "latest.json") >>= readIO @Int
-	Just (RecordOfVectors specs) <- A.decodeFileStrict (dir </> show generation <.> "json")
-	genome <- iFromSpec mirroring (V.head specs)
+	mmc <- loadConfiguration
+	dir <- basedir XdgData
+	(_, specs) <- loadPopulationAsSpecs_ dir
+	genome <- iFromSpec (mmcGeneMirroring mmc) (V.head specs)
 	-- The very first genome evaluation of the program takes a little while.
 	-- I'm not 100% sure about why, but at a guess libtorch is a largish
 	-- library and it gets loaded lazily. In any case, let's do one straight
@@ -69,9 +46,6 @@ main = do
 			ELock fc pill -> s <$ printf "I ELock %d %s\n" fc (ppPill pill)
 			_ -> s <$ putStrLn ("I " ++ show e)
 		Nothing -> s <$ putStrLn ("E " ++ show ln)
-
-fforever :: Monad m => a -> (a -> m a) -> m b
-fforever = flip (fix . (>=>))
 
 data State = State
 	{ sBoard :: Maybe Board
@@ -258,26 +232,6 @@ ppDirection = \case L -> "<"; R -> ">"
 ppRotation :: Rotation -> String
 ppRotation = \case Clockwise -> "a"; Counterclockwise -> "b"
 
-ppPill :: Pill -> String
-ppPill p = ppPillContent (content p) ++ "@" ++ ppPosition (bottomLeftPosition p)
-
-ppPillContent :: PillContent -> String
-ppPillContent pc = ppOrientation (orientation pc) ++ ppColor (bottomLeftColor pc) ++ ppColor (otherColor pc)
-
-ppOrientation :: Orientation -> String
-ppOrientation = \case
-	Horizontal -> "↔"
-	Vertical -> "↕"
-
-ppColor :: Color -> String
-ppColor = \case
-	Blue -> "b"
-	Red -> "r"
-	Yellow -> "y"
-
-ppPosition :: Position -> String
-ppPosition pos = printf "(%d,%2d)" (x pos) (y pos)
-
 ppTopLevelTree :: TopLevelTree -> String
 ppTopLevelTree = ppLookaheadResultTree "" . tltChild
 
@@ -314,9 +268,6 @@ ppPillResultTree indent prt = printf
 			(ppLookaheadResultTrees indent (prtShallowChildren prt))
 			indent
 			(ppLookaheadResultTrees indent (prtDeepChildren prt))
-
-ppLookahead :: Lookahead -> String
-ppLookahead lk = ppColor (leftColor lk) ++ ppColor (rightColor lk)
 
 type FrameCount = Int
 data Event

@@ -1,14 +1,8 @@
 module Main where
 
-import Data.Foldable
-import Data.List
-import Data.Maybe
-import Dr.Mario.Model
-import Dr.Mario.Pathfinding
+import Nurse.Sveta.Util
 import Nurse.Sveta.Widget
 import GI.Gtk as G
-import System.Environment
-import Util
 
 import qualified Data.HashMap.Strict as HM
 import qualified Data.Text as T

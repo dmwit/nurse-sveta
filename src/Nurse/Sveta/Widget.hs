@@ -58,19 +58,8 @@ module Nurse.Sveta.Widget (
 	tshow, tread,
 	) where
 
-import Control.Concurrent
-import Control.Exception
-import Control.Monad
-import Control.Monad.Fix
-import Control.Monad.IO.Class
-import Data.Foldable
-import Data.Functor
 import Data.GI.Base.Attributes
 import Data.GI.Base.Signals
-import Data.HashMap.Strict (HashMap)
-import Data.Int
-import Data.IORef
-import Data.List
 import Dr.Mario.Model as DM
 import GI.Cairo.Render
 import GI.Cairo.Render.Connector
@@ -80,9 +69,6 @@ import Nurse.Sveta.Cairo
 import Nurse.Sveta.STM
 import Nurse.Sveta.Tomcats (HyperParameters(..))
 import Nurse.Sveta.Util
-import System.IO
-import System.Random.MWC
-import Text.Read
 
 import qualified Data.HashMap.Strict as HM
 import qualified Data.Text as T

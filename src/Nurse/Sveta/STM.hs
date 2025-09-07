@@ -20,12 +20,8 @@ module Nurse.Sveta.STM (
 	Raw.mkWeakTMVar,
 	) where
 
-import Control.Applicative
-import Control.Exception
-import Control.Monad
-import Control.Monad.Fix
 import Data.Array.MArray
-import Data.Coerce
+import Nurse.Sveta.Util
 
 import Control.Concurrent.STM.TArray (TArray)
 import Control.Concurrent.STM.TMVar (TMVar)

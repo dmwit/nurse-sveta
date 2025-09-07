@@ -20,30 +20,14 @@ module Nurse.Sveta.Tomcats (
 	ppRNGTree, ppRNGTreeDebug, ppMoveTree, ppMoveTreeDebug,
 	ppMoveTrees, ppPlacements, ppEndpointMap, ppUnexploredMove,
 	ppAeson,
-	ppPill, ppContent, ppOrientation, ppColor,
+	ppPill, ppContent, ppLookahead, ppOrientation, ppColor,
 	ppPosition,
 	ppPercent, ppPrecision,
 	) where
 
-import Control.Monad
-import Data.Aeson
-import Data.Aeson.Types
-import Data.Bits
-import Data.Foldable
-import Data.Functor
-import Data.HashMap.Strict (HashMap)
-import Data.IORef
-import Data.List
-import Data.Semigroup
-import Data.Vector (Vector)
-import Dr.Mario.Model
-import Dr.Mario.Pathfinding
-import Numeric
 import Nurse.Sveta.STM.BatchProcessor
 import Nurse.Sveta.Torch.Semantics
-import System.Random.MWC
-import System.Random.MWC.Distributions
-import System.Random.Stateful (uniformFloat01M)
+import Nurse.Sveta.Util
 
 import qualified Data.ByteString.Lazy.Char8 as LBS8
 import qualified Data.HashMap.Strict as HM
@@ -748,6 +732,9 @@ ppPill p = ppContent (content p) ++ "@" ++ ppPosition (bottomLeftPosition p)
 ppContent :: PillContent -> String
 ppContent pc = [ppOrientation (orientation pc), ppColor (bottomLeftColor pc), ppColor (otherColor pc)]
 
+ppLookahead :: Lookahead -> String
+ppLookahead lk = [ppColor (leftColor lk), ppColor (rightColor lk)]
+
 ppOrientation :: Orientation -> Char
 ppOrientation Horizontal = '↔'
 ppOrientation Vertical = '↕'
@@ -758,7 +745,7 @@ ppColor Red = 'r'
 ppColor Yellow = 'y'
 
 ppPosition :: Position -> String
-ppPosition pos = "(" ++ show (x pos) ++ ", " ++ show (y pos) ++ ")"
+ppPosition pos = printf "(%d, %2d)" (x pos) (y pos)
 
 ppPercent :: Float -> String
 ppPercent p = (if isNaN p then "nan" else show (round (100*p))) ++ "%"

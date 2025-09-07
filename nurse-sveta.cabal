@@ -22,19 +22,13 @@ common shared
                         , aeson >=2.1 && <2.3
                         , bytestring >=0.10 && <0.12
                         , containers ^>=0.6
-                        , directory ^>=1.3
                         , gi-cairo-render ^>=0.1
                         , gi-gtk ^>=4.0.8
-                        , hashable ^>=1.4
                         , haskell-gi-base ^>=0.26
                         , maryodel ^>=0.1
                         , mtl ^>=2.2
-                        , mwc-random ^>=0.15
-                        , process ^>=1.6
-                        , random ^>=1.2
                         , semialign ^>=1.3
                         , text ^>=2.1
-                        , time >=1.9 && <1.12
                         , unordered-containers ^>=0.2
                         , vector ^>=0.13
                         , vector-algorithms ^>=0.9
@@ -85,12 +79,12 @@ common executable
     hs-source-dirs:     bin
     build-depends:      nurse-sveta
     ghc-options:        -threaded -rtsopts
-    other-modules:      Util
 
 library
     import:             shared
     hs-source-dirs:     src
-    exposed-modules:      Nurse.Sveta.Cairo
+    exposed-modules:      Ms.Mendel
+                        , Nurse.Sveta.Cairo
                         , Nurse.Sveta.Files
                         , Nurse.Sveta.Genome
                         , Nurse.Sveta.STM
@@ -105,12 +99,19 @@ library
                         , Nurse.Sveta.Widget
     other-modules:        Paths_nurse_sveta
     build-depends:        array ^>=0.5
+                        , data-default ^>=0.7
+                        , directory ^>=1.3
                         , filepath ^>=1.4
                         , gi-cairo-connector ^>=0.1
                         , gi-glib ^>=2.0
+                        , hashable ^>=1.4
                         , haskell-gi-base ^>=0.26
+                        , mwc-random ^>=0.15
                         , primitive >=0.7 && <0.10
+                        , process ^>=1.6
+                        , random ^>=1.2
                         , stm ^>=2.5.1
+                        , time >=1.9 && <1.12
     cxx-sources:          cxxbits/adapter.cpp
                         , cxxbits/constants.cpp
                         , cxxbits/debugging.cpp
@@ -150,8 +151,7 @@ executable nurse-sveta-evaluate-stalls
 executable nurse-sveta-endpoint-browser
     import:             executable
     main-is:            endpoint-browser.hs
-    build-depends:        data-default ^>=0.7
-                        , gi-gio ^>=2.0
+    build-depends:        gi-gio ^>=2.0
 
 executable nurse-sveta-mcts-repl
     import:             executable

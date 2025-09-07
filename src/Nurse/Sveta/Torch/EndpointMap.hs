@@ -2,12 +2,9 @@
 
 module Nurse.Sveta.Torch.EndpointMap where
 
-import Data.Coerce
-import Data.Foldable
-import Dr.Mario.Model
 import Foreign
-import GHC.Stack
 import Nurse.Sveta.Torch.Endpoint (StridedVector, GameConstant(..), evalGameConstant)
+import Nurse.Sveta.Util
 import qualified Nurse.Sveta.Torch.Endpoint as SV
 
 newtype EndpointMap k v = EndpointMap { getEndpointMap :: StridedVector v }

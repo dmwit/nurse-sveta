@@ -24,17 +24,11 @@ module Nurse.Sveta.Torch.Semantics (
 	safeLog,
 	) where
 
-import Data.Coerce
-import Data.Hashable
-import Data.HashMap.Strict (HashMap)
-import Data.HashSet (HashSet)
 import Data.Kind
-import Data.Map.Strict (Map)
-import Dr.Mario.Model
 import Foreign.C
-import GHC.Stack
 import Nurse.Sveta.Torch.Endpoint
 import Nurse.Sveta.Torch.EndpointMap (EndpointMap(..), EndpointKey(..))
+import Nurse.Sveta.Util
 
 import qualified Data.HashMap.Strict as HM
 import qualified Data.Map as M

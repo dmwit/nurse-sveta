@@ -1,40 +1,10 @@
 module Main where
 
-import Control.Concurrent
-import Control.Exception
-import Control.Monad
-import Data.Aeson
-import Data.Bits
-import Data.Char
-import Data.Foldable
-import Data.HashMap.Strict (HashMap)
-import Data.Int
-import Data.IORef
-import Data.List
-import Data.Ord
-import Data.Time
-import Data.Traversable
-import Data.Vector (Vector)
-import Dr.Mario.Model
-import Dr.Mario.Pathfinding
-import GHC.Generics
 import GI.Gtk
-import Nurse.Sveta.Files
-import Nurse.Sveta.Genome
+import Ms.Mendel
 import Nurse.Sveta.STM
-import Nurse.Sveta.Tomcats
-import Nurse.Sveta.Util
 import Nurse.Sveta.Widget
-import System.Environment
-import System.IO
-import System.IO.Error
-import System.Random.MWC
-import System.Random.MWC.Distributions
-import System.Random.Stateful (uniformFloat01M)
-import System.Mem
-import Util
 
-import qualified Data.ByteString.Lazy.Char8 as LBS
 import qualified Data.HashMap.Strict as HM
 import qualified Data.Text as T
 import qualified Data.Vector as V
@@ -50,8 +20,7 @@ import qualified Data.Vector.Mutable as VM
 main :: IO ()
 main = do
 	torchPlusGtkFix
-	dir <- getXdgDirectory XdgConfig "ms-mendel"
-	mmc <- eitherDecodeFileStrict (dir </> "config.json") >>= either fail pure
+	mmc <- loadConfiguration
 	app <- new Application []
 	on app #activate do
 		forceQuitRef <- newIORef False
@@ -91,42 +60,6 @@ main = do
 	args <- getArgs
 	() <$ #run app (Just args)
 
-data GenomeConfig = GenomeConfig
-	{ gcInitialPatterns :: Int
-	, gcMaxPatterns :: Int
-	} deriving (Eq, Ord, Read, Show, Generic)
-
-instance FromJSON GenomeConfig where parseJSON = genericParseJSON (dashParseJSONOptions "GenomeConfig" "gc")
-instance ToJSON GenomeConfig where toEncoding = genericToEncoding (dashParseJSONOptions "GenomeConfig" "gc")
-
-data MsMendelConfig = MsMendelConfig
-	{ mmcInitialEvaluationThreads :: Int
-	, mmcInitialEvolutionThreads :: Int
-	, mmcInitialPopulation :: Int
-	, mmcPillCycleLength :: Int
-	, mmcEvaluationRateLimit :: Int
-	, mmcRunsPerGeneration :: Int
-	, mmcSurvivors :: Int
-	, mmcBreeders :: Int
-	, mmcMutators :: Int
-	, mmcOffspring :: Int
-	, mmcGeneReplacements :: Int
-	, mmcGeneDeletions :: Int
-	, mmcGeneAdditions :: Int
-	, mmcPatternToggles :: Int
-	, mmcScoreAdjustments :: Int
-	, mmcScoreAdjustmentVariance :: Float
-	, mmcBulkPatternToggles :: Int
-	, mmcTypicalPatternToggleBatchSize :: Float
-	, mmcMaxLevel :: Int
-	, mmcGenomeConfig :: HashMap ConvolutionSize GenomeConfig
-	, mmcGeneMirroring :: Bool
-	, mmcMaxPillsPerKill :: Int
-	} deriving (Eq, Ord, Read, Show, Generic)
-
-instance FromJSON MsMendelConfig where parseJSON = genericParseJSON (dashParseJSONOptions "MsMendelConfig" "mmc")
-instance ToJSON MsMendelConfig where toEncoding = genericToEncoding (dashParseJSONOptions "MsMendelConfig" "mmc")
-
 data Job = Job
 	{ jIndividual :: Individual
 	, jGame :: GameState
@@ -146,15 +79,6 @@ instance Semigroup Evaluation where
 		{ eViruses = eViruses e + eViruses e'
 		, eFramesToLastKill = eFramesToLastKill e + eFramesToLastKill e'
 		}
-
-dashParseJSONOptions :: String -> String -> Options
-dashParseJSONOptions typeName prefix = defaultOptions
-	{ fieldLabelModifier = \fieldName -> case stripPrefix prefix fieldName of
-		Just s -> drop 1 [c' | c <- s, c' <- ['-' | isUpper c] ++ [toLower c]]
-		Nothing -> error $ "unexpected field name " ++ show fieldName ++ " in parseJSON @" ++ typeName
-	, allowOmittedFields = False
-	, rejectUnknownFields = True
-	}
 
 evaluationThreadView :: MsMendelConfig -> MVar Job -> IO ThreadView
 evaluationThreadView mmc jobs = do
@@ -214,7 +138,7 @@ evaluationThread mmc jobs psmRef sc = createSystemRandom >>= \rng -> forever do
 		, eFramesToLastKill = frames
 		}
 	where
-	stopMoving pills gs = finished gs <||> do
+	stopMoving pills gs = finished gs `orM` do
 		pills' <- readIORef (pillsUsed gs)
 		pure (pills' > pills + mmcMaxPillsPerKill mmc)
 
@@ -232,16 +156,6 @@ data GenerationOverview = GenerationOverview
 goCurrentLevelEstimate, goVirusesAvailableEstimate :: GenerationOverview -> Int
 goCurrentLevelEstimate go = goLevelsPlayed go `div` goPopulationSize go `div` goRunsPerGeneration go
 goVirusesAvailableEstimate go = (goRunsPerGeneration go *) . (\lev -> 2 * (lev+1) * (lev+2)) . goCurrentLevelEstimate $ go
-
--- use the Jeffreys prior for Bernoulli distributions, β(½,½), to choose the
--- Bernoulli parameter
-newJeffreysGenome :: MsMendelConfig -> GenIO -> ConvolutionSize -> Int -> IO Genome
-newJeffreysGenome mmc rng cs n = newGenome (mmcGeneMirroring mmc) cs n . realToFrac =<< beta 0.5 0.5 rng
-
-newJeffreysIndividual :: MsMendelConfig -> GenIO -> IO Individual
-newJeffreysIndividual mmc rng = HM.traverseWithKey
-	(\cs -> newJeffreysGenome mmc rng cs . gcInitialPatterns)
-	(mmcGenomeConfig mmc)
 
 data Table = Table
 	{ tNextRow :: IORef Int32
@@ -289,7 +203,7 @@ evolutionThreadView mmc jobs = do
 	getCurrentTime >>= print
 	putStrLn $ "generation: " ++ show generation
 	putStr $ "configuration: "
-	LBS.putStrLn $ encode mmc
+	putStrLn $ ppAeson mmc
 	putStrLn ""
 
 	t <- newTable
@@ -409,147 +323,14 @@ evolutionThread mmc jobs dir replies overviewRef rng pop0 sc = go pop0 where
 		go pop'
 
 initializePopulation :: MsMendelConfig -> FilePath -> GenIO -> IO (Int, Vector Individual)
-initializePopulation mmc dir rng = do
-	let generationFilename = dir </> "latest.json"
-	handle (missing generationFilename) do
-		bsGeneration <- LBS.readFile generationFilename
-		handle (corrupt generationFilename) do
-			generation <- throwDecode bsGeneration
-			let specsFilename = dir </> show generation <.> "json"
-			handle (missing ("WARNING: " ++ specsFilename)) do
-				bsSpecs <- LBS.readFile specsFilename
-				handle (corrupt specsFilename) do
-					RecordOfVectors specs <- throwDecode bsSpecs
-					population <- traverse (iFromSpec (mmcGeneMirroring mmc)) specs
-					pure (generation, population)
-	where
-	corrupt fp (AesonException e) = do
-		putStrLn $ "WARNING: creating a fresh population because " ++ fp ++ " was corrupt: " ++ e
-		freshPopulation
-	missing prefix e = if isDoesNotExistError e
-		then do
-			putStrLn $ prefix ++ " does not exist; creating a fresh population"
-			freshPopulation
-		else throw e
-	freshPopulation = fmap ((,)0) . V.replicateM (mmcInitialPopulation mmc) $ newJeffreysIndividual mmc rng
-
-savePopulation :: FilePath -> Vector Individual -> Int -> IO ()
-savePopulation dir pop generation = do
-	saveAtomically dir (show generation <.> "json") (RecordOfVectors (iSpec <$> pop))
-	saveAtomically dir "latest.json" generation
-
-saveAtomically :: ToJSON a => FilePath -> FilePath -> a -> IO ()
-saveAtomically dir nm a = do
-	encodeFile (dir </> "." ++ nm) a
-	renameFile (dir </> "." ++ nm) (dir </> nm)
-
-iSize :: Individual -> Int
-iSize = sum . fmap gSize
-
-iGenome :: MsMendelConfig -> Individual -> ConvolutionSize -> IO Genome
-iGenome mmc ind cs = case HM.lookup cs ind of
-	Just g -> pure g
-	Nothing -> newGenome (mmcGeneMirroring mmc) cs 0 0
+initializePopulation mmc dir rng = loadPopulation mmc dir >>= \case
+	Right genPop -> pure genPop
+	Left failure -> do
+		putStrLn case failure of
+			MissingGeneration fp -> fp ++ " does not exist; creating a fresh population"
+			MissingPopulation fp -> "WARNING: " ++ fp ++ " does not exist; creating a fresh population"
+			Corrupt fp e -> "WARNING: creating a fresh population because " ++ fp ++ " was corrupt: " ++ e
+		fmap ((,)0) . V.replicateM (mmcInitialPopulation mmc) $ newJeffreysIndividual mmc rng
 
 what'sBad :: Vector Individual -> Evaluation -> (Int, Int, Int)
 what'sBad pop e = (-eViruses e, eFramesToLastKill e, iSize (pop V.! eID e))
-
-breed :: MsMendelConfig -> GenIO -> Vector Individual -> IO (Vector Individual)
-breed mmc rng pop
-	| V.length pop < 2 = pure V.empty
-	| otherwise = V.replicateM (mmcOffspring mmc) do
-		(ind, ind') <- chooseTwo
-		HM.traverseWithKey (\cs cfg -> liftJ2 (breedGenome cfg) (iGenome mmc ind cs) (iGenome mmc ind' cs)) (mmcGenomeConfig mmc)
-	where
-	chooseTwo = do
-		[a, b] <- replicateM 2 (uniformVI' rng pop)
-		if a == b then chooseTwo else pure (pop V.! a, pop V.! b)
-	breedGenome cfg g g' = do
-		shuffledIndices <- uniformShuffle ((Left <$> V.generate (gSize g) id) <> (Right <$> V.generate (gSize g') id)) rng
-		len <- min (gcMaxPatterns cfg) . (1+) <$> uniformVI' rng shuffledIndices
-		let (indices, indices') = V.partitionWith id (V.take len shuffledIndices)
-		liftJ2 gAppend (gIndices g (V.toList indices)) (gIndices g' (V.toList indices'))
-
-mutate :: MsMendelConfig -> GenIO -> Vector Individual -> IO (Vector Individual)
-mutate _mmc _rng pop | all ((0==) . iSize) pop = pure V.empty -- this should never happen
-mutate mmc rng pop = do
-	ins <- V.replicateM (mmcGeneReplacements mmc) replaceGene
-	del <- V.replicateM (mmcGeneDeletions mmc) deleteGene
-	pat <- V.replicateM (mmcPatternToggles mmc) togglePattern
-	adj <- V.replicateM (mmcScoreAdjustments mmc) adjustScore
-	blk <- V.replicateM (mmcBulkPatternToggles mmc) bulkPatternToggle
-	pure $ mconcat [ins, del, pat, adj, blk]
-	where
-	replaceGene = onGene rng pop \cs pat sz g -> liftJ2 gAppend
-		(gIndices g $ [0..pat-1] ++ [pat+1..sz-1])
-		(newJeffreysGenome mmc rng cs 1)
-	deleteGene = onGene rng pop \_cs pat sz g -> gIndices g $ [0..pat-1] ++ [pat+1..sz-1]
-	togglePattern = onGeneClone rng pop \cs pat _sz g -> do
-		chan <- uniformV' rng allChannels
-		x <- uniformIndex (csWidth cs)
-		y <- uniformIndex (csHeight cs)
-		case chan of
-			Left  color -> gSetColorPattern g pat color x y . not $ gGetColorPattern g pat color x y
-			Right shape -> gSetShapePattern g pat shape x y . not $ gGetShapePattern g pat shape x y
-	adjustScore = onGeneClone rng pop \_cs pat _sz g -> do
-		delta <- standard rng
-		gSetPatternScore g pat . tweakScore mmc delta $ gGetPatternScore g pat
-	bulkPatternToggle = onGeneClone rng pop \cs pat _sz g -> do
-		pat' <- newJeffreysGenome mmc rng cs 1
-		let loop = do
-		    	x <- uniformIndex (csWidth cs)
-		    	y <- uniformIndex (csHeight cs)
-		    	for_ allColorsWithSentinels \c -> gSetColorPattern g pat c x y (gGetColorPattern pat' 0 c x y)
-		    	for_ allShapesWithSentinels \s -> gSetShapePattern g pat s x y (gGetShapePattern pat' 0 s x y)
-		    	n <- uniformFloat01M rng
-		    	when (n > pDone) loop
-		    -- this calculation isn't exactly correct because we make no
-		    -- attempt to choose unique locations each time, but meh, close
-		    -- enough
-		    pDone = recip (mmcTypicalPatternToggleBatchSize mmc)
-		loop
-	uniformIndex n = uniformRM (0, n-1) rng
-
-addGenes :: MsMendelConfig -> GenIO -> Vector Individual -> IO (Vector Individual)
-addGenes mmc _rng pop | all ((sum (gcMaxPatterns <$> mmcGenomeConfig mmc)==) . iSize) pop = pure V.empty -- this should never happen
-addGenes mmc rng pop = V.replicateM (mmcGeneAdditions mmc) addGene where
-	convolutionSizes = V.fromList (HM.toList (mmcGenomeConfig mmc))
-	addGene = do
-		ind <- uniformV' rng pop
-		(cs, gc) <- uniformV' rng convolutionSizes
-		g <- iGenome mmc ind cs
-		if gSize g < gcMaxPatterns gc
-			then pure . flip (HM.insert cs) ind =<< gAppend g =<< newJeffreysGenome mmc rng cs 1
-			else addGene
-
-tweakScore :: MsMendelConfig -> Double -> Float -> Float
-tweakScore mmc delta score = tanh (mmcScoreAdjustmentVariance mmc * realToFrac delta + atanh (min 0.9999999 (max (-0.9999999) score)))
-
-onGene :: GenIO -> Vector Individual -> (ConvolutionSize -> Int -> Int -> Genome -> IO Genome) -> IO Individual
-onGene rng pop f = do
-	ind <- uniformV' rng pop
-	if iSize ind == 0 then onGene rng pop f else do
-		(cs, pat, sz, g) <- uniformV' rng . V.fromList $
-			[ (cs, pat, sz, g)
-			| (cs, g) <- HM.toList ind
-			, let sz = gSize g
-			, pat <- [0..sz-1]
-			]
-		flip (HM.insert cs) ind <$> f cs pat sz g
-
-onGeneClone :: GenIO -> Vector Individual -> (ConvolutionSize -> Int -> Int -> Genome -> IO ()) -> IO Individual
-onGeneClone rng pop f = onGene rng pop \cs pat sz g_ -> do
-	g <- gClone g_
-	g <$ f cs pat sz g
-
-allChannels :: Vector (Either (WithSentinels Color) (WithSentinels Shape))
-allChannels = fmap Left allColorSentinels <> fmap Right allShapeSentinels
-
-allColorSentinels :: Vector (WithSentinels Color)
-allColorSentinels = addSentinels [minBound..maxBound]
-
-allShapeSentinels :: Vector (WithSentinels Shape)
-allShapeSentinels = addSentinels [Virus, Disconnected, East, West] -- North, South = Disconnected
-
-addSentinels :: [a] -> Vector (WithSentinels a)
-addSentinels as = V.fromList $ map NonSentinel as ++ [EmptySentinel, OutOfBoundsSentinel]

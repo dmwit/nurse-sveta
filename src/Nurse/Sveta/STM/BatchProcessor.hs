@@ -1,11 +1,7 @@
 module Nurse.Sveta.STM.BatchProcessor where
 
-import Control.Concurrent
-import Control.Exception
-import Control.Monad
-import Data.Functor
-import Data.Vector (Vector)
 import Nurse.Sveta.STM
+import Nurse.Sveta.Util
 
 import qualified Data.Vector as V
 

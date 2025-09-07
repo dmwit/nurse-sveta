@@ -3,18 +3,7 @@
 
 module Main where
 
-import Control.Concurrent
-import Control.Exception
-import Control.Monad
 import Control.Monad.State as State
-import Data.Aeson
-import Data.Char
-import Data.Foldable
-import Data.IORef
-import Data.List
-import Data.Ord
-import Data.Vector (Vector)
-import Dr.Mario.Model
 import GHC.Base
 import GHC.TypeLits
 import Nurse.Sveta.Files
@@ -24,12 +13,6 @@ import Nurse.Sveta.Tomcats
 import Nurse.Sveta.Torch
 import Nurse.Sveta.Torch.Semantics
 import Nurse.Sveta.Util
-import System.Directory
-import System.Random.MWC
-import System.Random.MWC.Distributions
-import System.Random.Stateful (uniformDouble01M)
-import Text.Read
-import Text.Printf
 
 import qualified Data.HashMap.Strict as HM
 import qualified Data.Set as S

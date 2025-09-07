@@ -1,20 +1,9 @@
 module Main where
 
 import CategoryMetadata
-import Control.Exception
-import Control.Monad
 import Control.Monad.Reader
-import Data.Aeson
-import Data.Foldable
-import Data.List
-import Data.Map (Map)
-import Data.Set (Set)
 import Nurse.Sveta.Files
-import System.Directory
-import System.Environment
-import System.Exit
-import System.IO
-import Text.Printf
+import Nurse.Sveta.Util
 
 import qualified Data.Map as M
 import qualified Data.Set as S
@@ -42,7 +31,7 @@ data CategoryConstraints = CategoryConstraints
 	} deriving (Eq, Ord, Read, Show)
 
 data CategoryPlan = CategoryPlan
-	{ move :: Set FilePath
+	{ transfer :: Set FilePath
 	, live :: Set FilePath
 	, magic :: Set FilePath
 	, other :: Set FilePath
@@ -50,7 +39,7 @@ data CategoryPlan = CategoryPlan
 
 instance Semigroup CategoryPlan where
 	p <> p' = CategoryPlan
-		{ move = move p <> move p'
+		{ transfer = transfer p <> transfer p'
 		, live = live p <> live p'
 		, magic = magic p <> magic p'
 		, other = other p <> other p'
@@ -58,7 +47,7 @@ instance Semigroup CategoryPlan where
 
 instance Monoid CategoryPlan where
 	mempty = CategoryPlan
-		{ move = S.empty
+		{ transfer = S.empty
 		, live = S.empty
 		, magic = S.empty
 		, other = S.empty
@@ -71,11 +60,11 @@ planProcessor = do
 
 executePlan :: String -> CategoryPlan -> App ()
 executePlan category plan = do
-	unless (S.null (move plan)) do
+	unless (S.null (transfer plan)) do
 		dir <- directoryNameM (GamesArchive category)
 		explain $ "Making sure " <> dir <> " exists"
 		liftIO $ createDirectoryIfMissing True dir
-	for_ (move plan) \fp -> do
+	for_ (transfer plan) \fp -> do
 		src <- fileNameM (GamesProcessed category) fp
 		dst <- fileNameM (GamesArchive category) fp
 		explain $ "Moving " <> fp
@@ -85,7 +74,7 @@ describePlan :: String -> CategoryPlan -> App ()
 describePlan category plan = do
 	src <- directoryNameM (GamesProcessed category)
 	dst <- directoryNameM (GamesArchive category)
-	printFiles (printf "These files will be moved from %s to %s:" src dst) move
+	printFiles (printf "These files will be moved from %s to %s:" src dst) transfer
 	whenVerbose do
 		let notMoved :: String -> String
 		    notMoved = printf "These files will not be moved out of %s because they %s:" src
@@ -104,7 +93,7 @@ planCategory category constraints = foldMap planFile <$> listDirectoryM (GamesPr
 		| fp == namesFilename = mempty { magic = S.singleton fp }
 		| fp >= minFilename constraints = mempty { live = S.singleton fp }
 		| fp `S.member` otherFilenames constraints = mempty { other = S.singleton fp }
-		| otherwise = mempty { move = S.singleton fp }
+		| otherwise = mempty { transfer = S.singleton fp }
 
 readMetadata :: FilePath -> App (Map String CategoryConstraints)
 readMetadata potentialCategory = do

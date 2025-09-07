@@ -12,15 +12,10 @@ module Nurse.Sveta.Torch (
 	permuteColors',
 	) where
 
-import Control.Monad
-import Data.Aeson
-import Data.Functor
-import Data.HashMap.Strict (HashMap)
-import Data.Vector (Vector)
-import Dr.Mario.Model
 import Nurse.Sveta.Tomcats
 import Nurse.Sveta.Torch.CWrapper
 import Nurse.Sveta.Torch.Semantics
+import Nurse.Sveta.Util
 import Foreign
 import Foreign.C
 

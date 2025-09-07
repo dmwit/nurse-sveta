@@ -1,21 +1,9 @@
 module Main where
 
-import Control.Monad
-import Data.Aeson
-import Data.Foldable
-import Data.IORef
-import Data.List
-import Data.String
-import Data.Traversable
-import Data.Vector (Vector)
 import GI.Gtk
+import Ms.Mendel hiding (get)
 import Nurse.Sveta.Cairo
-import Nurse.Sveta.Files
-import Nurse.Sveta.Genome
 import Nurse.Sveta.Widget
-import System.Environment
-import System.Mem
-import Util
 
 import qualified Data.HashMap.Strict as HM
 import qualified Data.Text as T
@@ -38,11 +26,11 @@ import qualified Nurse.Sveta.Cairo as NC
 main :: IO ()
 main = do
 	torchPlusGtkFix
-	dir <- getXdgDirectory XdgData "ms-mendel"
-	genI0 <- eitherDecodeFileStrict (dir </> "latest.json") >>= either fail pure
-	pop0 <- loadPopulation dir genI0
+	mmc <- loadConfiguration
+	dir <- basedir XdgData
+	(genI0, pop0) <- loadPopulation_ mmc dir
 	popRef <- newIORef pop0
-	let genF0 = fromInteger genI0
+	let genF0 = fromIntegral genI0
 	app <- new Application []
 	on app #activate do
 		top <- new Box [#orientation := OrientationVertical, #spacing := 4]
@@ -77,7 +65,7 @@ main = do
 
 		on gen #valueChanged do
 			genI <- round <$> #getValue gen
-			pop <- loadPopulation dir genI
+			pop <- loadGeneration_ mmc dir genI
 			writeIORef popRef pop
 			adj <- #getAdjustment ivd
 			ivdF <- #getValue ivd
@@ -105,11 +93,6 @@ main = do
 		#show w
 	args <- getArgs
 	() <$ #run app (Just args)
-
-loadPopulation :: FilePath -> Integer -> IO (Vector Individual)
-loadPopulation dir gen = eitherDecodeFileStrict (dir </> show gen <.> "json") >>= \case
-	Left err -> fail err
-	Right (RecordOfVectors pop) -> traverse (iFromSpec False) pop
 
 iSizes :: Individual -> [ConvolutionSize]
 iSizes = sort . HM.keys
