@@ -112,9 +112,9 @@ evaluationThread mmc jobs psmRef sc = makeLogger mmc "evaluation" >>= \log -> cr
 	    	-- only really ever see this in detail when evaluation threads have
 	    	-- finished a generation's games and are waiting for their peers,
 	    	-- but getting the lookahead right is obnoxious
-	    	log $ "atomically $ writeTVar psmRef " ++ show PSM { psmBoard = cur, psmLookahead = Just lk, psmOverlay = [] }
+	    	log "atomically $ writeTVar psmRef ..."
 	    	atomically $ writeTVar psmRef PSM { psmBoard = cur, psmLookahead = Just lk, psmOverlay = [] }
-	    	log $ "readIORef (framesPassed/pillsUsed/virusesKilled gs)"
+	    	log "readIORef (framesPassed/pillsUsed/virusesKilled gs)"
 	    	fp <- readIORef (framesPassed gs)
 	    	pu <- readIORef (pillsUsed gs)
 	    	vk <- readIORef (virusesKilled gs)
@@ -124,11 +124,8 @@ evaluationThread mmc jobs psmRef sc = makeLogger mmc "evaluation" >>= \log -> cr
 	    	    	[(mpPill placement lk, path) | (placement, path) <- HM.toList placements]
 	    	log "for moves \\(pill, path) -> do"
 	    	next <- for moves \(pill, path) -> do
-	    		log "\tcloneGameState gs"
 	    		gs' <- cloneGameState gs
-	    		log $ "\tplayMove gs' " ++ ppAeson path ++ " " ++ ppPill pill
 	    		playMove gs' path pill
-	    		log "mfreeze (board gs')"
 	    		mfreeze (board gs')
 	    	let scores = iEvaluate (jIndividual job) cur next
 	    	    bestScore = V.maximum scores
@@ -136,17 +133,16 @@ evaluationThread mmc jobs psmRef sc = makeLogger mmc "evaluation" >>= \log -> cr
 	    	    rateLimit = mmcEvaluationRateLimit mmc
 	    	log "(moves V.!) <$> uniformV' rng bestIndices"
 	    	(pill, path) <- (moves V.!) <$> uniformV' rng bestIndices
-	    	log $ "playMove gs " ++ ppAeson path ++ " " ++ ppPill pill
+	    	log $ "playMove gs path pill"
 	    	playMove gs path pill
-	    	log "readIORef (virusesKilled gs"
+	    	log "readIORef (virusesKilled gs)"
 	    	vk' <- readIORef (virusesKilled gs)
-	    	log "(pills', frames') <- if vk' > vk then readIORef else (pills, frames)"
+	    	log "update pills+frames"
 	    	(pills', frames') <- if vk' > vk
 	    		then liftM2 (,) (readIORef (pillsUsed gs)) (readIORef (framesPassed gs))
 	    		else pure (pills, frames)
 	    	log "threadDelay"
 	    	when (rateLimit > 0) (threadDelay rateLimit)
-	    	log "moveLoop pills' frames' lks"
 	    	moveLoop pills' frames' lks
 	log "moveLoop 0 0 []"
 	frames <- moveLoop 0 0 []
@@ -282,7 +278,7 @@ evolutionThread mmc log jobs dir replies overviewRef rng pop0 sc = makeLogger mm
 		gslks <- concat <$> forM [0..mmcMaxLevel mmc] \lev -> do
 			logDetails "\tforM [1..mmcRunsPerGeneration mmc] \\_ -> do"
 			forM [1..mmcRunsPerGeneration mmc] \_ -> do
-				logDetails $ "\t\tinitialState (ExactLevel rng " ++ show lev
+				logDetails $ "\t\tinitialState (ExactLevel rng " ++ show lev ++ ")"
 				gs <- initialState (ExactLevel rng lev)
 				logDetails $ "\t\treplicateM cycleLength (sampleRNG' rng)"
 				lk <- replicateM (mmcPillCycleLength mmc) (sampleRNG' rng)
@@ -306,19 +302,19 @@ evolutionThread mmc log jobs dir replies overviewRef rng pop0 sc = makeLogger mm
 		forM_ gslks \_ -> do
 			logDetails "\tatomically $ modifyTVar overviewRef (goWorstSoFar ~= Nothing)"
 			atomically $ modifyTVar overviewRef \overview -> overview { goWorstSoFar = Nothing }
-			logDetails "forM_ pop"
+			logDetails "\tforM_ pop"
 			forM_ pop \_ -> do
-				logDetails "\tscIO sc ..."
+				logDetails "\t\tscIO sc ..."
 				scIO sc do
 					forkIO . forever $ takeMVar replies
 					killThread tid
-				logDetails "\ttakeMVar replies"
+				logDetails "\t\ttakeMVar replies"
 				deval <- takeMVar replies
-				logDetails "\tVM.modify evals (deval<>) (eID deval)"
+				logDetails "\t\tVM.modify evals (deval<>) (eID deval)"
 				VM.modify evals (deval<>) (eID deval)
-				logDetails "\tVM.read evals (eID deval)"
+				logDetails "\t\tVM.read evals (eID deval)"
 				eval <- VM.read evals (eID deval)
-				logDetails "\tatomically $ modifyTVar overviewRef (goLevelsPlayed += 1, goBestSoFar ~= Just ..., goWorstSoFar ~= Just ...)"
+				logDetails "\t\tatomically $ modifyTVar overviewRef ..."
 				atomically $ modifyTVar overviewRef \overview -> overview
 					{ goLevelsPlayed = goLevelsPlayed overview + 1
 					, goBestSoFar = Just $ maybe eval (minOn (what'sBad pop) eval) (goBestSoFar overview)
