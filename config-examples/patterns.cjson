@@ -627,6 +627,7 @@
 ,
 	[ ["b<>o"]
 	, ["b<>ox", "bx", "b<>o"]
+	]
 ,
 	// bad: placements that aren't by a virus of the same color, and so might be trash that has to be cleared away
 	[["ebx", "r<>o", "eby<>ox"]]
@@ -958,7 +959,7 @@
 ,
 	[["bx", "eb<>o", "eb<>o", "eb<>o", "bx"]]
 ,
-	[["bx", "eb<>o", "eb<>o", "eb<>o", "bx"]]
+	[["bx", "eb<>o", "eb<>o", "eb<>o", "eb<>o", "bx"]]
 ,
 	[ ["bx"]
 	, ["eb<>o"]
