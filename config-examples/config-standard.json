@@ -9,11 +9,12 @@
 , "mutators": 100
 , "offspring": 10
 , "gene-replacements": 30
-, "gene-deletions": 20
+, "gene-deletions": 10
 , "gene-additions": 30
 , "pattern-toggles": 20
 , "score-adjustments": 50
 , "score-adjustment-variance": 0.2
+, "score-resets": 10
 , "bulk-pattern-toggles": 10
 , "typical-pattern-toggle-batch-size": 10
 , "max-level": 20

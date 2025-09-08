@@ -4,7 +4,7 @@
 , "pill-cycle-length": 128
 , "evaluation-rate-limit": 0
 , "runs-per-generation": 1
-, "survivors": 100
+, "survivors": 90
 , "breeders": 100
 , "mutators": 150
 , "offspring": 0
@@ -12,8 +12,9 @@
 , "gene-deletions": 0
 , "gene-additions": 0
 , "pattern-toggles": 0
-, "score-adjustments": 200
+, "score-adjustments": 180
 , "score-adjustment-variance": 0.2
+, "score-resets": 30
 , "bulk-pattern-toggles": 0
 , "typical-pattern-toggle-batch-size": 10
 , "max-level": 20

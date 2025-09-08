@@ -40,6 +40,7 @@ data MsMendelConfig = MsMendelConfig
 	, mmcPatternToggles :: Int
 	, mmcScoreAdjustments :: Int
 	, mmcScoreAdjustmentVariance :: Float
+	, mmcScoreResets :: Int
 	, mmcBulkPatternToggles :: Int
 	, mmcTypicalPatternToggleBatchSize :: Float
 	, mmcMaxLevel :: Int
@@ -187,6 +188,7 @@ mutate mmc rng pop = do
 	del <- V.replicateM (mmcGeneDeletions mmc) deleteGene
 	pat <- V.replicateM (mmcPatternToggles mmc) togglePattern
 	adj <- V.replicateM (mmcScoreAdjustments mmc) adjustScore
+	res <- V.replicateM (mmcScoreResets mmc) resetScore
 	blk <- V.replicateM (mmcBulkPatternToggles mmc) bulkPatternToggle
 	pure $ mconcat [ins, del, pat, adj, blk]
 	where
@@ -204,6 +206,7 @@ mutate mmc rng pop = do
 	adjustScore = onGeneClone rng pop \_cs pat _sz g -> do
 		delta <- standard rng
 		gSetPatternScore g pat . tweakScore mmc delta $ gGetPatternScore g pat
+	resetScore = onGeneClone rng pop \_cs pat _sz g -> gSetPatternScore g pat 0
 	bulkPatternToggle = onGeneClone rng pop \cs pat _sz g -> do
 		pat' <- newJeffreysGenome mmc rng cs 1
 		let loop = do
