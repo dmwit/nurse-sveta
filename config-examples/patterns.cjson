@@ -1,0 +1,1392 @@
+// This file contains board patterns that an AI might want to think about
+// either making or avoiding on a board. Each board pattern is a rectangular
+// grid of cell patterns, much like the Dr. Mario board, except that the grid
+// will generally be much smaller than the entire Dr. Mario board and each
+// position in the grid will contain a cell pattern rather than a virus, pill
+// half, etc.
+//
+// A cell pattern has:
+// * a subset of the colors {blue, red, yellow},
+// * a subset of the shapes {virus, left pill half, right pill half,
+//   disconnected pill half}, and
+// * a subset of special conditions {empty, out of bounds}.
+//
+// A cell pattern matches a cell on or around a Dr. Mario board if:
+// * The cell pattern includes "out of bounds" in its special conditions set
+//   and the Dr. Mario board cell is not within the 8x16 playfield, or
+// * The cell pattern includes "empty" in its special conditions set and the
+//   Dr. Mario board cell is in-bounds but doesn't have anything there, or
+// * The Dr. Mario board cell is in-bounds, and has an entity whose color is in
+//   the cell pattern's colors set and whose shape is in the cell pattern's
+//   shape set. In this last case, a Dr. Mario cell that has an upper pill half
+//   or lower pill half is considered to have a disconnected cell half instead.
+//
+// Board patterns taken as a whole have certain symmetries available: colors
+// can be swapped out consistently throughout the board pattern and positions
+// can be horizontally mirrored without changing the meaning of the board
+// pattern. To explain this in detail, in addition to saying when a board
+// pattern matches part of a Dr. Mario board, we'll have a separate concept of
+// a direct match between a board pattern and part of a board.
+//
+// A board pattern directly matches a position on or around a Dr. Mario board
+// if:
+// * When the board pattern is laid over the board with the board pattern's
+//   top-left cell at the given position, at least one of the board pattern's
+//   cells is in-bounds, and
+// * Every cell pattern in the board pattern matches the Dr. Mario board cell
+//   it is laid over.
+//
+// Given a permutation of colors p, we can convert a board pattern into a new
+// board pattern by applying p to each of the color sets in each of the cell
+// patterns of the board pattern.
+//
+// We can also convert a board pattern into a new board pattern by mirroring.
+// To mirror a board pattern, first reverse the cell patterns in each row, then
+// apply the shape permutation that swaps left pill halves and right pill
+// halves to each of the cell patterns' shape sets.
+//
+// If mirroring is turned off, a board pattern b matches a position on or around
+// a Dr. Mario board if there is a color permutation p such that p(b) directly
+// matches at that position. If mirroring is turned on, b additionally matches
+// a position if mirror(p(b)) directly matches at that position.
+//
+// A cell pattern can be rendered into a string by listing one character for
+// each thing in its three sets (in any order), according to the following table:
+//
+// b blue
+// r red
+// y yellow
+// x virus
+// < left pill half
+// > right pill half
+// o disconnected pill half
+// e empty
+// | out of bounds (it's supposed to look like the wall of the bottle)
+//
+// For example, "byxoe" represents a cell pattern that matches a cell that's
+// empty, or that has a virus or disconnected pill half that's blue or yellow.
+//
+// As a convenience, the cell pattern that matches everything, "bryx<>o|e", can
+// also be given as just the string "*".
+//
+// A board pattern with at least one row can be rendered into a nested list of
+// strings by including one list of strings for each row, with the highest row
+// coming first. Within a row, include a string for each column. As a
+// convenience, trailing "*" cell patterns may be omitted from a row. The
+// length of the longest row determines the width of the board pattern.
+//
+// Annotations about whether a pattern is good or bad are just my educated
+// guess. There's nothing forcing a particular AI to agree with me.
+[
+	// bad: viruses
+	[["bx"]]
+,
+	// good: empty spaces
+	[["e"]]
+,
+	// bad: occupying the cell that makes you lose
+	[ ["*","|"]
+	, ["|","*","*","*","b<>o"]
+	]
+,
+	// bad: occupying the cell just below the one that makes you lose
+	//
+	// Actually, this matches if you're in the losing cell or the one below.
+	// But it's okay to be less specific like that. If you wanted to give score
+	// X to "in the loser" and Y to "in the one below the loser", you could
+	// achieve that by giving score X-Y to "in the loser" and Y to "in either
+	// the loser or the one below it". This trick is exploited repeatedly in
+	// this file.
+	[ ["*", "|"]
+	, []
+	, ["|","*","*","*","b<>o"]
+	]
+,
+	// bad: occupying the cell two below the one that makes you lose
+	[ ["*", "|"]
+	, []
+	, []
+	, ["|","*","*","*","b<>o"]
+	]
+,
+	// bad: occupying the cell three below the one that makes you lose
+	[ ["*", "|"]
+	, []
+	, []
+	, []
+	, ["|","*","*","*","b<>o"]
+	]
+,
+	// good: completing the level
+	[ ["ebry<>o", "ebry<>o", "ebry<>o", "ebry<>o", "ebry<>o", "ebry<>o", "ebry<>o", "ebry<>o"]
+	, ["ebry<>o", "ebry<>o", "ebry<>o", "ebry<>o", "ebry<>o", "ebry<>o", "ebry<>o", "ebry<>o"]
+	, ["ebry<>o", "ebry<>o", "ebry<>o", "ebry<>o", "ebry<>o", "ebry<>o", "ebry<>o", "ebry<>o"]
+	, ["ebry<>o", "ebry<>o", "ebry<>o", "ebry<>o", "ebry<>o", "ebry<>o", "ebry<>o", "ebry<>o"]
+	, ["ebry<>o", "ebry<>o", "ebry<>o", "ebry<>o", "ebry<>o", "ebry<>o", "ebry<>o", "ebry<>o"]
+	, ["ebry<>o", "ebry<>o", "ebry<>o", "ebry<>o", "ebry<>o", "ebry<>o", "ebry<>o", "ebry<>o"]
+	, ["ebry<>o", "ebry<>o", "ebry<>o", "ebry<>o", "ebry<>o", "ebry<>o", "ebry<>o", "ebry<>o"]
+	, ["ebry<>o", "ebry<>o", "ebry<>o", "ebry<>o", "ebry<>o", "ebry<>o", "ebry<>o", "ebry<>o"]
+	, ["ebry<>o", "ebry<>o", "ebry<>o", "ebry<>o", "ebry<>o", "ebry<>o", "ebry<>o", "ebry<>o"]
+	, ["ebry<>o", "ebry<>o", "ebry<>o", "ebry<>o", "ebry<>o", "ebry<>o", "ebry<>o", "ebry<>o"]
+	, ["ebry<>o", "ebry<>o", "ebry<>o", "ebry<>o", "ebry<>o", "ebry<>o", "ebry<>o", "ebry<>o"]
+	, ["ebry<>o", "ebry<>o", "ebry<>o", "ebry<>o", "ebry<>o", "ebry<>o", "ebry<>o", "ebry<>o"]
+	, ["ebry<>o", "ebry<>o", "ebry<>o", "ebry<>o", "ebry<>o", "ebry<>o", "ebry<>o", "ebry<>o"]
+	, ["|"]
+	]
+,
+	// good: vertical 2-in-a-row of the same color
+	[ ["b<>ox"]
+	, ["b<>ox"]
+	]
+,
+	// goodish: two of the same color that may (or may not) be interrupted by something of another color
+	[ ["b<>ox"]
+	, []
+	, ["b<>ox"]
+	]
+,
+	// good: two of the same color apart but not interrupted by something of another color
+	[ ["b<>ox"]
+	, ["e"]
+	, ["b<>ox"]
+	]
+,
+	// horizontal versions of the same three
+	[["b<>ox", "b<>ox"]]
+,
+	[["b<>ox", "*", "b<>ox"]]
+,
+	[["b<>ox", "e", "b<>ox"]]
+,
+	// bad: vertical variants of the same three where you switch colors instead of having the same color
+	[ ["b<>ox"]
+	, ["r<>ox"]
+	]
+,
+	[ ["b<>ox"]
+	, []
+	, ["r<>ox"]
+	]
+,
+	[ ["b<>ox"]
+	, ["e"]
+	, ["r<>ox"]
+	]
+,
+	// bad: horizontal variants of the three color switches
+	[["b<>ox", "r<>ox"]]
+,
+	[["b<>ox", "*", "r<>ox"]]
+,
+	[["b<>ox", "e", "r<>ox"]]
+,
+	// bad: switching colors without enough room to finish a clear on the top color
+	[ ["|"]
+	, ["b<>o"]
+	, ["r<>o"]
+	]
+,
+	[ ["|"]
+	, []
+	, ["b<>o"]
+	, ["r<>o"]
+	]
+,
+	[ ["|"]
+	, []
+	, []
+	, ["b<>o"]
+	, ["r<>ox"]
+	]
+,
+	// clearing stuff near the edges is high priority; these patterns detect progress towards that
+	[["bx", "|"]]
+,
+	[ ["b<>ox", "|"]
+	, ["b<>ox"]
+	]
+,
+	[ ["b<>ox", "|"]
+	, []
+	, ["b<>ox"]
+	]
+,
+	[ ["b<>ox", "|"]
+	, ["e"]
+	, ["b<>ox"]
+	]
+,
+	[ ["b<>ox", "|"]
+	, ["r<>ox"]
+	]
+,
+	[ ["b<>ox", "|"]
+	, []
+	, ["r<>ox"]
+	]
+,
+	[ ["b<>ox", "|"]
+	, ["e"]
+	, ["r<>ox"]
+	]
+,
+	// badish: something that's going to fall a long way, but will land on something of the same color
+	[ ["b<>"]
+	, ["e"]
+	, ["b<>ox"]
+	]
+,
+	[ ["b<>"]
+	, ["e"]
+	, ["e"]
+	, ["b<>ox"]
+	]
+,
+	[ ["b<>"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["b<>ox"]
+	]
+,
+	[ ["b<>"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["b<>ox"]
+	]
+,
+	[ ["b<>"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["b<>ox"]
+	]
+,
+	[ ["b<>"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["b<>ox"]
+	]
+,
+	[ ["b<>"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["b<>ox"]
+	]
+,
+	[ ["b<>"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["b<>ox"]
+	]
+,
+	[ ["b<>"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["b<>ox"]
+	]
+,
+	[ ["b<>"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["b<>ox"]
+	]
+,
+	[ ["b<>"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["b<>ox"]
+	]
+,
+	[ ["b<>"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["b<>ox"]
+	]
+,
+	[ ["b<>"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["b<>ox"]
+	]
+,
+	[ ["b<>"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	]
+,
+	// bad: something that's going to fall a long way, and isn't even going to make a color match when it does
+	[ ["b<>"]
+	, ["e"]
+	, ["r<>ox"]
+	]
+,
+	[ ["b<>"]
+	, ["e"]
+	, ["e"]
+	, ["r<>ox"]
+	]
+,
+	[ ["b<>"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["r<>ox"]
+	]
+,
+	[ ["b<>"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["r<>ox"]
+	]
+,
+	[ ["b<>"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["r<>ox"]
+	]
+,
+	[ ["b<>"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["r<>ox"]
+	]
+,
+	[ ["b<>"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["r<>ox"]
+	]
+,
+	[ ["b<>"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["r<>ox"]
+	]
+,
+	[ ["b<>"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["r<>ox"]
+	]
+,
+	[ ["b<>"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["r<>ox"]
+	]
+,
+	[ ["b<>"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["r<>ox"]
+	]
+,
+	[ ["b<>"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["r<>ox"]
+	]
+,
+	[ ["b<>"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["r<>ox"]
+	]
+,
+	// bad: traffic lights
+	[["b<>ox", "r<>ox", "b<>ox"]]
+,
+	[["b<>ox", "r<>ox", "y<>ox"]]
+,
+	[ ["b<>ox"]
+	, ["r<>ox"]
+	, ["b<>ox"]
+	]
+,
+	[ ["b<>ox"]
+	, ["r<>ox"]
+	, ["y<>ox"]
+	]
+,
+	// bad: color pairs or triples that don't have enough room to clear
+	[["b<>ox", "r<>ox", "r<>ox", "|by<>ox"]]
+,
+	[["b<>ox", "r<>ox", "r<>ox", "*", "|by<>ox"]]
+,
+	[["b<>ox", "*", "r<>ox", "r<>ox", "|by<>ox"]]
+,
+	[["b<>ox", "r<>ox", "r<>ox", "r<>ox", "|by<>ox"]]
+,
+	[ ["b<>ox"]
+	, ["r<>ox"]
+	, ["r<>ox"]
+	, ["|by<>ox"]
+	]
+,
+	[ ["b<>ox"]
+	, ["r<>ox"]
+	, ["r<>ox"]
+	, []
+	, ["|by<>ox"]
+	]
+,
+	[ ["b<>ox"]
+	, []
+	, ["r<>ox"]
+	, ["r<>ox"]
+	, ["|by<>ox"]
+	]
+,
+	[ ["b<>ox"]
+	, ["r<>ox"]
+	, ["r<>ox"]
+	, ["r<>ox"]
+	, ["|by<>ox"]
+	]
+,
+	// bad: jagged top line
+	[["e", "b<>ox"]]
+,
+	[ ["e", "b<>ox"]
+	, ["e"]
+	]
+,
+	[ ["e", "b<>ox"]
+	, ["e"]
+	, ["e"]
+	]
+,
+	[ ["e", "b<>ox"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	]
+,
+	[ ["e", "b<>ox"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	]
+,
+	// bad: conflicting horizontal- and vertical-clearing plans
+	[ ["b<>ox", "b<>o"]
+	, ["b<>o"]
+	]
+,
+	[ ["b<>o"]
+	, ["b<>ox", "b<>o"]
+	]
+,
+	[ ["b<>ox", "bx", "b<>o"]
+	, ["b<>o"]
+	]
+,
+	[ ["b<>o"]
+	, ["b<>ox", "bx", "b<>o"]
+,
+	// bad: placements that aren't by a virus of the same color, and so might be trash that has to be cleared away
+	[["ebx", "r<>o", "eby<>ox"]]
+,
+	[["ebx", "r<>o", "r<>o", "eby<>ox"]]
+,
+	[["ebx", "r<>o", "r<>o", "r<>o", "eby<>ox"]]
+,
+	[ ["ebx"]
+	, ["r<>o"]
+	, ["eby<>ox"]
+	]
+,
+	[ ["ebx"]
+	, ["r<>o"]
+	, ["r<>o"]
+	, ["eby<>ox"]
+	]
+,
+	[ ["ebx"]
+	, ["r<>o"]
+	, ["r<>o"]
+	, ["r<>o"]
+	, ["eby<>ox"]
+	]
+,
+	// good: space near viruses (e.g. perhaps this can help encourage desandwich maneuvers)
+	[["bx", "e"]]
+,
+	[["bx", "*", "e"]]
+,
+	[["bx", "*", "*", "e"]]
+,
+	[ ["bx"]
+	, ["e"]
+	]
+,
+	[ ["bx"]
+	, []
+	, ["e"]
+	]
+,
+	[ ["bx"]
+	, []
+	, []
+	, ["e"]
+	]
+,
+	[ ["e"]
+	, ["bx"]
+	]
+,
+	[ ["e"]
+	, []
+	, ["bx"]
+	]
+,
+	[ ["e"]
+	, []
+	, []
+	, ["bx"]
+	]
+,
+	// good: skyhooks to place horizontal clears on
+	[ ["e", "bx"]
+	, ["br<>ox"]
+	]
+,
+	[ ["e", "e", "bx"]
+	, ["br<>ox"]
+	]
+,
+	// good: towering up beneath something to catch garbage or support under clears
+	[ ["b<>x"]
+	, ["e"]
+	, ["br<>ox"]
+	]
+,
+	[ ["b<>x"]
+	, ["e"]
+	, ["e"]
+	, ["br<>ox"]
+	]
+,
+	[ ["b<>x"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["br<>ox"]
+	]
+,
+	[ ["b<>x"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["br<>ox"]
+	]
+,
+	[ ["b<>x"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["br<>ox"]
+	]
+,
+	[ ["b<>x"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["br<>ox"]
+	]
+,
+	[ ["b<>x"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["br<>ox"]
+	]
+,
+	[ ["b<>x"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["br<>ox"]
+	]
+,
+	[ ["b<>x"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["br<>ox"]
+	]
+,
+	[ ["b<>x"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["br<>ox"]
+	]
+,
+	[ ["b<>x"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["br<>ox"]
+	]
+,
+	[ ["b<>x"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["br<>ox"]
+	]
+,
+	// good: towering up to the side of something to catch garbage or support under clears
+	[ ["*", "b<>ox"]
+	, ["e"]
+	, ["br<>ox"]
+	]
+,
+	[ ["*", "b<>ox"]
+	, ["e"]
+	, ["e"]
+	, ["br<>ox"]
+	]
+,
+	[ ["*", "b<>ox"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["br<>ox"]
+	]
+,
+	[ ["*", "b<>ox"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["br<>ox"]
+	]
+,
+	[ ["*", "b<>ox"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["br<>ox"]
+	]
+,
+	[ ["*", "b<>ox"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["br<>ox"]
+	]
+,
+	[ ["*", "b<>ox"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["br<>ox"]
+	]
+,
+	[ ["*", "b<>ox"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["br<>ox"]
+	]
+,
+	[ ["*", "b<>ox"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["br<>ox"]
+	]
+,
+	[ ["*", "b<>ox"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["br<>ox"]
+	]
+,
+	[ ["*", "b<>ox"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["br<>ox"]
+	]
+,
+	[ ["*", "b<>ox"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["br<>ox"]
+	]
+,
+	// good: desandwiching/clearing from the middle
+	[["bx", "eb<>o", "eb<>o", "bx"]]
+,
+	[["bx", "eb<>o", "eb<>o", "eb<>o", "bx"]]
+,
+	[["bx", "eb<>o", "eb<>o", "eb<>o", "bx"]]
+,
+	[ ["bx"]
+	, ["eb<>o"]
+	, ["eb<>o"]
+	, ["bx"]
+	]
+,
+	[ ["bx"]
+	, ["eb<>o"]
+	, ["eb<>o"]
+	, ["eb<>o"]
+	, ["bx"]
+	]
+,
+	[ ["bx"]
+	, ["eb<>o"]
+	, ["eb<>o"]
+	, ["eb<>o"]
+	, ["eb<>o"]
+	, ["bx"]
+	]
+,
+	// good: horizontal potential to fix verticals blocked by the top of the board
+	[ ["|"]
+	, []
+	, []
+	, ["b<>ox"]
+	, ["r<>ox", "e", "e", "e"]
+	]
+,
+	[ ["|"]
+	, []
+	, []
+	, ["b<>ox"]
+	, ["r<>ox", "r<>ox", "e", "e"]
+	]
+,
+	[ ["|"]
+	, []
+	, []
+	, ["b<>ox"]
+	, ["r<>ox", "e", "r<>ox", "e"]
+	]
+,
+	[ ["|"]
+	, []
+	, []
+	, ["b<>ox"]
+	, ["r<>ox", "e", "e", "r<>ox"]
+	]
+,
+	[ ["|"]
+	, []
+	, []
+	, ["b<>ox"]
+	, ["r<>ox", "r<>ox", "r<>ox", "e"]
+	]
+,
+	[ ["|"]
+	, []
+	, []
+	, ["b<>ox"]
+	, ["r<>ox", "r<>ox", "e", "r<>ox"]
+	]
+,
+	[ ["|"]
+	, []
+	, []
+	, ["b<>ox"]
+	, ["r<>ox", "e", "r<>ox", "r<>ox"]
+	]
+,
+	// bad: trash at the bottom (frequently blocks end-game moves)
+	[ ["b<>o"]
+	, ["|"]
+	]
+,
+	[ ["b<>o"]
+	, []
+	, ["|"]
+	]
+,
+	// good: T/L precursors
+	[ ["e", "b<>ox"]
+	, ["b<>ox"]
+	]
+,
+	[ ["e", "b<>ox"]
+	, []
+	, ["b<>ox"]
+	]
+,
+	[ ["e", "b<>ox"]
+	, []
+	, []
+	, ["b<>ox"]
+	]
+,
+	[ ["e", "*", "b<>ox"]
+	, ["b<>ox"]
+	]
+,
+	[ ["e", "*", "b<>ox"]
+	, []
+	, ["b<>ox"]
+	]
+,
+	[ ["e", "*", "b<>ox"]
+	, []
+	, []
+	, ["b<>ox"]
+	]
+,
+	[ ["e", "*", "*", "b<>ox"]
+	, ["b<>ox"]
+	]
+,
+	[ ["e", "*", "*", "b<>ox"]
+	, []
+	, ["b<>ox"]
+	]
+,
+	[ ["e", "*", "*", "b<>ox"]
+	, []
+	, []
+	, ["b<>ox"]
+	]
+,
+	[ ["b<>ox"]
+	, ["e", "b<>ox"]
+	]
+,
+	[ ["b<>ox"]
+	, []
+	, ["e", "b<>ox"]
+	]
+,
+	[ ["b<>ox"]
+	, []
+	, []
+	, ["e", "b<>ox"]
+	]
+,
+	[ ["b<>ox"]
+	, ["e", "*", "b<>ox"]
+	]
+,
+	[ ["b<>ox"]
+	, []
+	, ["e", "*", "b<>ox"]
+	]
+,
+	[ ["b<>ox"]
+	, []
+	, []
+	, ["e", "*", "b<>ox"]
+	]
+,
+	[ ["b<>ox"]
+	, ["e", "*", "*", "b<>ox"]
+	]
+,
+	[ ["b<>ox"]
+	, []
+	, ["e", "*", "*", "b<>ox"]
+	]
+,
+	[ ["b<>ox"]
+	, []
+	, []
+	, ["e", "*", "*", "b<>ox"]
+	]
+,
+	// good: mixed horizontal/vertical setups
+	[ ["b<>ox"]
+	, ["r<>ox", "r<>ox"]
+	, ["b<>ox"]
+	]
+,
+	[ ["b<>ox"]
+	, ["r<>ox", "er<>ox", "r<>ox"]
+	, ["b<>ox"]
+	]
+,
+	[ ["b<>ox"]
+	, ["r<>ox", "er<>ox", "er<>ox", "r<>ox"]
+	, ["b<>ox"]
+	]
+,
+	[ ["b<>ox"]
+	, ["e"]
+	, ["r<>ox", "r<>ox"]
+	, ["b<>ox"]
+	]
+,
+	[ ["b<>ox"]
+	, ["e"]
+	, ["r<>ox", "er<>ox", "r<>ox"]
+	, ["b<>ox"]
+	]
+,
+	[ ["b<>ox"]
+	, ["e"]
+	, ["r<>ox", "er<>ox", "er<>ox", "r<>ox"]
+	, ["b<>ox"]
+	]
+,
+	[ ["b<>ox"]
+	, ["r<>ox", "r<>ox"]
+	, ["e"]
+	, ["b<>ox"]
+	]
+,
+	[ ["b<>ox"]
+	, ["r<>ox", "er<>ox", "r<>ox"]
+	, ["e"]
+	, ["b<>ox"]
+	]
+,
+	[ ["b<>ox"]
+	, ["r<>ox", "er<>ox", "er<>ox", "r<>ox"]
+	, ["e"]
+	, ["b<>ox"]
+	]
+,
+	// good: room to rotate, open paths for movement
+	[ ["e"]
+	, ["e", "e"]
+	]
+,
+	[["e", "e"]]
+,
+	[["e", "e", "e"]]
+,
+	[["e", "e", "e", "e"]]
+,
+	[ ["e"]
+	, ["e"]
+	]
+,
+	[ ["e"]
+	, ["e"]
+	, ["e"]
+	]
+,
+	[ ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	]
+,
+	// good: something that's going to fall into line for a horizontal
+	[ ["b<>"]
+	, ["e", "b<>ox"]
+	, ["r<>ox|"]
+	]
+,
+	[ ["b<>"]
+	, ["e"]
+	, ["e", "b<>ox"]
+	, ["r<>ox|"]
+	]
+,
+	[ ["b<>"]
+	, ["e"]
+	, ["e"]
+	, ["e", "b<>ox"]
+	, ["r<>ox|"]
+	]
+,
+	[ ["b<>"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e", "b<>ox"]
+	, ["r<>ox|"]
+	]
+,
+	[ ["b<>"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e", "b<>ox"]
+	, ["r<>ox|"]
+	]
+,
+	[ ["b<>"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e", "b<>ox"]
+	, ["r<>ox|"]
+	]
+,
+	[ ["b<>"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e", "b<>ox"]
+	, ["r<>ox|"]
+	]
+,
+	[ ["b<>"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e", "b<>ox"]
+	, ["r<>ox|"]
+	]
+,
+	[ ["b<>"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e", "b<>ox"]
+	, ["r<>ox|"]
+	]
+,
+	[ ["b<>"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e", "b<>ox"]
+	, ["r<>ox|"]
+	]
+,
+	[ ["b<>"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e", "b<>ox"]
+	, ["r<>ox|"]
+	]
+,
+	[ ["b<>"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e", "b<>ox"]
+	, ["r<>ox|"]
+	]
+,
+	[ ["b<>"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e", "b<>ox"]
+	, ["r<>ox|"]
+	]
+,
+	[ ["b<>"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e", "b<>ox"]
+	, ["r<>ox|"]
+	]
+,
+	[ ["b<>"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e"]
+	, ["e", "b<>ox"]
+	]
+]
