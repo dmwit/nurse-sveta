@@ -47,6 +47,7 @@ data MsMendelConfig = MsMendelConfig
 	, mmcGeneMirroring :: Bool
 	, mmcMaxPillsPerKill :: Int
 	, mmcLogDirectory :: Maybe FilePath
+	, mmcInitialScoreAdjustments :: Int
 	} deriving (Eq, Ord, Read, Show, Generic)
 
 instance FromJSON MsMendelConfig where parseJSON = genericParseJSON (dashParseJSONOptions "MsMendelConfig" "mmc")
@@ -229,6 +230,9 @@ newJeffreysIndividual mmc rng = HM.traverseWithKey
 	(\cs -> newJeffreysGenome mmc rng cs . gcInitialPatterns)
 	(mmcGenomeConfig mmc)
 
+-- addGenes is not part of mutate because addGenes can only work if there's
+-- some genome below max size, while mutate can only work if there's some
+-- genome above zero size.
 addGenes :: MsMendelConfig -> GenIO -> Vector Individual -> IO (Vector Individual)
 addGenes mmc _rng pop | all ((sum (gcMaxPatterns <$> mmcGenomeConfig mmc)==) . iSize) pop = pure V.empty -- this should never happen
 addGenes mmc rng pop = V.replicateM (mmcGeneAdditions mmc) addGene where

@@ -7,5 +7,16 @@ main = do
 	mmc <- loadConfiguration
 	patterns <- loadFromConfiguration "patterns"
 	dir <- basedir XdgData
-	population <- replicateM (mmcInitialPopulation mmc) (iFromPatterns (mmcGeneMirroring mmc) patterns)
-	savePopulation dir (V.fromList population) 0
+	rng <- createSystemRandom
+
+	iBase <- iFromPatterns (mmcGeneMirroring mmc) patterns
+	for_ iBase \g -> for_ [0..gSize g-1] \pat -> gSetPatternScore g pat 0
+	population <- V.replicateM (mmcInitialPopulation mmc) do
+		i <- iClone iBase
+		let patternChoices = V.fromList [(g, pat) | g <- toList i, pat <- [0..gSize g-1]]
+		i <$ replicateM_ (mmcInitialScoreAdjustments mmc) do
+			(g, pat) <- uniformV' rng patternChoices
+			score <- uniformFloat01M rng
+			gSetPatternScore g pat (2*score-1)
+
+	savePopulation dir population 0

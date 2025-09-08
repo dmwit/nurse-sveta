@@ -1,5 +1,5 @@
 module Nurse.Sveta.Genome (
-	Individual, Genome, newGenome, gClone,
+	Individual, Genome, newGenome, gClone, iClone,
 	gSize, gConvWidth, gConvHeight,
 	iEvaluate,
 	gIndices, gAppend,
@@ -74,6 +74,9 @@ gcGenome act = Genome <$> (act >>= newForeignPtr cxx_genome_delete)
 
 gClone :: Genome -> IO Genome
 gClone (Genome g) = withForeignPtr g (gcGenome . cxx_genome_clone)
+
+iClone :: Individual -> IO Individual
+iClone = traverse gClone
 
 gSize :: Genome -> Int
 gSize (Genome g) = fromIntegral . unsafePerformIO $ withForeignPtr g cxx_genome_size

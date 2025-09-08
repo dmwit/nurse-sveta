@@ -27,4 +27,5 @@
 	, "3x1": { "initial-patterns":  1, "max-patterns":  4 }
 	}
 , "log-directory": "$DATA/logs"
+, "initial-score-adjustments": 6
 }
