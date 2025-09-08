@@ -26,4 +26,5 @@
 	, "1x3": { "initial-patterns":  1, "max-patterns":  4 }
 	, "3x1": { "initial-patterns":  1, "max-patterns":  4 }
 	}
+, "log-directory": "$DATA/logs"
 }

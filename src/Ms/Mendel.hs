@@ -46,6 +46,7 @@ data MsMendelConfig = MsMendelConfig
 	, mmcGenomeConfig :: HashMap ConvolutionSize GenomeConfig
 	, mmcGeneMirroring :: Bool
 	, mmcMaxPillsPerKill :: Int
+	, mmcLogDirectory :: Maybe FilePath
 	} deriving (Eq, Ord, Read, Show, Generic)
 
 instance FromJSON MsMendelConfig where parseJSON = genericParseJSON (dashParseJSONOptions "MsMendelConfig" "mmc")
@@ -81,6 +82,35 @@ saveAtomically :: ToJSON a => FilePath -> FilePath -> a -> IO ()
 saveAtomically dir nm a = do
 	encodeFile (dir </> "." ++ nm) a
 	renameFile (dir </> "." ++ nm) (dir </> nm)
+
+makeLogger :: MsMendelConfig -> String -> IO (String -> IO ())
+makeLogger mmc threadName = do
+	mdir <- for (mmcLogDirectory mmc) \case
+		"$CONFIG" -> basedir XdgConfig
+		"$DATA" -> basedir XdgData
+		"$HOME" -> getHomeDirectory
+		"~" -> getHomeDirectory
+		'$':'C':'O':'N':'F':'I':'G':'/':rest -> (</>rest) <$> basedir XdgConfig
+		'$':'D':'A':'T':'A':'/':rest -> (</>rest) <$> basedir XdgData
+		'$':'H':'O':'M':'E':'/':rest -> (</>rest) <$> getHomeDirectory
+		'~':'/':rest -> (</>rest) <$> getHomeDirectory
+		'/':absolute -> pure ('/':absolute)
+		relative -> do
+			printf "WARNING: logging to relative directory %s\n" relative
+			printf "\tcurrent working directory is %s\n" =<< getCurrentDirectory
+			printf "\tyou might want to consider using $CONFIG, $DATA, or $HOME to construct an absolute path instead\n"
+			pure relative
+	startTime <- getCurrentTime
+	threadId <- myThreadId
+	mh <- for mdir \dir -> do
+		createDirectoryIfMissing True dir
+		openFile (dir </> printf "%s-%s-%s" threadName (show startTime) (show threadId) <.> "txt") WriteMode
+	let stdoutPrefix = printf "%s@%s [%s]: " threadName (show startTime) (show threadId)
+	pure \s -> do
+		putFlush (stdoutPrefix ++ s) stdout
+		for_ mh (putFlush s)
+	where
+	putFlush s h = hPutStrLn h s >> hFlush h
 
 data LoadingError
 	= MissingGeneration FilePath
