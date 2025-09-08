@@ -190,7 +190,7 @@ mutate mmc rng pop = do
 	adj <- V.replicateM (mmcScoreAdjustments mmc) adjustScore
 	res <- V.replicateM (mmcScoreResets mmc) resetScore
 	blk <- V.replicateM (mmcBulkPatternToggles mmc) bulkPatternToggle
-	pure $ mconcat [ins, del, pat, adj, blk]
+	pure $ mconcat [ins, del, pat, adj, res, blk]
 	where
 	replaceGene = onGene rng pop \cs pat sz g -> liftJ2 gAppend
 		(gIndices g $ [0..pat-1] ++ [pat+1..sz-1])
