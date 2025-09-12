@@ -93,36 +93,27 @@ evaluationThreadView mmc jobs = do
 	tvNew w (readTVarIO psmRef >>= psvSet psv) (evaluationThread mmc jobs psmRef)
 
 evaluationThread :: MsMendelConfig -> MVar Job -> TVar PlayerStateModel -> StatusCheck -> IO ()
-evaluationThread mmc jobs psmRef sc = makeLogger mmc "evaluation" >>= \log -> createSystemRandom >>= \rng -> forever do
-	log "scIO_ sc"
+evaluationThread mmc jobs psmRef sc = createSystemRandom >>= \rng -> forever do
 	scIO_ sc
-	log "takeMVar jobs"
 	job <- takeMVar jobs
 	-- we need to make a copy so that scIO below can put the original game back
 	-- into the queue
-	log "cloneGameState (jGame job)"
 	gs <- cloneGameState (jGame job)
 	let moveLoop pills frames [] = moveLoop pills frames (jLookaheads job)
-	    moveLoop pills frames (lk:lks) = log "stopMoving pills gs" >> stopMoving pills gs >>= \b -> if b then pure frames else do
-	    	log "scIO sc (putMVar jobs job)"
+	    moveLoop pills frames (lk:lks) = stopMoving pills gs >>= \b -> if b then pure frames else do
 	    	scIO sc (putMVar jobs job)
-	    	log "mfreeze (board gs)"
 	    	cur <- mfreeze (board gs)
 	    	-- TODO: would be nice to do this after playing the move, since we
 	    	-- only really ever see this in detail when evaluation threads have
 	    	-- finished a generation's games and are waiting for their peers,
 	    	-- but getting the lookahead right is obnoxious
-	    	log "atomically $ writeTVar psmRef ..."
 	    	atomically $ writeTVar psmRef PSM { psmBoard = cur, psmLookahead = Just lk, psmOverlay = [] }
-	    	log "readIORef (framesPassed/pillsUsed/virusesKilled gs)"
 	    	fp <- readIORef (framesPassed gs)
 	    	pu <- readIORef (pillsUsed gs)
 	    	vk <- readIORef (virusesKilled gs)
-	    	log "mapproxReachable"
 	    	placements <- mapproxReachable (board gs) (fp .&. 1 /= fromEnum (originalSensitive gs)) (gravity (speed gs) pu)
 	    	let moves = V.fromList . HM.toList . HM.fromListWith shorterPath $
 	    	    	[(mpPill placement lk, path) | (placement, path) <- HM.toList placements]
-	    	log "for moves \\(pill, path) -> do"
 	    	next <- for moves \(pill, path) -> do
 	    		gs' <- cloneGameState gs
 	    		playMove gs' path pill
@@ -131,24 +122,16 @@ evaluationThread mmc jobs psmRef sc = makeLogger mmc "evaluation" >>= \log -> cr
 	    	    bestScore = V.maximum scores
 	    	    bestIndices = V.findIndices (bestScore==) scores
 	    	    rateLimit = mmcEvaluationRateLimit mmc
-	    	log "(moves V.!) <$> uniformV' rng bestIndices"
 	    	(pill, path) <- (moves V.!) <$> uniformV' rng bestIndices
-	    	log $ "playMove gs path pill"
 	    	playMove gs path pill
-	    	log "readIORef (virusesKilled gs)"
 	    	vk' <- readIORef (virusesKilled gs)
-	    	log "update pills+frames"
 	    	(pills', frames') <- if vk' > vk
 	    		then liftM2 (,) (readIORef (pillsUsed gs)) (readIORef (framesPassed gs))
 	    		else pure (pills, frames)
-	    	log "threadDelay"
 	    	when (rateLimit > 0) (threadDelay rateLimit)
 	    	moveLoop pills' frames' lks
-	log "moveLoop 0 0 []"
 	frames <- moveLoop 0 0 []
-	log "readIORef (virusesKilled gs)"
 	vk <- readIORef (virusesKilled gs)
-	log $ "putMVar (jReply job) " ++ show Evaluation { eID = jID job, eViruses = vk, eFramesToLastKill = frames }
 	putMVar (jReply job) Evaluation
 		{ eID = jID job
 		, eViruses = vk
@@ -268,27 +251,17 @@ asMinutes frames = tshow wholeMinutes <> ":" <> zeroPad 2 (tshow wholeSeconds) <
 	zeroPad n t = T.replicate (n - T.length t) "0" <> t
 
 evolutionThread :: MsMendelConfig -> (String -> IO ()) -> MVar Job -> FilePath -> MVar Evaluation -> TVar GenerationOverview -> GenIO -> Vector Individual -> StatusCheck -> IO ()
-evolutionThread mmc log jobs dir replies overviewRef rng pop0 sc = makeLogger mmc "evolution-details" >>= go pop0 where
-	go pop logDetails = do
-		logDetails "readTVarIO overviewRef >>= savePopulation dir pop . goID"
+evolutionThread mmc log jobs dir replies overviewRef rng pop0 sc = go pop0 where
+	go pop = do
 		readTVarIO overviewRef >>= savePopulation dir pop . goID
-		logDetails "scIO_ sc"
 		scIO_ sc
-		logDetails "forM [0..mmcMaxLevel mmc] \\lev -> do"
 		gslks <- concat <$> forM [0..mmcMaxLevel mmc] \lev -> do
-			logDetails "\tforM [1..mmcRunsPerGeneration mmc] \\_ -> do"
 			forM [1..mmcRunsPerGeneration mmc] \_ -> do
-				logDetails $ "\t\tinitialState (ExactLevel rng " ++ show lev ++ ")"
 				gs <- initialState (ExactLevel rng lev)
-				logDetails $ "\t\treplicateM cycleLength (sampleRNG' rng)"
 				lk <- replicateM (mmcPillCycleLength mmc) (sampleRNG' rng)
-				logDetails $ "\t\tpure (gs, lk)"
 				pure (gs, lk)
-		logDetails "forkIO $ forM_ gslks \\(gs0, lks) -> V.iforM_ pop \\i ind -> do"
 		tid <- forkIO $ forM_ gslks \(gs0, lks) -> V.iforM_ pop \i ind -> do
-			logDetails "\t[forkIO]cloneGameState gs0"
 			gs <- cloneGameState gs0
-			logDetails "\t[forkIO]putMVar jobs Job"
 			putMVar jobs Job
 				{ jIndividual = ind
 				, jGame = gs
@@ -296,33 +269,22 @@ evolutionThread mmc log jobs dir replies overviewRef rng pop0 sc = makeLogger mm
 				, jID = i
 				, jReply = replies
 				}
-		logDetails "VM.generate (V.length pop) \\i -> Evaluation { eID = i, eViruses = 0, eFramesToLastKill = 0 }"
 		evals <- VM.generate (V.length pop) \i -> Evaluation { eID = i, eViruses = 0, eFramesToLastKill = 0 }
-		logDetails "forM_ gslks \\_ -> do"
 		forM_ gslks \_ -> do
-			logDetails "\tatomically $ modifyTVar overviewRef (goWorstSoFar ~= Nothing)"
 			atomically $ modifyTVar overviewRef \overview -> overview { goWorstSoFar = Nothing }
-			logDetails "\tforM_ pop"
 			forM_ pop \_ -> do
-				logDetails "\t\tscIO sc ..."
 				scIO sc do
 					forkIO . forever $ takeMVar replies
 					killThread tid
-				logDetails "\t\ttakeMVar replies"
 				deval <- takeMVar replies
-				logDetails "\t\tVM.modify evals (deval<>) (eID deval)"
 				VM.modify evals (deval<>) (eID deval)
-				logDetails "\t\tVM.read evals (eID deval)"
 				eval <- VM.read evals (eID deval)
-				logDetails "\t\tatomically $ modifyTVar overviewRef ..."
 				atomically $ modifyTVar overviewRef \overview -> overview
 					{ goLevelsPlayed = goLevelsPlayed overview + 1
 					, goBestSoFar = Just $ maybe eval (minOn (what'sBad pop) eval) (goBestSoFar overview)
 					, goWorstSoFar = Just $ maybe eval (maxOn (what'sBad pop) eval) (goWorstSoFar overview)
 					}
-		logDetails "V.sortBy what'sBad evals"
 		V.sortBy (comparing (what'sBad pop)) evals
-		logDetails "V.freeze evals"
 		frozenEvals <- V.freeze evals
 		let sortedIDs = eID <$> frozenEvals
 		    sortedPop = V.backpermute pop sortedIDs
@@ -336,18 +298,14 @@ evolutionThread mmc log jobs dir replies overviewRef rng pop0 sc = makeLogger mm
 		report "sizes" (iSize <$> sortedPop)
 		log ""
 
-		logDetails "breed mmc rng sortedPop"
 		offspring <- breed mmc rng (V.take (mmcBreeders mmc) sortedPop)
-		logDetails "mutate mmc rng sortedPop"
 		mutations <- mutate mmc rng (V.take (mmcMutators mmc) sortedPop)
-		logDetails "addGenes mmc rng sortedPop"
 		additions <- addGenes mmc rng (V.take (mmcMutators mmc) sortedPop)
 		let pop' = mconcat [survivors, offspring, mutations, additions]
 		    sizes = sort . V.toList $ iSize <$> pop'
 		    quartile n = case (V.length pop' * n) `quotRem` 4 of
 		    	(q, r) -> fromIntegral (sizes !!  q   ) * (fromIntegral (4-r) / 4)
 		    	        + fromIntegral (sizes !! (q+1)) * (fromIntegral    r  / 4)
-		logDetails "atomically $ modifyTVar overviewRef ..."
 		atomically $ modifyTVar overviewRef \overview -> overview
 			{ goID = goID overview + 1
 			, goLevelsPlayed = 0
@@ -361,7 +319,7 @@ evolutionThread mmc log jobs dir replies overviewRef rng pop0 sc = makeLogger mm
 			, goMedianSize = quartile 2
 			, goLastQuartileSize = quartile 3
 			}
-		go pop' logDetails
+		go pop'
 
 initializePopulation :: MsMendelConfig -> FilePath -> GenIO -> IO (Int, Vector Individual)
 initializePopulation mmc dir rng = loadPopulation mmc dir >>= \case
