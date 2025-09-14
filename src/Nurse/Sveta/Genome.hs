@@ -356,7 +356,7 @@ anythingCell = PatternCell allDisjuncts
 instance FromJSON PatternCell where
 	parseJSON json = do
 		t <- parseJSON json
-		PatternCell <$> T.foldlM' (\s c -> do
+		PatternCell <$> T.foldl' (\s c -> do
 			disjunct <- case c of
 				'b' -> pure $ NonSentinel CDBlue
 				'r' -> pure $ NonSentinel CDRed
@@ -369,8 +369,8 @@ instance FromJSON PatternCell where
 				'e' -> pure $ EmptySentinel
 				'*' -> pure $ EmptySentinel -- we'll fix this up later
 				_ -> fail $ "expected one of b, r, y, x, <, >, o, |, e, or *, but got " ++ [c]
-			pure $ if c == '*' then allDisjuncts else S.insert disjunct s
-			) S.empty t
+			if c == '*' then pure allDisjuncts else S.insert disjunct <$> s
+			) (pure S.empty) t
 
 -- | Intended invariants: @pHeight p == length (pCells p)@ and @all ((pWidth p
 -- ==) . length) (pCells p)@. The first element of 'pCells' is the highest row
