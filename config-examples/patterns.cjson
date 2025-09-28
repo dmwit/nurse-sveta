@@ -77,6 +77,37 @@
 //
 // Annotations about whether a pattern is good or bad are just my educated
 // guess. There's nothing forcing a particular AI to agree with me.
+
+// TODO: misc ideas from my napkin (just go ahead and assume they all have an
+// implied "and variants/precursors/90 degree rotations/shufflings/reorderings"
+// at the end of the description)
+// * horizontal-horizontal drop combos:
+//     b
+//    brr
+// * vertical-vertical drop combos:
+//     b
+//     r
+//     r
+//     r
+//     e
+//     b
+// * huh. so, if h-h exists and v-v exists, are there h-v and v-h drop combos
+//   we should be thinking about?
+// * room to finish clears: eebb and ebbe
+// * trash on the floor might be worse than trash elsewhere
+//      o<>bry
+//      o<>br
+//      o<>b
+//      |
+//   variations include shortened versions
+//   variations include a little empty space between the trash and the floor --
+//   it's probably gonna get to the floor eventually
+// * fat logs (don't forget the 90 degree rotations on this one despite the fat
+//   log association with being exclusively horizontal)
+//     bx b<>o b<>o e
+//     rx r<>o r<>o e
+//                  bry<>ox|
+// * when towering up, only do it on one side
 [
 	// bad: viruses
 	[["bx"]]
@@ -86,35 +117,28 @@
 ,
 	// bad: occupying the cell that makes you lose
 	[ ["*","|"]
-	, ["|","*","*","*","b<>o"]
+	, ["|","eb<>o","*","*","br<>o"]
 	]
 ,
 	// bad: occupying the cell just below the one that makes you lose
-	//
-	// Actually, this matches if you're in the losing cell or the one below.
-	// But it's okay to be less specific like that. If you wanted to give score
-	// X to "in the loser" and Y to "in the one below the loser", you could
-	// achieve that by giving score X-Y to "in the loser" and Y to "in either
-	// the loser or the one below it". This trick is exploited repeatedly in
-	// this file.
 	[ ["*", "|"]
-	, []
-	, ["|","*","*","*","b<>o"]
+	, ["*", "eb<>o"]
+	, ["|","*","*","*","br<>o"]
 	]
 ,
 	// bad: occupying the cell two below the one that makes you lose
 	[ ["*", "|"]
+	, ["*", "eb<>o"]
 	, []
-	, []
-	, ["|","*","*","*","b<>o"]
+	, ["|","*","*","*","br<>o"]
 	]
 ,
 	// bad: occupying the cell three below the one that makes you lose
 	[ ["*", "|"]
+	, ["*", "eb<>o"]
 	, []
 	, []
-	, []
-	, ["|","*","*","*","b<>o"]
+	, ["|","*","*","*","br<>ox"]
 	]
 ,
 	// good: completing the level
@@ -552,6 +576,8 @@
 	]
 ,
 	// bad: color pairs or triples that don't have enough room to clear
+	// TODO: should probably do this for singles, too
+	// TODO: flesh this out, it seems like there's a bunch more possible patterns that fit this description
 	[["b<>ox", "r<>ox", "r<>ox", "|by<>ox"]]
 ,
 	[["b<>ox", "r<>ox", "r<>ox", "*", "|by<>ox"]]
@@ -983,6 +1009,7 @@
 	]
 ,
 	// good: horizontal potential to fix verticals blocked by the top of the board
+	// TODO: patterns for when we have progress on both sides
 	[ ["|"]
 	, []
 	, []
