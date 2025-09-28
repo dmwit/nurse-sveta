@@ -81,6 +81,14 @@ class Genome {
 		void set_pattern_score(int64_t pattern, float v);
 		void decode_patterns(string ps);
 
+		// Assuming all the scores are in the range (-1, 1), insert a little
+		// noise, by adding a normal distribution with the given variance in
+		// tanh space.
+		//
+		// Could be implemented in terms of get_score and set_score, but this
+		// is faster, less annoying to implement, and less annoying to use.
+		void tweak_pattern_scores(float variance);
+
 		const Tensor &p_color_pattern() const;
 		const Tensor &p_shape_pattern() const;
 		const Tensor &p_pattern_score() const;
@@ -328,6 +336,11 @@ void Genome::decode_patterns(string ps) {
 	p_shape_pattern_ = Tensor();
 }
 
+void Genome::tweak_pattern_scores(float variance) {
+	pattern_score_ = (pattern_score_.clamp(-0.9999999, 0.9999999).atanh() + variance * torch::randn({size()}, GPU_FLOAT)).tanh();
+	p_pattern_score_ = Tensor();
+}
+
 const Tensor &Genome::p_color_pattern() const {
 	if(!p_color_pattern_.defined()) {
 		p_color_pattern_ = torch::zeros({mirroring_size(), NUM_PERMUTATIONS, size(), COLORS+SENTINELS, conv_width(), conv_height()}, GPU_BOOL_REP);
@@ -475,6 +488,8 @@ extern "C" {
 	void genome_set_shape_pattern(Genome *g, int n, int s, int w, int h, bool v) { return g->set_shape_pattern(n, s, w, h, v); }
 	void genome_set_pattern_score(Genome *g, int n, float v) { return g->set_pattern_score(n, v); }
 	void genome_decode_patterns(Genome *g, char *code, int length) { g->decode_patterns(string(code, length)); }
+
+	void genome_tweak_pattern_scores(Genome *g, float variance) { g->tweak_pattern_scores(variance); }
 
 	Genome *genome_indices(Genome *g, int *is, int is_size);
 	Genome *genome_append(Genome *g, Genome *other) { return new Genome(*g + *other); }

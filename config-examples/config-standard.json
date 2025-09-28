@@ -12,8 +12,10 @@
 , "gene-deletions": 10
 , "gene-additions": 30
 , "pattern-toggles": 20
-, "score-adjustments": 50
-, "score-adjustment-variance": 0.2
+, "single-pattern-score-adjustments": 50
+, "single-pattern-score-adjustment-variance": 0.2
+, "all-patterns-score-adjustments": 0
+, "all-patterns-score-adjustment-variance": 0.2
 , "score-resets": 10
 , "bulk-pattern-toggles": 10
 , "typical-pattern-toggle-batch-size": 10
@@ -28,5 +30,5 @@
 	, "3x1": { "initial-patterns":  1, "max-patterns":  4 }
 	}
 , "log-directory": "$DATA/logs"
-, "initial-score-adjustments": 0
+, "initial-single-pattern-score-adjustments": 0
 }

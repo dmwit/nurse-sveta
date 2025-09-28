@@ -38,8 +38,10 @@ data MsMendelConfig = MsMendelConfig
 	, mmcGeneDeletions :: Int
 	, mmcGeneAdditions :: Int
 	, mmcPatternToggles :: Int
-	, mmcScoreAdjustments :: Int
-	, mmcScoreAdjustmentVariance :: Float
+	, mmcSinglePatternScoreAdjustments :: Int
+	, mmcSinglePatternScoreAdjustmentVariance :: Float
+	, mmcAllPatternsScoreAdjustments :: Int
+	, mmcAllPatternsScoreAdjustmentVariance :: Float
 	, mmcScoreResets :: Int
 	, mmcBulkPatternToggles :: Int
 	, mmcTypicalPatternToggleBatchSize :: Float
@@ -48,7 +50,7 @@ data MsMendelConfig = MsMendelConfig
 	, mmcGeneMirroring :: Bool
 	, mmcMaxPillsPerKill :: Int
 	, mmcLogDirectory :: Maybe FilePath
-	, mmcInitialScoreAdjustments :: Int
+	, mmcInitialSinglePatternScoreAdjustments :: Int
 	} deriving (Eq, Ord, Read, Show, Generic)
 
 instance FromJSON MsMendelConfig where parseJSON = genericParseJSON (dashParseJSONOptions "MsMendelConfig" "mmc")
@@ -187,10 +189,11 @@ mutate mmc rng pop = do
 	ins <- V.replicateM (mmcGeneReplacements mmc) replaceGene
 	del <- V.replicateM (mmcGeneDeletions mmc) deleteGene
 	pat <- V.replicateM (mmcPatternToggles mmc) togglePattern
-	adj <- V.replicateM (mmcScoreAdjustments mmc) adjustScore
+	adj <- V.replicateM (mmcSinglePatternScoreAdjustments mmc) adjustScore
+	nrm <- V.replicateM (mmcAllPatternsScoreAdjustments mmc) adjustAllScores
 	res <- V.replicateM (mmcScoreResets mmc) resetScore
 	blk <- V.replicateM (mmcBulkPatternToggles mmc) bulkPatternToggle
-	pure $ mconcat [ins, del, pat, adj, res, blk]
+	pure $ mconcat [ins, del, pat, adj, nrm, res, blk]
 	where
 	replaceGene = onGene rng pop \cs pat sz g -> liftJ2 gAppend
 		(gIndices g $ [0..pat-1] ++ [pat+1..sz-1])
@@ -206,6 +209,10 @@ mutate mmc rng pop = do
 	adjustScore = onGeneClone rng pop \_cs pat _sz g -> do
 		delta <- standard rng
 		gSetPatternScore g pat . tweakScore mmc delta $ gGetPatternScore g pat
+	adjustAllScores = do
+		i <- uniformV' rng pop >>= iClone
+		let var = mmcAllPatternsScoreAdjustmentVariance mmc / fromIntegral (iSize i)
+		i <$ for_ i \g -> gTweakPatternScores g var
 	resetScore = onGeneClone rng pop \_cs pat _sz g -> gSetPatternScore g pat 0
 	bulkPatternToggle = onGeneClone rng pop \cs pat _sz g -> do
 		pat' <- newJeffreysGenome mmc rng cs 1
@@ -249,7 +256,7 @@ addGenes mmc rng pop = V.replicateM (mmcGeneAdditions mmc) addGene where
 			else addGene
 
 tweakScore :: MsMendelConfig -> Double -> Float -> Float
-tweakScore mmc delta score = tanh (mmcScoreAdjustmentVariance mmc * realToFrac delta + atanh (min 0.9999999 (max (-0.9999999) score)))
+tweakScore mmc delta score = tanh (mmcSinglePatternScoreAdjustmentVariance mmc * realToFrac delta + atanh (min 0.9999999 (max (-0.9999999) score)))
 
 onGene :: GenIO -> Vector Individual -> (ConvolutionSize -> Int -> Int -> Genome -> IO Genome) -> IO Individual
 onGene rng pop f = do

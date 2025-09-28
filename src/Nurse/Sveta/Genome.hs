@@ -4,7 +4,7 @@ module Nurse.Sveta.Genome (
 	iEvaluate,
 	gIndices, gAppend,
 	gGetColorPattern, gGetShapePattern, gGetPatternScore,
-	gSetColorPattern, gSetShapePattern, gSetPatternScore,
+	gSetColorPattern, gSetShapePattern, gSetPatternScore, gTweakPatternScores,
 	IndividualSpec, iSpec, iFromSpec,
 	gDump, gSketch,
 	Patterns, iFromPatterns,
@@ -44,6 +44,7 @@ foreign import ccall "patterns_encoding_delete" cxx_patterns_encoding_delete :: 
 foreign import ccall unsafe "genome_set_color_pattern" cxx_genome_set_color_pattern :: Ptr Genome -> CInt -> CInt -> CInt -> CInt -> CBool -> IO ()
 foreign import ccall unsafe "genome_set_shape_pattern" cxx_genome_set_shape_pattern :: Ptr Genome -> CInt -> CInt -> CInt -> CInt -> CBool -> IO ()
 foreign import ccall unsafe "genome_set_pattern_score" cxx_genome_set_pattern_score :: Ptr Genome -> CInt -> CFloat -> IO ()
+foreign import ccall "genome_tweak_pattern_scores" cxx_genome_tweak_pattern_scores :: Ptr Genome -> CFloat -> IO ()
 foreign import ccall "genome_decode_patterns" cxx_genome_decode_patterns :: Ptr Genome -> Ptr CChar -> CInt -> IO ()
 
 foreign import ccall unsafe "genome_size" cxx_genome_size :: Ptr Genome -> IO CInt
@@ -120,6 +121,10 @@ gSetShapePattern (Genome g) n s w h v = withForeignPtr g \cxx_g ->
 gSetPatternScore :: Genome -> Int -> Float -> IO ()
 gSetPatternScore (Genome g) n v = withForeignPtr g \cxx_g ->
 	cxx_genome_set_pattern_score cxx_g (fromIntegral n) (realToFrac v)
+
+gTweakPatternScores :: Genome -> Float -> IO ()
+gTweakPatternScores (Genome g) variance = withForeignPtr g \cxx_g ->
+	cxx_genome_tweak_pattern_scores cxx_g (realToFrac variance)
 
 gDecodePatterns :: Genome -> [Word8] -> IO ()
 gDecodePatterns (Genome g) bytes =

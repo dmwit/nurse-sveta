@@ -14,7 +14,7 @@ main = do
 	population <- V.replicateM (mmcInitialPopulation mmc) do
 		i <- iClone iBase
 		let patternChoices = V.fromList [(g, pat) | g <- toList i, pat <- [0..gSize g-1]]
-		i <$ replicateM_ (mmcInitialScoreAdjustments mmc) do
+		i <$ replicateM_ (mmcInitialSinglePatternScoreAdjustments mmc) do
 			(g, pat) <- uniformV' rng patternChoices
 			score <- uniformFloat01M rng
 			gSetPatternScore g pat (2*score-1)
