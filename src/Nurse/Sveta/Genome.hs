@@ -1,6 +1,6 @@
 module Nurse.Sveta.Genome (
 	Individual, Genome, newGenome, gClone, iClone,
-	gSize, gConvWidth, gConvHeight,
+	gSize, gConvWidth, gConvHeight, gMirroring,
 	iEvaluate,
 	gIndices, gAppend,
 	gGetColorPattern, gGetShapePattern, gGetPatternScore,
@@ -11,11 +11,13 @@ module Nurse.Sveta.Genome (
 	ConvolutionSize(..), csPretty,
 	WithSentinels(..),
 	allColorsWithSentinels, allShapesWithSentinels,
+	IndividualOf(..),
 	) where
 
 import Data.ByteString.Builder
 import Foreign
 import Foreign.C
+import GHC.Generics
 import Nurse.Sveta.Util
 import System.IO.Unsafe
 
@@ -50,6 +52,7 @@ foreign import ccall "genome_decode_patterns" cxx_genome_decode_patterns :: Ptr 
 foreign import ccall unsafe "genome_size" cxx_genome_size :: Ptr Genome -> IO CInt
 foreign import ccall unsafe "genome_conv_width" cxx_genome_conv_width :: Ptr Genome -> IO CInt
 foreign import ccall unsafe "genome_conv_height" cxx_genome_conv_height :: Ptr Genome -> IO CInt
+foreign import ccall unsafe "genome_mirroring" cxx_genome_mirroring :: Ptr Genome -> IO CBool
 
 foreign import ccall "genome_indices" cxx_genome_indices :: Ptr Genome -> Ptr CInt -> CInt -> IO (Ptr Genome)
 foreign import ccall "genome_append" cxx_genome_append :: Ptr Genome -> Ptr Genome -> IO (Ptr Genome)
@@ -62,10 +65,16 @@ foreign import ccall "evaluate" cxx_evaluate :: Ptr Genome -> Ptr Boards -> Ptr 
 newtype Boards = Boards (ForeignPtr Boards)
 newtype Genome = Genome (ForeignPtr Genome)
 
+data IndividualOf a = Individual
+	{ iGenes :: HashMap ConvolutionSize a
+	, iFrameScore :: Float
+	} deriving (Eq, Ord, Read, Show, Functor, Foldable, Traversable, Generic)
+
 -- | Intended invariant: for all @ind :: Individual@,
 --
--- @and [gConvWidth g == csWidth cs && gConvHeight g == csHeight cs | (cs, g) <- HM.toList ind]@
-type Individual = HashMap ConvolutionSize Genome
+-- @and [gConvWidth g == csWidth cs && gConvHeight g == csHeight cs | (cs, g) <- HM.toList (iGenes ind)]@
+type Individual = IndividualOf Genome
+type IndividualSpec = IndividualOf ConvolutionsSpec
 
 newGenome :: Bool -> ConvolutionSize -> Int -> Float -> IO Genome
 newGenome mirroring cs n p = gcGenome (cxx_genome_new (fromIntegral (csWidth cs)) (fromIntegral (csHeight cs)) (fromIntegral n) (realToFrac p) (fromIntegral (fromEnum mirroring)))
@@ -87,6 +96,9 @@ gConvWidth (Genome g) = fromIntegral . unsafePerformIO $ withForeignPtr g cxx_ge
 
 gConvHeight :: Genome -> Int
 gConvHeight (Genome g) = fromIntegral . unsafePerformIO $ withForeignPtr g cxx_genome_conv_height
+
+gMirroring :: Genome -> Bool
+gMirroring (Genome g) = (0 /=) . unsafePerformIO $ withForeignPtr g cxx_genome_mirroring
 
 gGetColorPattern :: Genome -> Int -> WithSentinels Color -> Int -> Int -> Bool
 gGetColorPattern (Genome g) n c w h = unsafePerformIO $ withForeignPtr g \cxx_g -> (0 /=) <$>
@@ -150,10 +162,10 @@ gDump (Genome g) = withForeignPtr g cxx_genome_dump
 gSketch :: Genome -> IO ()
 gSketch (Genome g) = withForeignPtr g cxx_genome_sketch
 
-iEvaluate :: Individual -> Board -> Vector Board -> Vector Float
+iEvaluate :: Individual -> Board -> Vector (Board, Int) -> Vector Float
 iEvaluate ind b bs = unsafePerformIO $ iEvaluateIO ind b bs
 
-iEvaluateIO :: Individual -> Board -> Vector Board -> IO (Vector Float)
+iEvaluateIO :: Individual -> Board -> Vector (Board, Int) -> IO (Vector Float)
 iEvaluateIO ind b bs | invalid = fail "iEvaluate only works on 8x16 boards (because the underlying C++ function does)"
 	| otherwise =
 		allocaArray 128 \cxx_base_board ->
@@ -168,14 +180,17 @@ iEvaluateIO ind b bs | invalid = fail "iEvaluate only works on 8x16 boards (beca
 				cxx_evaluate cxx_g cxx_bs cxx_out
 				forM_ [0..n-1] \i -> flip (MV.modify hs_out) i . (+) =<< peekElemOff cxx_out i
 			cxx_boards_delete cxx_bs
-			coerce (V.unsafeFreeze @IO hs_out)
+			V.generateM n \i -> do
+				 boardScore <- realToFrac <$> MV.unsafeRead hs_out i
+				 let moveScore = iFrameScore ind * fromIntegral (snd (bs `V.unsafeIndex` i))
+				 pure (boardScore + moveScore)
 	where
 	n = V.length bs
 	invalidBoard b = width b /= 8 || height b /= 16
-	invalid = invalidBoard b || any invalidBoard bs
+	invalid = invalidBoard b || any (invalidBoard . fst) bs
 	diffsBS = (BS.toStrict . toLazyByteString) diffsBuilder
 	diffsBuilder = foldMap diff bs <> word8 0xfe
-	diff b' = mconcat [overwrite x y c
+	diff (b', _) = mconcat [overwrite x y c
 		| x <- [0..7]
 		, y <- [0..15]
 		, let pos = Position x y
@@ -265,37 +280,43 @@ instance FromJSONKey ConvolutionSize where
 instance Hashable ConvolutionSize where
 	s `hashWithSalt` cs = s `hashWithSalt` (2059915244 :: Int) `hashWithSalt` csWidth cs `hashWithSalt` csHeight cs
 
+traverseWithSize :: Applicative f => (ConvolutionSize -> a -> f b) -> IndividualOf a -> f (IndividualOf b)
+traverseWithSize f i = HM.traverseWithKey f (iGenes i) <&> \genes -> i { iGenes = genes }
+
 data ConvolutionsSpec = ConvolutionsSpec
-	{ csPatterns :: [Word8]
+	{ csMirroring :: Bool
+	, csPatterns :: [Word8]
 	, csScores :: [Float]
 	} deriving (Eq, Ord, Read, Show)
 
 instance ToJSON ConvolutionsSpec where
 	toEncoding cs = A.list id
-		$ (toEncoding . encodePrintable . csPatterns) cs
+		$ (toEncoding . csMirroring) cs
+		: (toEncoding . encodePrintable . csPatterns) cs
 		: (map toEncoding . csScores) cs
 	toJSON cs = toJSON
-		$ (toJSON . encodePrintable . csPatterns) cs
+		$ (toJSON . csMirroring) cs
+		: (toJSON . encodePrintable . csPatterns) cs
 		: (map toJSON . csScores) cs
 
 instance FromJSON ConvolutionsSpec where
-	parseJSON (Array vs) | V.length vs >= 1 = pure ConvolutionsSpec
-		<*> (decodePrintable <$> parseJSON (vs V.! 0))
-		<*> parseJSON (Array (V.drop 1 vs))
-	parseJSON o = typeMismatch "ConvolutionsSpec (an array with a string and some floats)" o
-
-type IndividualSpec = HashMap ConvolutionSize ConvolutionsSpec
+	parseJSON (Array vs) | V.length vs >= 2 = pure ConvolutionsSpec
+		<*> parseJSON (vs V.! 0)
+		<*> (decodePrintable <$> parseJSON (vs V.! 1))
+		<*> parseJSON (Array (V.drop 2 vs))
+	parseJSON o = typeMismatch "ConvolutionsSpec (an array with a bool, a string, and some floats)" o
 
 iSpec :: Individual -> IndividualSpec
 iSpec = fmap \g -> ConvolutionsSpec
-	{ csPatterns = gEncodePatterns g
+	{ csMirroring = gMirroring g
+	, csPatterns = gEncodePatterns g
 	, csScores = gGetPatternScore g <$> [0..gSize g-1]
 	}
 
-iFromSpec :: Bool -> IndividualSpec -> IO Individual
-iFromSpec mirroring = HM.traverseWithKey \sz conv -> do
+iFromSpec :: IndividualSpec -> IO Individual
+iFromSpec = traverseWithSize \sz conv -> do
 	let len = length (csScores conv)
-	g <- newGenome mirroring sz len 0
+	g <- newGenome (csMirroring conv) sz len 0
 	gDecodePatterns g (csPatterns conv)
 	zipWithM_ (gSetPatternScore g) [0..] (csScores conv)
 	pure g
@@ -402,12 +423,20 @@ instance FromJSON Pattern where
 
 -- | Intended invariant: @all ((csWidth cs ==) . pWidth) (patterns p ! cs)@ and
 -- @all ((csHeight cs ==) . pHeight) (patterns p ! cs)@.
-newtype Patterns = Patterns { patterns :: HashMap ConvolutionSize [Pattern] } deriving (Eq, Ord, Read, Show)
+data Patterns = Patterns
+	{ patterns :: HashMap ConvolutionSize [Pattern]
+	, mirroring :: Bool
+	} deriving (Eq, Ord, Read, Show)
 
 instance FromJSON Patterns where
-	parseJSON json = do
-		patterns <- parseJSON json
-		pure . Patterns $ HM.fromListWith (++) [(ConvolutionSize { csWidth = pWidth p, csHeight = pHeight p }, [p]) | p <- patterns]
+	parseJSON (Object o) = do
+		patterns <- o .: "patterns"
+		mirroring <- o .: "mirroring"
+		pure $ Patterns 
+			{ patterns = HM.fromListWith (++) [(ConvolutionSize { csWidth = pWidth p, csHeight = pHeight p }, [p]) | p <- patterns]
+			, mirroring = mirroring
+			}
+	parseJSON other = typeMismatch "Patterns (an object with two keys, patterns and mirroring)" other
 
 -- | Not intended for external consumption.
 gFromPatterns :: Bool -> ConvolutionSize -> [Pattern] -> IO Genome
@@ -427,5 +456,7 @@ gFromPatterns mirroring cs ps = do
 	pure g
 
 -- | Scores are iid, uniform between -1 and 1.
-iFromPatterns :: Bool -> Patterns -> IO Individual
-iFromPatterns mirroring = HM.traverseWithKey (gFromPatterns mirroring) . patterns
+iFromPatterns :: Float -> Patterns -> IO Individual
+iFromPatterns frameScore pats = pure Individual
+	<*> HM.traverseWithKey (gFromPatterns (mirroring pats)) (patterns pats)
+	<*> pure frameScore

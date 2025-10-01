@@ -9,7 +9,7 @@ main = do
 	dir <- basedir XdgData
 	rng <- createSystemRandom
 
-	iBase <- iFromPatterns (mmcGeneMirroring mmc) patterns
+	iBase <- iFromPatterns (mmcInitialFrameScore mmc) patterns
 	for_ iBase \g -> for_ [0..gSize g-1] \pat -> gSetPatternScore g pat 0
 	population <- V.replicateM (mmcInitialPopulation mmc) do
 		i <- iClone iBase

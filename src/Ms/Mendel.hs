@@ -5,12 +5,14 @@ module Ms.Mendel
 	, module Nurse.Sveta.Util
 	) where
 
+import Data.Bifunctor
 import GHC.Generics
 import Nurse.Sveta.Files
 import Nurse.Sveta.Genome
 import Nurse.Sveta.Tomcats
 import Nurse.Sveta.Util
 
+import qualified Data.Aeson.KeyMap as KM
 import qualified Data.ByteString.Lazy.Char8 as LBS
 import qualified Data.HashMap.Strict as HM
 import qualified Data.Vector as V
@@ -51,10 +53,16 @@ data MsMendelConfig = MsMendelConfig
 	, mmcMaxPillsPerKill :: Int
 	, mmcLogDirectory :: Maybe FilePath
 	, mmcInitialSinglePatternScoreAdjustments :: Int
+	, mmcInitialFrameScore :: Float
 	} deriving (Eq, Ord, Read, Show, Generic)
 
 instance FromJSON MsMendelConfig where parseJSON = genericParseJSON (dashParseJSONOptions "MsMendelConfig" "mmc")
 instance ToJSON MsMendelConfig where toEncoding = genericToEncoding (dashParseJSONOptions "MsMendelConfig" "mmc")
+
+instance FromJSON a => FromJSON (IndividualOf a) where parseJSON = genericParseJSON (dashParseJSONOptions "Individual" "i")
+instance ToJSON   a => ToJSON (IndividualOf a) where
+	toEncoding = genericToEncoding (dashParseJSONOptions "Individual" "i")
+	toJSON = genericToJSON (dashParseJSONOptions "Individual" "i")
 
 dashParseJSONOptions :: String -> String -> Options
 dashParseJSONOptions typeName prefix = defaultOptions
@@ -77,9 +85,27 @@ loadFromConfiguration nm = do
 loadConfiguration :: IO MsMendelConfig
 loadConfiguration = loadFromConfiguration "config"
 
+iSpecToJSON :: Vector IndividualSpec -> Value
+iSpecToJSON spec = case toJSON (RecordOfVectors spec) of
+	Object o -> case KM.lookup k o of
+		Just (Array gs) -> Object (KM.insert k (toJSON (RecordOfVectors gs)) o)
+		_ -> error "TODO: handle an object that's missing genes in iSpecToJSON"
+	_ -> error "TODO: handle a vector of specs that isn't serialized to an object"
+	where k = "genes"
+
+iSpecParseJSON :: Value -> Parser (Vector IndividualSpec)
+iSpecParseJSON (Object o) = case KM.lookup k o of
+	Just v -> do
+		RecordOfVectors v' <- parseJSON v
+		RecordOfVectors specs <- parseJSON (Object (KM.insert k (Array v') o))
+		pure specs
+	_ -> error "TODO: handle an object that's missing genes in iSpecParseJSON"
+	where k = "genes"
+iSpecParseJSON other = typeMismatch "object with keys genes and frame-score" other
+
 savePopulation :: FilePath -> Vector Individual -> Int -> IO ()
 savePopulation dir pop generation = do
-	saveAtomically dir (show generation <.> "json") (RecordOfVectors (iSpec <$> pop))
+	saveAtomically dir (show generation <.> "json") (iSpecToJSON (iSpec <$> pop))
 	saveAtomically dir "latest.json" generation
 
 saveAtomically :: ToJSON a => FilePath -> FilePath -> a -> IO ()
@@ -122,20 +148,20 @@ data LoadingError
 	| Corrupt FilePath String
 	deriving (Eq, Ord, Read, Show)
 
-loadPopulation_ :: MsMendelConfig -> FilePath -> IO (Int, Vector Individual)
-loadPopulation_ mmc dir = reflectError $ loadPopulation mmc dir
+loadPopulation_ :: FilePath -> IO (Int, Vector Individual)
+loadPopulation_ dir = reflectError $ loadPopulation dir
 
 loadPopulationAsSpecs_ :: FilePath -> IO (Int, Vector IndividualSpec)
 loadPopulationAsSpecs_ = reflectError . loadPopulationAsSpecs
 
-loadGeneration_ :: MsMendelConfig -> FilePath -> Int -> IO (Vector Individual)
-loadGeneration_ mmc dir generation = reflectError $ loadGeneration mmc dir generation
+loadGeneration_ :: FilePath -> Int -> IO (Vector Individual)
+loadGeneration_ dir generation = reflectError $ loadGeneration dir generation
 
 loadGenerationAsSpecs_ :: FilePath -> Int -> IO (Vector IndividualSpec)
 loadGenerationAsSpecs_ dir generation = reflectError $ loadGenerationAsSpecs dir generation
 
-loadPopulation :: MsMendelConfig -> FilePath -> IO (Either LoadingError (Int, Vector Individual))
-loadPopulation mmc dir = loadPopulationAsSpecs dir >>= traverse (popFromSpecs mmc)
+loadPopulation :: FilePath -> IO (Either LoadingError (Int, Vector Individual))
+loadPopulation dir = loadPopulationAsSpecs dir >>= traverse popFromSpecs
 
 loadPopulationAsSpecs :: FilePath -> IO (Either LoadingError (Int, Vector IndividualSpec))
 loadPopulationAsSpecs dir = do
@@ -146,8 +172,8 @@ loadPopulationAsSpecs dir = do
 			generation <- throwDecode bsGeneration
 			fmap ((,) generation) <$> loadGenerationAsSpecs dir generation
 
-loadGeneration :: MsMendelConfig -> FilePath -> Int -> IO (Either LoadingError (Vector Individual))
-loadGeneration mmc dir generation = loadGenerationAsSpecs dir generation >>= popFromSpecs mmc
+loadGeneration :: FilePath -> Int -> IO (Either LoadingError (Vector Individual))
+loadGeneration dir generation = loadGenerationAsSpecs dir generation >>= popFromSpecs
 
 loadGenerationAsSpecs :: FilePath -> Int -> IO (Either LoadingError (Vector IndividualSpec))
 loadGenerationAsSpecs dir generation = do
@@ -155,11 +181,11 @@ loadGenerationAsSpecs dir generation = do
 	handle (missing (MissingPopulation specsFilename)) do
 		bsSpecs <- LBS.readFile specsFilename
 		handle (corrupt specsFilename) do
-			RecordOfVectors specs <- throwDecode bsSpecs
-			pure (Right specs)
+			specs <- throwDecode bsSpecs
+			pure $ bimap (Corrupt specsFilename) id (parseEither iSpecParseJSON specs)
 
-popFromSpecs :: Traversable t => MsMendelConfig -> t (Vector IndividualSpec) -> IO (t (Vector Individual))
-popFromSpecs mmc = traverse (traverse (iFromSpec (mmcGeneMirroring mmc)))
+popFromSpecs :: Traversable t => t (Vector IndividualSpec) -> IO (t (Vector Individual))
+popFromSpecs = traverse (traverse iFromSpec)
 
 corrupt :: FilePath -> AesonException -> IO (Either LoadingError a)
 corrupt fp (AesonException e) = pure (Left (Corrupt fp e))
@@ -172,7 +198,12 @@ breed mmc rng pop
 	| V.length pop < 2 = pure V.empty
 	| otherwise = V.replicateM (mmcOffspring mmc) do
 		(ind, ind') <- chooseTwo
-		HM.traverseWithKey (\cs cfg -> liftJ2 (breedGenome cfg) (iGenome mmc ind cs) (iGenome mmc ind' cs)) (mmcGenomeConfig mmc)
+		genes <- HM.traverseWithKey (\cs cfg -> liftJ2 (breedGenome cfg) (iGenome mmc ind cs) (iGenome mmc ind' cs)) (mmcGenomeConfig mmc)
+		frameScore <- uniformV' rng . V.fromList . map iFrameScore $ [ind, ind']
+		pure Individual
+			{ iGenes = genes
+			, iFrameScore = frameScore
+			}
 	where
 	chooseTwo = do
 		[a, b] <- replicateM 2 (uniformVI' rng pop)
@@ -181,6 +212,9 @@ breed mmc rng pop
 		shuffledIndices <- uniformShuffle ((Left <$> V.generate (gSize g) id) <> (Right <$> V.generate (gSize g') id)) rng
 		len <- min (gcMaxPatterns cfg) . (1+) <$> uniformVI' rng shuffledIndices
 		let (indices, indices') = V.partitionWith id (V.take len shuffledIndices)
+		-- this sort of accidentally chooses randomly between the mirroring
+		-- settings of the two genomes, because you're equally likely to get
+		-- them in either order out of chooseTwo. happy accident
 		liftJ2 gAppend (gIndices g (V.toList indices)) (gIndices g' (V.toList indices'))
 
 mutate :: MsMendelConfig -> GenIO -> Vector Individual -> IO (Vector Individual)
@@ -236,9 +270,18 @@ newJeffreysGenome :: MsMendelConfig -> GenIO -> ConvolutionSize -> Int -> IO Gen
 newJeffreysGenome mmc rng cs n = newGenome (mmcGeneMirroring mmc) cs n . realToFrac =<< beta 0.5 0.5 rng
 
 newJeffreysIndividual :: MsMendelConfig -> GenIO -> IO Individual
-newJeffreysIndividual mmc rng = HM.traverseWithKey
+newJeffreysIndividual mmc rng = mmcIndividual mmc <$> HM.traverseWithKey
 	(\cs -> newJeffreysGenome mmc rng cs . gcInitialPatterns)
 	(mmcGenomeConfig mmc)
+
+mmcIndividual :: MsMendelConfig -> HashMap ConvolutionSize Genome -> Individual
+mmcIndividual mmc gs = Individual
+	{ iGenes = gs
+	, iFrameScore = mmcInitialFrameScore mmc
+	}
+
+iInsert :: Individual -> ConvolutionSize -> Genome -> Individual
+iInsert ind cs g = ind { iGenes = HM.insert cs g (iGenes ind) }
 
 -- addGenes is not part of mutate because addGenes can only work if there's
 -- some genome below max size, while mutate can only work if there's some
@@ -252,7 +295,7 @@ addGenes mmc rng pop = V.replicateM (mmcGeneAdditions mmc) addGene where
 		(cs, gc) <- uniformV' rng convolutionSizes
 		g <- iGenome mmc ind cs
 		if gSize g < gcMaxPatterns gc
-			then pure . flip (HM.insert cs) ind =<< gAppend g =<< newJeffreysGenome mmc rng cs 1
+			then pure . iInsert ind cs =<< gAppend g =<< newJeffreysGenome mmc rng cs 1
 			else addGene
 
 tweakScore :: MsMendelConfig -> Double -> Float -> Float
@@ -264,11 +307,11 @@ onGene rng pop f = do
 	if iSize ind == 0 then onGene rng pop f else do
 		(cs, pat, sz, g) <- uniformV' rng . V.fromList $
 			[ (cs, pat, sz, g)
-			| (cs, g) <- HM.toList ind
+			| (cs, g) <- HM.toList (iGenes ind)
 			, let sz = gSize g
 			, pat <- [0..sz-1]
 			]
-		flip (HM.insert cs) ind <$> f cs pat sz g
+		iInsert ind cs <$> f cs pat sz g
 
 onGeneClone :: GenIO -> Vector Individual -> (ConvolutionSize -> Int -> Int -> Genome -> IO ()) -> IO Individual
 onGeneClone rng pop f = onGene rng pop \cs pat sz g_ -> do
@@ -276,7 +319,7 @@ onGeneClone rng pop f = onGene rng pop \cs pat sz g_ -> do
 	g <$ f cs pat sz g
 
 iGenome :: MsMendelConfig -> Individual -> ConvolutionSize -> IO Genome
-iGenome mmc ind cs = case HM.lookup cs ind of
+iGenome mmc ind cs = case HM.lookup cs (iGenes ind) of
 	Just g -> pure g
 	Nothing -> newGenome (mmcGeneMirroring mmc) cs 0 0
 

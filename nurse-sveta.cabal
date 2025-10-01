@@ -37,8 +37,10 @@ common shared
                         , BlockArguments
                         , DefaultSignatures
                         , DeriveAnyClass
+                        , DeriveFoldable
                         , DeriveFunctor
                         , DeriveGeneric
+                        , DeriveTraversable
                         , DerivingStrategies
                         , DerivingVia
                         , FlexibleContexts

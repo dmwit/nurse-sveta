@@ -26,9 +26,8 @@ import qualified Nurse.Sveta.Cairo as NC
 main :: IO ()
 main = do
 	torchPlusGtkFix
-	mmc <- loadConfiguration
 	dir <- basedir XdgData
-	(genI0, pop0) <- loadPopulation_ mmc dir
+	(genI0, pop0) <- loadPopulation_ dir
 	popRef <- newIORef pop0
 	let genF0 = fromIntegral genI0
 	app <- new Application []
@@ -45,7 +44,7 @@ main = do
 		    	cnvI <- fromIntegral <$> get cnv #selected
 		    	let ivdV = pop V.! ivdI
 		    	    cnvV = iSizes ivdV !! cnvI
-		    	    cnvG = ivdV HM.! cnvV
+		    	    cnvG = iGenes ivdV HM.! cnvV
 		    	    cnvW = fromIntegral (csWidth cnvV)
 		    	    cnvH = fromIntegral (csHeight cnvV)
 		    	    w = cnvW
@@ -65,7 +64,7 @@ main = do
 
 		on gen #valueChanged do
 			genI <- round <$> #getValue gen
-			pop <- loadGeneration_ mmc dir genI
+			pop <- loadGeneration_ dir genI
 			writeIORef popRef pop
 			adj <- #getAdjustment ivd
 			ivdF <- #getValue ivd
@@ -95,7 +94,7 @@ main = do
 	() <$ #run app (Just args)
 
 iSizes :: Individual -> [ConvolutionSize]
-iSizes = sort . HM.keys
+iSizes = sort . HM.keys . iGenes
 
 iSizesText :: Individual -> [T.Text]
 iSizesText = map (fromString . csPretty) . iSizes

@@ -117,7 +117,8 @@ evaluationThread mmc jobs psmRef sc = createSystemRandom >>= \rng -> forever do
 	    	next <- for moves \(pill, path) -> do
 	    		gs' <- cloneGameState gs
 	    		playMove gs' path pill
-	    		mfreeze (board gs')
+	    		fp' <- readIORef (framesPassed gs)
+	    		flip (,) (fp' - fp) <$> mfreeze (board gs')
 	    	let scores = iEvaluate (jIndividual job) cur next
 	    	    bestScore = V.maximum scores
 	    	    bestIndices = V.findIndices (bestScore==) scores
@@ -181,7 +182,7 @@ tAddRow t desc fVal = do
 evolutionThreadView :: MsMendelConfig -> MVar Job -> IO ThreadView
 evolutionThreadView mmc jobs = do
 	rng <- createSystemRandom
-	dir <- getXdgDirectory XdgData "ms-mendel"
+	dir <- basedir XdgData
 	log <- makeLogger mmc "evolution"
 	createDirectoryIfMissing True dir
 	(generation, pop) <- initializePopulation mmc dir rng
@@ -322,7 +323,7 @@ evolutionThread mmc log jobs dir replies overviewRef rng pop0 sc = go pop0 where
 		go pop'
 
 initializePopulation :: MsMendelConfig -> FilePath -> GenIO -> IO (Int, Vector Individual)
-initializePopulation mmc dir rng = loadPopulation mmc dir >>= \case
+initializePopulation mmc dir rng = loadPopulation dir >>= \case
 	Right genPop -> pure genPop
 	Left failure -> do
 		putStrLn case failure of

@@ -31,4 +31,5 @@
 	}
 , "log-directory": "$DATA/logs"
 , "initial-single-pattern-score-adjustments": 6
+, "initial-frame-score": 0.01
 }

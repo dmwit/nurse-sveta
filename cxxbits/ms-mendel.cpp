@@ -99,6 +99,8 @@ class Genome {
 		string sketch() const;
 		friend ostream &operator<<(ostream &o, const Genome &g);
 
+		const bool mirroring_;
+
 	protected:
 		static void assert_compatible(const Tensor &t, const TensorOptions &o);
 
@@ -121,7 +123,6 @@ class Genome {
 		// undefined -- use the accessor functions with the similar name to
 		// always get something defined.
 		mutable Tensor p_color_pattern_, p_shape_pattern_, p_pattern_score_;
-		const bool mirroring_;
 };
 
 Tensor evaluate(const Genome &g, const Boards &bs);
@@ -477,6 +478,7 @@ extern "C" {
 	int genome_size(Genome *g) { return g->size(); }
 	int genome_conv_width(Genome *g) { return g->conv_width(); }
 	int genome_conv_height(Genome *g) { return g->conv_height(); }
+	bool genome_mirroring(Genome *g) { return g->mirroring_; }
 
 	bool genome_get_color_pattern(Genome *g, int n, int c, int w, int h) { return g->get_color_pattern(n, c, w, h); }
 	bool genome_get_shape_pattern(Genome *g, int n, int s, int w, int h) { return g->get_shape_pattern(n, s, w, h); }

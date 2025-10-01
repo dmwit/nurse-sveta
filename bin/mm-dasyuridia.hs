@@ -18,15 +18,14 @@ import qualified Nurse.Sveta.Tomcats as Tomcats
 
 main :: IO ()
 main = do
-	mmc <- loadConfiguration
 	dir <- basedir XdgData
 	(_, specs) <- loadPopulationAsSpecs_ dir
-	genome <- iFromSpec (mmcGeneMirroring mmc) (V.head specs)
+	genome <- iFromSpec (V.head specs)
 	-- The very first genome evaluation of the program takes a little while.
 	-- I'm not 100% sure about why, but at a guess libtorch is a largish
 	-- library and it gets loaded lazily. In any case, let's do one straight
 	-- away to reduce the likelihood of missing a deadline later.
-	evaluate $ iEvaluate genome (emptyBoard 8 16) (V.singleton (emptyBoard 8 16))
+	evaluate $ iEvaluate genome (emptyBoard 8 16) (V.singleton (emptyBoard 8 16, 0))
 
 	args <- getArgs
 	(i, o, e, _p) <- runInteractiveProcess "dasyuridia" args Nothing Nothing
@@ -96,6 +95,7 @@ tltNew :: Tomcats.GameStateSeed seed => Individual -> seed -> Lookahead -> Int -
 tltNew i seed lk pu = do
 	gs <- Tomcats.initialState seed
 	writeIORef (Tomcats.pillsUsed gs) pu
+	fpBefore <- readIORef (Tomcats.framesPassed gs)
 	placements <- HM.toList . (if leftColor lk == rightColor lk then fst else snd) <$> Tomcats.gameStateApproxReachable gs
 	pillsAndBoards <- for placements \(mp, path) -> do
 		let pill = mpPill mp lk
@@ -103,12 +103,13 @@ tltNew i seed lk pu = do
 		gs' <- Tomcats.cloneGameState gs
 		Tomcats.playMove gs' path pill
 		b <- mfreeze (Tomcats.board gs')
-		pure (pill, path, b)
+		fpAfter <- readIORef (Tomcats.framesPassed gs')
+		pure (pill, path, (b, fpAfter-fpBefore))
 	pure TopLevelTree
 		{ tltChild = lrtNew lk $ zipWith
-			(\(pill, path, _b) eval -> prtFromEvaluation pill path eval)
+			(\(pill, path, _bfp) eval -> prtFromEvaluation pill path eval)
 			pillsAndBoards
-			(V.toList $ iEvaluate i (thrd (head pillsAndBoards)) (V.fromList (thrd <$> pillsAndBoards)))
+			(V.toList $ iEvaluate i (fst (thrd (head pillsAndBoards))) (V.fromList (thrd <$> pillsAndBoards)))
 		, tltGameState = gs
 		}
 
@@ -181,6 +182,7 @@ prtVisit i gs prt = Tomcats.finished gs >>= \case
 			let symm = HM.toList symm_
 			    asymm = HM.toList asymm_
 			b <- mfreeze (Tomcats.board gs)
+			fpBefore <- readIORef (Tomcats.framesPassed gs)
 			-- TODO: A common case is that every pill placement is orientable,
 			-- and so pills and their mirrors can share evaluations. Think
 			-- about how to take advantage of that.
@@ -190,7 +192,8 @@ prtVisit i gs prt = Tomcats.finished gs >>= \case
 					gs' <- Tomcats.cloneGameState gs
 					Tomcats.playMove gs' path pill
 					b' <- mfreeze (Tomcats.board gs')
-					pure (pill, path, b')
+					fpAfter <- readIORef (Tomcats.framesPassed gs')
+					pure (pill, path, (b', fpAfter-fpBefore))
 			let evals = V.toList . iEvaluate i b . V.fromList $ [b' | (_, children) <- pillsAndBoards, (_, _, b') <- children]
 			    match vs ((lk, pbs):rest) = lrtNew lk (zipWith (\v (pill, path, _) -> prtFromEvaluation pill path v) vs pbs)
 			    	: match (drop (length pbs) vs) rest

@@ -108,6 +108,14 @@
 //     rx r<>o r<>o e
 //                  bry<>ox|
 // * when towering up, only do it on one side
+// * is there a way to help it distinguish between "trash" and "trash that's preventing progress on a virus"?
+// * this and extensions of it are a sort of fragile build
+//      bx
+//      b<
+//      e
+
+{ "mirroring": true
+, "patterns":
 [
 	// bad: viruses
 	[["bx"]]
@@ -1418,3 +1426,4 @@
 	, ["e", "b<>ox"]
 	]
 ]
+}
