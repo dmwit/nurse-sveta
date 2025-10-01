@@ -10,15 +10,18 @@
 , "offspring": 10
 , "gene-replacements": 30
 , "gene-deletions": 10
-, "gene-additions": 30
+, "gene-additions": 20
 , "pattern-toggles": 20
-, "single-pattern-score-adjustments": 50
+, "single-pattern-score-adjustments": 10
 , "single-pattern-score-adjustment-variance": 0.2
 , "all-patterns-score-adjustments": 0
 , "all-patterns-score-adjustment-variance": 0.2
 , "score-resets": 10
 , "bulk-pattern-toggles": 10
 , "typical-pattern-toggle-batch-size": 10
+, "frame-penalty-adjustments": 19
+, "frame-penalty-variance": 0.01
+, "frame-penalty-resets": 1
 , "max-level": 20
 , "max-pills-per-kill": 256
 , "gene-mirroring": true
@@ -31,5 +34,5 @@
 	}
 , "log-directory": "$DATA/logs"
 , "initial-single-pattern-score-adjustments": 0
-, "initial-frame-score": 0.01
+, "initial-frame-score": -0.01
 }

@@ -47,6 +47,9 @@ data MsMendelConfig = MsMendelConfig
 	, mmcScoreResets :: Int
 	, mmcBulkPatternToggles :: Int
 	, mmcTypicalPatternToggleBatchSize :: Float
+	, mmcFramePenaltyAdjustments :: Int
+	, mmcFramePenaltyVariance :: Float
+	, mmcFramePenaltyResets :: Int
 	, mmcMaxLevel :: Int
 	, mmcGenomeConfig :: HashMap ConvolutionSize GenomeConfig
 	, mmcGeneMirroring :: Bool
@@ -227,7 +230,9 @@ mutate mmc rng pop = do
 	nrm <- V.replicateM (mmcAllPatternsScoreAdjustments mmc) adjustAllScores
 	res <- V.replicateM (mmcScoreResets mmc) resetScore
 	blk <- V.replicateM (mmcBulkPatternToggles mmc) bulkPatternToggle
-	pure $ mconcat [ins, del, pat, adj, nrm, res, blk]
+	frm <- V.replicateM (mmcFramePenaltyAdjustments mmc) framePenaltyAdjustment
+	frs <- V.replicateM (mmcFramePenaltyResets mmc) framePenaltyReset
+	pure $ mconcat [ins, del, pat, adj, nrm, res, blk, frm, frs]
 	where
 	replaceGene = onGene rng pop \cs pat sz g -> liftJ2 gAppend
 		(gIndices g $ [0..pat-1] ++ [pat+1..sz-1])
@@ -262,6 +267,13 @@ mutate mmc rng pop = do
 		    -- enough
 		    pDone = recip (mmcTypicalPatternToggleBatchSize mmc)
 		loop
+	framePenaltyAdjustment = do
+		i <- uniformV' rng pop >>= iClone
+		mag <- standard rng
+		pure i { iFrameScore = exp (mmcFramePenaltyVariance mmc * realToFrac mag) * iFrameScore i }
+	framePenaltyReset = do
+		i <- uniformV' rng pop >>= iClone
+		pure i { iFrameScore = mmcInitialFrameScore mmc }
 	uniformIndex n = uniformRM (0, n-1) rng
 
 -- use the Jeffreys prior for Bernoulli distributions, β(½,½), to choose the
