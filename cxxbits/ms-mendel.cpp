@@ -287,6 +287,13 @@ string Genome::encode_patterns() const {
 			}
 		}
 	}
+
+	// this is sort of a hack, but: when being asked to save state, we're about
+	// to potentially use this thing from many threads at once, so let's do the
+	// thread unsafe bits here
+	p_color_pattern();
+	p_shape_pattern();
+
 	return result;
 }
 

@@ -256,12 +256,12 @@ evolutionThread mmc log jobs dir replies overviewRef rng pop0 sc = go pop0 where
 	go pop = do
 		readTVarIO overviewRef >>= savePopulation dir pop . goID
 		scIO_ sc
-		gslks <- concat <$> forM [0..mmcMaxLevel mmc] \lev -> do
+		gslkss <- forM [0..mmcMaxLevel mmc] \lev -> do
 			forM [1..mmcRunsPerGeneration mmc] \_ -> do
 				gs <- initialState (ExactLevel rng lev)
 				lk <- replicateM (mmcPillCycleLength mmc) (sampleRNG' rng)
 				pure (gs, lk)
-		tid <- forkIO $ forM_ gslks \(gs0, lks) -> V.iforM_ pop \i ind -> do
+		tid <- forkIO $ forM_ gslkss \gslks -> V.iforM_ pop \i ind -> forM_ gslks \(gs0, lks) -> do
 			gs <- cloneGameState gs0
 			putMVar jobs Job
 				{ jIndividual = ind
@@ -271,7 +271,7 @@ evolutionThread mmc log jobs dir replies overviewRef rng pop0 sc = go pop0 where
 				, jReply = replies
 				}
 		evals <- VM.generate (V.length pop) \i -> Evaluation { eID = i, eViruses = 0, eFramesToLastKill = 0 }
-		forM_ gslks \_ -> do
+		forM_ (concat gslkss) \_ -> do
 			atomically $ modifyTVar overviewRef \overview -> overview { goWorstSoFar = Nothing }
 			forM_ pop \_ -> do
 				scIO sc do
@@ -310,7 +310,7 @@ evolutionThread mmc log jobs dir replies overviewRef rng pop0 sc = go pop0 where
 		atomically $ modifyTVar overviewRef \overview -> overview
 			{ goID = goID overview + 1
 			, goLevelsPlayed = 0
-			, goLevelsToPlay = V.length pop' * length gslks
+			, goLevelsToPlay = V.length pop' * length (concat gslkss)
 			, goPopulationSize = V.length pop'
 			, goBestSoFar = Nothing
 			, goWorstSoFar = Nothing
