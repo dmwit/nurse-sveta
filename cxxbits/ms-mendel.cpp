@@ -7,16 +7,22 @@ using namespace std;
 using namespace torch;
 
 constexpr int64_t SENTINELS = 2; // empty, out-of-bounds
-constexpr int64_t NUM_PERMUTATIONS = 6;
+constexpr int64_t NUM_COLORINGS = 6, NUM_MIRRORINGS = 2;
 constexpr int64_t INDEX_DIM = 0, ONEHOT_DIM = 1, CONV_WIDTH_DIM = 2, CONV_HEIGHT_DIM = 3;
+constexpr int64_t MIRRORING_DIM = 0, COLORING_DIM = 1, EXPANSION_DIMS = 2;
 const int64_t COLOR_OUT_OF_BOUNDS = COLORS + 1, SHAPE_OUT_OF_BOUNDS = SHAPES + 1;
+
+constexpr int64_t EINDEX_DIM = EXPANSION_DIMS+INDEX_DIM,
+                  EONEHOT_DIM = EXPANSION_DIMS+ONEHOT_DIM,
+                  ECONV_WIDTH_DIM = EXPANSION_DIMS+CONV_WIDTH_DIM,
+                  ECONV_HEIGHT_DIM = EXPANSION_DIMS+CONV_HEIGHT_DIM;
 
 // ideally we'd use kBool, but convolutions aren't implemented for those
 // see also https://github.com/pytorch/pytorch/issues/136578
-const TensorOptions GPU_BOOL_REP = TensorOptions().dtype(kF16).device(kCUDA);
+#define GPU_BOOL_REP GPU_HALF
 typedef float CXX_BOOL_REP;
 
-const Tensor PERMUTATIONS = torch::tensor({0,1,2,3,4,0,2,1,3,4,1,0,2,3,4,1,2,0,3,4,2,0,1,3,4,2,1,0,3,4}).reshape({NUM_PERMUTATIONS,COLORS+SENTINELS});
+const Tensor PERMUTATIONS = torch::tensor({0,1,2,3,4,0,2,1,3,4,1,0,2,3,4,1,2,0,3,4,2,0,1,3,4,2,1,0,3,4}).reshape({NUM_COLORINGS,COLORS+SENTINELS});
 const Tensor MIRROR = torch::tensor({0,1,3,2,4,5}); // swaps East (2) and West (3) shapes
 const indexing::Slice ALL;
 
@@ -26,7 +32,7 @@ class Boards {
 		// 	* the empty cell is represented by the byte 0b00010011 (= 0x13 = SHAPES << 2 | COLORS)
 		// 	* bottom two bits are color
 		// 	* next two bits are shape
-		// (we could in principle back two cells into each byte, but the extra
+		// (we could in principle pack two cells into each byte, but the extra
 		// complications in encoding and decoding don't seem worth it)
 		//
 		// diffs is a sequence of modifications, with each modification being a
@@ -61,52 +67,29 @@ class Boards {
 		Tensor color_, shape_;
 };
 
-class Genome {
+class Patterns;
+class PatternsTemplate {
 	public:
-		Genome(int64_t conv_width, int64_t conv_height, int64_t num_patterns, float p, bool mirroring);
-		Genome(const Tensor &color_pattern, const Tensor &shape_pattern, const Tensor &pattern_score, bool mirroring);
-		Genome clone() const;
+		PatternsTemplate(int64_t conv_width, int64_t conv_height, int64_t num_patterns);
+		PatternsTemplate(const string &encoding);
 
 		int64_t size() const { return color_pattern_.size(INDEX_DIM); }
 		int64_t conv_width() const { return color_pattern_.size(CONV_WIDTH_DIM); }
 		int64_t conv_height() const { return color_pattern_.size(CONV_HEIGHT_DIM); }
 
-		bool get_color_pattern(int64_t pattern, int64_t color, int64_t w, int64_t h) const;
-		bool get_shape_pattern(int64_t pattern, int64_t shape, int64_t w, int64_t h) const;
-		float get_pattern_score(int64_t pattern) const;
-		string encode_patterns() const;
+		bool get_color_pattern(int64_t pattern, int64_t color, int64_t x, int64_t y) const;
+		bool get_shape_pattern(int64_t pattern, int64_t shape, int64_t x, int64_t y) const;
 
-		void set_color_pattern(int64_t pattern, int64_t color, int64_t w, int64_t h, bool v);
-		void set_shape_pattern(int64_t pattern, int64_t color, int64_t w, int64_t h, bool v);
-		void set_pattern_score(int64_t pattern, float v);
-		void decode_patterns(string ps);
+		void set_color_pattern(int64_t pattern, int64_t color, int64_t x, int64_t y, bool v);
+		void set_shape_pattern(int64_t pattern, int64_t color, int64_t x, int64_t y, bool v);
 
-		// Assuming all the scores are in the range (-1, 1), insert a little
-		// noise, by adding a normal distribution with the given variance in
-		// tanh space.
-		//
-		// Could be implemented in terms of get_score and set_score, but this
-		// is faster, less annoying to implement, and less annoying to use.
-		void tweak_pattern_scores(float variance);
-
-		const Tensor &p_color_pattern() const;
-		const Tensor &p_shape_pattern() const;
-		const Tensor &p_pattern_score() const;
-
-		Genome indices(vector<int64_t> is) const;
-		Genome operator+(const Genome &other) const;
-
+		string encode() const;
 		string sketch() const;
-		friend ostream &operator<<(ostream &o, const Genome &g);
-
-		const bool mirroring_;
+		friend ostream &operator<<(ostream &o, const PatternsTemplate &t);
+		friend Patterns;
 
 	protected:
-		static void assert_compatible(const Tensor &t, const TensorOptions &o);
-
-		int64_t mirroring_size() const { return mirroring_ + 1; }
-		int64_t expansion_factor() const { return mirroring_size() * NUM_PERMUTATIONS; }
-		int64_t p_size() const { return expansion_factor() * size(); }
+		void reset_patterns(int64_t conv_width, int64_t conv_height, int64_t num_patterns);
 
 		// patterns have a 1 where that color/shape is forbidden and a 0 where
 		// it's allowed (chosen this way so that the convolution operator is
@@ -116,16 +99,47 @@ class Genome {
 		Tensor color_pattern_;
 		// num patterns x (SHAPES + SENTINELS) x conv width x conv height @ GPU_BOOL_REP
 		Tensor shape_pattern_;
-		// num patterns @ GPU_FLOAT
-		Tensor pattern_score_;
-		// These variants are 6x or 12x as long (in the first dimension) -- one
-		// extra copy per color permutation per mirroring. They may be
-		// undefined -- use the accessor functions with the similar name to
-		// always get something defined.
-		mutable Tensor p_color_pattern_, p_shape_pattern_, p_pattern_score_;
 };
 
-Tensor evaluate(const Genome &g, const Boards &bs);
+class Patterns {
+	public:
+		Patterns(const PatternsTemplate &t, bool mirroring, bool coloring);
+		string sketch() const;
+
+		int64_t size() const { return color_pattern_.size(EINDEX_DIM); }
+		int64_t conv_width() const { return color_pattern_.size(ECONV_WIDTH_DIM); }
+		int64_t conv_height() const { return color_pattern_.size(ECONV_HEIGHT_DIM); }
+		int64_t mirroring_size() const { return color_pattern_.size(MIRRORING_DIM); }
+		int64_t coloring_size() const { return color_pattern_.size(COLORING_DIM); }
+		int64_t replication_size() const { return mirroring_size() * coloring_size(); }
+
+		// {mirroring?2:1} x {coloring?6:1} x num patterns x (COLORS + SENTINELS) x conv width x conv height @GPU_BOOL_REP
+		const Tensor color_pattern_;
+		// {mirroring?2:1} x {coloring?6:1} x num patterns x (SHAPES + SENTINELS) x conv width x conv height @GPU_BOOL_REP
+		const Tensor shape_pattern_;
+
+	protected:
+		static Tensor expand_colors(const Tensor &t, bool mirroring, bool coloring);
+		static Tensor expand_shapes(const Tensor &t, bool mirroring, bool coloring);
+};
+
+// returned tensor is
+//     bs.size() x ps.replication_size() x ps.size() x
+//     (BOARD_WIDTH + ps.conv_width() - 1) x (BOARD_HEIGHT + ps.conv_height() - 1)
+//     @GPU_BOOL_REP
+Tensor match_full(const Boards &bs, const Patterns &ps);
+// argument is num_boards x r x num_patterns x w x h @GPU_BOOL_REP
+// result is num_boards x num_patterns @GPU_I64
+Tensor summarize_match(const Tensor &match);
+// num_boards x num_patterns @GPU_I64 ->
+// num_patterns @GPU_FLOAT ->
+// num_boards @GPU_FLOAT
+Tensor score(const Tensor &match_counts, const Tensor &scores);
+
+// summarize_match . match_full
+Tensor match_summary(const Boards &bs, const Patterns &ps);
+// score . match_summary (= score . summarize_match . match_full)
+Tensor evaluate(const Boards &bs, const Patterns &ps, const Tensor &scores);
 
 Boards::Boards(char *base_board, char *diffs) {
 	int num_boards = 0, i = 0;
@@ -206,66 +220,43 @@ ostream &operator<<(ostream &o, const Boards &bs) {
 	return o;
 }
 
-Genome::Genome(int64_t w, int64_t h, int64_t n, float p, bool mirroring) : mirroring_(mirroring) {
-	color_pattern_ = (torch::rand({n, COLORS + SENTINELS, w, h}, GPU_FLOAT) < p).to(GPU_BOOL_REP);
-	shape_pattern_ = (torch::rand({n, SHAPES + SENTINELS, w, h}, GPU_FLOAT) < p).to(GPU_BOOL_REP);
-	pattern_score_ = 2*torch::rand({n}, GPU_FLOAT) - 1;
+PatternsTemplate::PatternsTemplate(int64_t w, int64_t h, int64_t n) {
+	reset_patterns(w, h, n);
+}
+
+void PatternsTemplate::reset_patterns(int64_t w, int64_t h, int64_t n) {
+	color_pattern_ = torch::ones({n, COLORS + SENTINELS, w, h}, GPU_BOOL_REP);
+	shape_pattern_ = torch::ones({n, SHAPES + SENTINELS, w, h}, GPU_BOOL_REP);
 
 	assert(!color_pattern_.requires_grad());
 	assert(!shape_pattern_.requires_grad());
-	assert(!pattern_score_.requires_grad());
 }
 
-Genome::Genome(const Tensor &co, const Tensor &sh, const Tensor &sc, bool mirroring)
-	: color_pattern_(co), shape_pattern_(sh), pattern_score_(sc), mirroring_(mirroring)
-{
-	assert_compatible(co, GPU_BOOL_REP);
-	assert_compatible(sh, GPU_BOOL_REP);
-	assert_compatible(sc, GPU_FLOAT);
-
-	assert(co.dim() == 4);
-	assert(sh.dim() == 4);
-	assert(sc.dim() == 1);
-
-	assert(co.size(INDEX_DIM) == sh.size(INDEX_DIM));
-	assert(co.size(INDEX_DIM) == sc.size(INDEX_DIM));
-	assert(co.size(ONEHOT_DIM) == COLORS + SENTINELS);
-	assert(sh.size(ONEHOT_DIM) == SHAPES + SENTINELS);
-	assert(co.size(CONV_WIDTH_DIM) == sh.size(CONV_WIDTH_DIM));
-	assert(co.size(CONV_HEIGHT_DIM) == sh.size(CONV_HEIGHT_DIM));
-
-	assert(!color_pattern_.requires_grad());
-	assert(!shape_pattern_.requires_grad());
-	assert(!pattern_score_.requires_grad());
+bool PatternsTemplate::get_color_pattern(int64_t pattern, int64_t color, int64_t x, int64_t y) const {
+	return color_pattern_[pattern][color][x][y].item<CXX_BOOL_REP>() != 0;
 }
 
-Genome Genome::clone() const {
-	Genome result(color_pattern_.clone(), shape_pattern_.clone(), pattern_score_.clone(), mirroring_);
-	// we always set these fields back to Tensor() before modifying them, so no need to clone
-	result.p_color_pattern_ = p_color_pattern_;
-	result.p_shape_pattern_ = p_shape_pattern_;
-	result.p_pattern_score_ = p_pattern_score_;
-	return result;
+bool PatternsTemplate::get_shape_pattern(int64_t pattern, int64_t shape, int64_t x, int64_t y) const {
+	return shape_pattern_[pattern][shape][x][y].item<CXX_BOOL_REP>() != 0;
 }
 
-bool Genome::get_color_pattern(int64_t pattern, int64_t color, int64_t w, int64_t h) const {
-	return color_pattern_[pattern][color][w][h].item<CXX_BOOL_REP>() != 0;
-}
-
-bool Genome::get_shape_pattern(int64_t pattern, int64_t shape, int64_t w, int64_t h) const {
-	return shape_pattern_[pattern][shape][w][h].item<CXX_BOOL_REP>() != 0;
-}
-
-float Genome::get_pattern_score(int64_t pattern) const {
-	return pattern_score_[pattern].item<float>();
-}
-
-string Genome::encode_patterns() const {
-	string result((size()*(COLORS + SENTINELS + SHAPES + SENTINELS)*conv_width()*conv_height()+7)/8, '\0');
+string PatternsTemplate::encode() const {
+	const int64_t n = size(), w = conv_width(), h = conv_height();
+	string result(2 + (n*(COLORS + SENTINELS + SHAPES + SENTINELS)*w*h+7)/8, '\0');
 	int bit = 0, byte = 0;
-	for(int pattern = 0; pattern < size(); ++pattern) {
-		for(int x = 0; x < conv_width(); ++x) {
-			for(int y = 0; y < conv_height(); ++y) {
+
+	// metadata
+	assert(0 <= n && n < 256);
+	assert(1 <= h && h < 16);
+	assert(1 <= w && w < 16);
+	result[byte++] = n;
+	result[byte  ] |= (h-1);
+	result[byte++] |= (w-1) << 4;
+
+	// data
+	for(int pattern = 0; pattern < n; ++pattern) {
+		for(int x = 0; x < w; ++x) {
+			for(int y = 0; y < h; ++y) {
 				for(int color = 0; color < COLORS + SENTINELS; ++color) {
 					if(color_pattern_[pattern][color][x][y].item<CXX_BOOL_REP>() != 0)
 						result[byte] |= 1 << bit;
@@ -288,35 +279,32 @@ string Genome::encode_patterns() const {
 		}
 	}
 
-	// this is sort of a hack, but: when being asked to save state, we're about
-	// to potentially use this thing from many threads at once, so let's do the
-	// thread unsafe bits here
-	p_color_pattern();
-	p_shape_pattern();
-
 	return result;
 }
 
-void Genome::set_color_pattern(int64_t pattern, int64_t color, int64_t w, int64_t h, bool v) {
-	color_pattern_[pattern][color][w][h] = v;
-	p_color_pattern_ = Tensor();
+void PatternsTemplate::set_color_pattern(int64_t pattern, int64_t color, int64_t x, int64_t y, bool v) {
+	color_pattern_[pattern][color][x][y] = v;
 }
 
-void Genome::set_shape_pattern(int64_t pattern, int64_t shape, int64_t w, int64_t h, bool v) {
-	shape_pattern_[pattern][shape][w][h] = v;
-	p_shape_pattern_ = Tensor();
+void PatternsTemplate::set_shape_pattern(int64_t pattern, int64_t shape, int64_t x, int64_t y, bool v) {
+	shape_pattern_[pattern][shape][x][y] = v;
 }
 
-void Genome::set_pattern_score(int64_t pattern, float v) {
-	pattern_score_[pattern] = v;
-	p_pattern_score_ = Tensor();
-}
-
-void Genome::decode_patterns(string ps) {
+PatternsTemplate::PatternsTemplate(const string &ps) {
 	int bit = 0, byte = 0;
-	for(int pattern = 0; pattern < size(); ++pattern) {
-		for(int x = 0; x < conv_width(); ++x) {
-			for(int y = 0; y < conv_height(); ++y) {
+
+	// metadata
+	const int64_t n = byte < ps.size() ? ps[byte] : 0;
+	++byte;
+	const int64_t h = 1 + (byte < ps.size() ? (ps[byte] & 0xf) : 0),
+	              w = 1 + (byte < ps.size() ? (ps[byte] >> 4) : 0);
+	++byte;
+	reset_patterns(w, h, n);
+
+	// data
+	for(int pattern = 0; pattern < n; ++pattern) {
+		for(int x = 0; x < w; ++x) {
+			for(int y = 0; y < h; ++y) {
 				for(int color = 0; color < COLORS + SENTINELS; ++color) {
 					color_pattern_[pattern][color][x][y] = byte < ps.size()
 						? (ps[byte] >> bit) & 1
@@ -340,190 +328,205 @@ void Genome::decode_patterns(string ps) {
 			}
 		}
 	}
-	p_color_pattern_ = Tensor();
-	p_shape_pattern_ = Tensor();
 }
 
-void Genome::tweak_pattern_scores(float variance) {
-	pattern_score_ = (pattern_score_.clamp(-0.9999999, 0.9999999).atanh() + variance * torch::randn({size()}, GPU_FLOAT)).tanh();
-	p_pattern_score_ = Tensor();
-}
-
-const Tensor &Genome::p_color_pattern() const {
-	if(!p_color_pattern_.defined()) {
-		p_color_pattern_ = torch::zeros({mirroring_size(), NUM_PERMUTATIONS, size(), COLORS+SENTINELS, conv_width(), conv_height()}, GPU_BOOL_REP);
-		for(int i = 0; i < NUM_PERMUTATIONS; ++i) {
-			p_color_pattern_.index_put_
-				( {0, i, "..."}
-				, color_pattern_.index({ALL, PERMUTATIONS[i], "..."})
-				);
-			if(mirroring_) {
-				p_color_pattern_.index_put_
-					( {1, i, "..."}
-					, p_color_pattern_.index({0, i, "..."}).flip(CONV_WIDTH_DIM)
-					);
-			}
-		}
-		p_color_pattern_ = p_color_pattern_.reshape({p_size(), COLORS+SENTINELS, conv_width(), conv_height()});
-	}
-	return p_color_pattern_;
-}
-
-const Tensor &Genome::p_shape_pattern() const {
-	if(!p_shape_pattern_.defined()) {
-		p_shape_pattern_ = shape_pattern_
-			.expand({mirroring_size(), NUM_PERMUTATIONS, -1, -1, -1, -1});
-		if(mirroring_) {
-			// expand makes a compact view with many indices backed by the same
-			// memory, but we're about to write in a way that shatters the
-			// invariant needed for that to work, so we gotta clone
-			p_shape_pattern_ = p_shape_pattern_.clone();
-			p_shape_pattern_.index_put_
-				( {1, "..."}
-				, p_shape_pattern_.index({0, ALL, ALL, MIRROR, "..."}).flip(1+CONV_WIDTH_DIM)
-				);
-		}
-		p_shape_pattern_ = p_shape_pattern_.reshape({p_size(), SHAPES+SENTINELS, conv_width(), conv_height()});
-	}
-	return p_shape_pattern_;
-}
-
-const Tensor &Genome::p_pattern_score() const {
-	if(!p_pattern_score_.defined()) {
-		p_pattern_score_ = pattern_score_
-			.expand({expansion_factor(), size()})
-			.reshape({p_size()});
-	}
-	return p_pattern_score_;
-}
-
-Genome Genome::indices(vector<int64_t> is) const {
-	Tensor tis = torch::tensor(is);
-	return Genome(color_pattern_.index({tis, "..."}), shape_pattern_.index({tis, "..."}), pattern_score_.index({tis}), mirroring_);
-}
-
-Genome Genome::operator+(const Genome &other) const {
-	int64_t sz = size(), new_sz = size() + other.size(), w = conv_width(), h = conv_height();
-
-	assert(other.conv_width() == w);
-	assert(other.conv_height() == h);
-
-	Tensor co, sh, sc;
-	co = torch::zeros({new_sz, COLORS+SENTINELS, w, h}, GPU_BOOL_REP);
-	sh = torch::zeros({new_sz, SHAPES+SENTINELS, w, h}, GPU_BOOL_REP);
-	sc = torch::zeros({new_sz}, GPU_FLOAT);
-
-	co.index_put_({indexing::Slice(0, sz), "..."}, color_pattern_);
-	sh.index_put_({indexing::Slice(0, sz), "..."}, shape_pattern_);
-	sc.index_put_({indexing::Slice(0, sz)}, pattern_score_);
-
-	co.index_put_({indexing::Slice(sz), "..."}, other.color_pattern_);
-	sh.index_put_({indexing::Slice(sz), "..."}, other.shape_pattern_);
-	sc.index_put_({indexing::Slice(sz)}, other.pattern_score_);
-
-	return Genome(co, sh, sc, mirroring_ || other.mirroring_);
-}
-
-string Genome::sketch() const {
+string PatternsTemplate::sketch() const {
 	stringstream o;
 
-	o << "{ color: " << TensorSketch(color_pattern_);
+	o << "PatternsTemplate { color: " << TensorSketch(color_pattern_);
 	o << ", shape: " << TensorSketch(shape_pattern_);
-	o << ", score: " << TensorSketch(pattern_score_);
-	if(p_color_pattern_.defined()) o << ", color cache: " << TensorSketch(p_color_pattern_);
-	if(p_shape_pattern_.defined()) o << ", shape cache: " << TensorSketch(p_shape_pattern_);
-	if(p_pattern_score_.defined()) o << ", score cache: " << TensorSketch(p_pattern_score_);
-	o << ", " << (mirroring_ ? "" : "no ") << "mirroring";
 	o << " }";
 
 	return o.str();
 }
 
-ostream &operator<<(ostream &o, const Genome &g) {
+ostream &operator<<(ostream &o, const PatternsTemplate &t) {
 	string prefix;
-	o << "Genome {size = " << g.size() << ", mirroring = " << (g.mirroring_ ? "true" : "false") << ", permutation cache = {";
-	if(g.p_color_pattern_.defined()) { o << prefix << "color = " << g.p_color_pattern_; prefix = ", "; }
-	if(g.p_shape_pattern_.defined()) { o << prefix << "shape = " << g.p_shape_pattern_; prefix = ", "; }
-	if(g.p_pattern_score_.defined()) { o << prefix << "score = " << g.p_pattern_score_; prefix = ", "; }
-	o << "}";
+	o << "PatternsTemplate {size = " << t.size();
 
 	prefix = "";
-	for(int i = 0; i < g.size(); ++i) {
+	for(int i = 0; i < t.size(); ++i) {
 		o << ",\npattern " << i << " = { ";
-		o << "score = " << g.pattern_score_[i].item<float>() << ", " << endl;
-		o << "color = " << g.color_pattern_[i] << "," << endl;
-		o << "shape = " << g.shape_pattern_[i] << endl << "}";
+		o << "color = " << t.color_pattern_[i] << "," << endl;
+		o << "shape = " << t.shape_pattern_[i] << endl << "}";
 		prefix = "\n";
 	}
 	o << prefix << "}";
 	return o;
 }
 
-void Genome::assert_compatible(const Tensor &t, const TensorOptions &o) {
-	assert(t.dtype() == o.dtype());
-	assert(t.device().type() == o.device().type());
+Patterns::Patterns(const PatternsTemplate &t, bool mirroring, bool coloring)
+	: color_pattern_(expand_colors(t.color_pattern_, mirroring, coloring))
+	, shape_pattern_(expand_shapes(t.shape_pattern_, mirroring, coloring))
+	{}
+
+Tensor Patterns::expand_colors(const Tensor &t, bool mirroring, bool coloring) {
+	const int num_mirrorings = mirroring?NUM_MIRRORINGS:1;
+	const int num_colorings = coloring?NUM_COLORINGS:1;
+	Tensor expanded = torch::zeros({num_mirrorings, num_colorings, t.size(INDEX_DIM), COLORS+SENTINELS, t.size(CONV_WIDTH_DIM), t.size(CONV_HEIGHT_DIM)}, GPU_BOOL_REP);
+	for(int i = 0; i < num_colorings; ++i) {
+		expanded.index_put_({0, i, "..."}, t.index({ALL, PERMUTATIONS[i], "..."}));
+		if(mirroring)
+			expanded.index_put_({1, i, "..."}, expanded.index({0, i, "..."}).flip(CONV_WIDTH_DIM));
+	}
+	return expanded;
 }
 
-Tensor evaluate(const Genome &g, const Boards &bs) {
-	if(g.size() == 0) return torch::zeros({bs.size()}, CPU_FLOAT /* we're about to move it to the CPU anyway */);
-	const int64_t cw = g.conv_width(), ch = g.conv_height();
-	Tensor mismatch_color = conv2d(bs.p_color(cw, ch), g.p_color_pattern()),
-	       mismatch_shape = conv2d(bs.p_shape(cw, ch), g.p_shape_pattern());
-	Tensor match = ((mismatch_color + mismatch_shape) == 0).to(GPU_BYTE);
-	return (match.sum({2,3})*g.p_pattern_score()).sum({1});
+Tensor Patterns::expand_shapes(const Tensor &t, bool mirroring, bool coloring) {
+	const int num_mirrorings = mirroring?NUM_MIRRORINGS:1;
+	const int num_colorings = coloring?NUM_COLORINGS:1;
+	Tensor expanded = t.expand({num_mirrorings, num_colorings, -1, -1, -1, -1});
+	if(mirroring) {
+		// expand makes a compact view with many indices backed by the same
+		// memory, but we're about to write in a way that shatters the
+		// invariant needed for that to work, so we gotta clone
+		expanded = expanded.clone();
+		expanded.index_put_({1, "..."}, expanded.index({0, ALL, ALL, MIRROR, "..."}).flip(ECONV_WIDTH_DIM));
+	}
+	return expanded;
+}
+
+string Patterns::sketch() const {
+	stringstream o;
+
+	o << "Patterns { color: " << TensorSketch(color_pattern_);
+	o << ", shape: " << TensorSketch(shape_pattern_);
+	o << " }";
+
+	return o.str();
+}
+
+ostream &operator<<(ostream &o, const Patterns &ps) {
+	string prefix;
+	o << "Patterns {size = " << ps.size();
+
+	prefix = "";
+	for(int i = 0; i < ps.size(); ++i) {
+		o << ",\npattern " << i << " = { ";
+		o << "color = " << ps.color_pattern_.index({ALL, ALL, i, "..."}) << "," << endl;
+		o << "shape = " << ps.shape_pattern_.index({ALL, ALL, i, "..."}) << endl << "}";
+		prefix = "\n";
+	}
+	o << prefix << "}";
+	return o;
+}
+
+Tensor match_full(const Boards &bs, const Patterns &ps) {
+	if(ps.size() == 0) return torch::zeros(
+		{bs.size(), ps.replication_size(), ps.size(), BOARD_WIDTH + ps.conv_width() - 1, BOARD_HEIGHT + ps.conv_height() - 1},
+		GPU_BOOL_REP);
+	const int64_t cw = ps.conv_width(), ch = ps.conv_height();
+	Tensor color_pattern = ps.color_pattern_.view({-1, COLORS+SENTINELS, cw, ch}),
+	       shape_pattern = ps.shape_pattern_.view({-1, SHAPES+SENTINELS, cw, ch});
+	Tensor mismatch_color = conv2d(bs.p_color(cw, ch), color_pattern),
+	       mismatch_shape = conv2d(bs.p_shape(cw, ch), shape_pattern);
+	return ((mismatch_color + mismatch_shape) == 0).view({bs.size(), ps.replication_size(), ps.size(), mismatch_color.size(2), mismatch_color.size(3)});
+}
+
+Tensor summarize_match(const Tensor &match) {
+	return match.sum({1,3,4});
+}
+
+Tensor score(const Tensor &match_counts, const Tensor &scores) {
+	return (match_counts * scores).sum({1});
+}
+
+Tensor match_summary(const Boards &bs, const Patterns &ps) {
+	return summarize_match(match_full(bs, ps));
+}
+
+Tensor evaluate(const Boards &bs, const Patterns &ps, const Tensor &scores) {
+	return score(match_summary(bs, ps), scores);
+}
+
+Tensor to_cpu(const Tensor &t, int64_t n) {
+	int64_t size = 1;
+	for(int i = 0; i < t.dim(); ++i) {
+		size *= t.size(i);
+	}
+	if(size != n) {
+		cerr << "to_cpu(" << TensorSketch(t) << ", " << n << "): actual size does not match declared size" << endl;
+		assert(false);
+	}
+
+	return t.to(kCPU).contiguous();
+}
+
+void to_cpu(const Tensor &t, float *out_pointer, int64_t n) {
+	Tensor out_tensor = to_cpu(t, n);
+	copy(out_tensor.data_ptr<float>(), out_tensor.data_ptr<float>() + n, out_pointer);
+}
+
+void to_cpu(const Tensor &t, int64_t *out_pointer, int64_t n) {
+	Tensor out_tensor = to_cpu(t, n);
+	copy(out_tensor.data_ptr<int64_t>(), out_tensor.data_ptr<int64_t>() + n, out_pointer);
 }
 
 extern "C" {
 	Boards *boards_new(char *base_board, char *diffs) { return new Boards(base_board, diffs); }
 	void boards_delete(Boards *bs) { delete bs; }
-	int boards_size(Boards *bs) { return bs->size(); }
+	int64_t boards_size(Boards *bs) { return bs->size(); }
 
-	Genome *genome_new(int w, int h, int n, float p, bool mirroring) { return new Genome(w, h, n, p, mirroring); }
-	Genome *genome_clone(Genome *g) { return new Genome(g->clone()); }
-	void genome_delete(Genome *g) { delete g; }
+	PatternsTemplate *patterns_template_new(int64_t w, int64_t h, int64_t n) { return new PatternsTemplate(w, h, n); }
+	void patterns_template_delete(PatternsTemplate *t) { delete t; }
 
-	int genome_size(Genome *g) { return g->size(); }
-	int genome_conv_width(Genome *g) { return g->conv_width(); }
-	int genome_conv_height(Genome *g) { return g->conv_height(); }
-	bool genome_mirroring(Genome *g) { return g->mirroring_; }
+	int64_t patterns_template_conv_width(PatternsTemplate *t) { return t->conv_width(); }
+	int64_t patterns_template_conv_height(PatternsTemplate *t) { return t->conv_height(); }
+	int64_t patterns_template_size(PatternsTemplate *t) { return t->size(); }
 
-	bool genome_get_color_pattern(Genome *g, int n, int c, int w, int h) { return g->get_color_pattern(n, c, w, h); }
-	bool genome_get_shape_pattern(Genome *g, int n, int s, int w, int h) { return g->get_shape_pattern(n, s, w, h); }
-	float genome_get_pattern_score(Genome *g, int n) { return g->get_pattern_score(n); }
-	char *genome_encode_patterns(Genome *g, int *o_length);
-	void patterns_encoding_delete(char *code) { delete[] code; }
+	bool patterns_template_get_color_pattern(PatternsTemplate *t, int64_t pattern, int64_t color, int64_t x, int64_t y) { return t->get_color_pattern(pattern, color, x, y); }
+	bool patterns_template_get_shape_pattern(PatternsTemplate *t, int64_t pattern, int64_t shape, int64_t x, int64_t y) { return t->get_shape_pattern(pattern, shape, x, y); }
+	void patterns_template_set_color_pattern(PatternsTemplate *t, int64_t pattern, int64_t color, int64_t x, int64_t y, bool v) { t->set_color_pattern(pattern, color, x, y, v); }
+	void patterns_template_set_shape_pattern(PatternsTemplate *t, int64_t pattern, int64_t shape, int64_t x, int64_t y, bool v) { t->set_shape_pattern(pattern, shape, x, y, v); }
 
-	void genome_set_color_pattern(Genome *g, int n, int c, int w, int h, bool v) { return g->set_color_pattern(n, c, w, h, v); }
-	void genome_set_shape_pattern(Genome *g, int n, int s, int w, int h, bool v) { return g->set_shape_pattern(n, s, w, h, v); }
-	void genome_set_pattern_score(Genome *g, int n, float v) { return g->set_pattern_score(n, v); }
-	void genome_decode_patterns(Genome *g, char *code, int length) { g->decode_patterns(string(code, length)); }
+	PatternsTemplate *patterns_template_decode(char *code, int64_t length) { return new PatternsTemplate(string(code, length)); }
+	char *patterns_template_encode(PatternsTemplate *t, int64_t *o_length);
+	void patterns_template_encoding_delete(char *code) { delete[] code; }
 
-	void genome_tweak_pattern_scores(Genome *g, float variance) { g->tweak_pattern_scores(variance); }
+	Patterns *patterns_new(PatternsTemplate *t, bool mirroring, bool coloring) { return new Patterns(*t, mirroring, coloring); }
+	void patterns_delete(Patterns *ps) { delete ps; }
 
-	Genome *genome_indices(Genome *g, int *is, int is_size);
-	Genome *genome_append(Genome *g, Genome *other) { return new Genome(*g + *other); }
+	int64_t patterns_size(const Patterns *ps) { return ps->size(); }
+	int64_t patterns_conv_width(const Patterns *ps) { return ps->conv_width(); }
+	int64_t patterns_conv_height(const Patterns *ps) { return ps->conv_height(); }
+	int64_t patterns_mirroring_size(const Patterns *ps) { return ps->mirroring_size(); }
+	int64_t patterns_coloring_size(const Patterns *ps) { return ps->coloring_size(); }
+	int64_t patterns_replication_size(const Patterns *ps) { return ps->replication_size(); }
 
-	void genome_dump(Genome *g) { cout << *g << endl; }
-	void genome_sketch(Genome *g) { cout << g->sketch() << endl; }
+	void tensor_delete(Tensor *t) { delete t; }
+	void float_tensor_to_cpu(const Tensor *t, float *out, int64_t n) { to_cpu(*t, out, n); }
+	void int_tensor_to_cpu(const Tensor *t, int64_t *out, int64_t n) { to_cpu(*t, out, n); }
+	Tensor *tensor_clone(const Tensor *t) { return new Tensor(t->detach().clone()); }
 
-	void evaluate(Genome *g, Boards *bs, float *out);
+	Tensor *match_full(const Boards *bs, const Patterns *ps) { return new Tensor(match_full(*bs, *ps)); }
+	Tensor *summarize_match(const Tensor *match) { return new Tensor(summarize_match(*match)); }
+	Tensor *score(const Tensor *match_counts, const Tensor *scores) { return new Tensor(score(*match_counts, *scores)); }
+	Tensor *match_summary(const Boards *bs, const Patterns *ps) { return new Tensor(match_summary(*bs, *ps)); }
+	Tensor *evaluate(const Boards *bs, const Patterns *ps, const Tensor *scores) { return new Tensor(evaluate(*bs, *ps, *scores)); }
+	void evaluate_sync(const Boards *bs, const Patterns *ps, const Tensor *scores, float *out, int64_t n) { to_cpu(evaluate(*bs, *ps, *scores), out, n); }
+
+	Tensor *scores_new(float *data, int64_t len) { return new Tensor(torch::from_blob(data, {len}).to(GPU_FLOAT)); }
+	float scores_get(Tensor *t, int64_t i) { return (*t)[i].item<float>(); }
+	void scores_set(Tensor *t, int64_t i, float v) { (*t)[i] = v; }
+
+	Tensor *tensor_tanh(const Tensor *t) { return new Tensor(t->tanh()); }
+	Tensor *tensor_add(const Tensor *l, const Tensor *r) { return new Tensor(*l + *r); }
+	Tensor *tensor_scale(float a, const Tensor *t) { return new Tensor(a * *t); }
+
+	void boards_dump(Boards *bs) { cout << *bs << endl; }
+	void boards_sketch(Boards *bs) { cout << bs->sketch() << endl; }
+	void patterns_template_dump(PatternsTemplate *t) { cout << *t << endl; }
+	void patterns_template_sketch(PatternsTemplate *t) { cout << t->sketch() << endl; }
+	void patterns_dump(Patterns *ps) { cout << *ps << endl; }
+	void patterns_sketch(Patterns *ps) { cout << ps->sketch() << endl; }
+	void tensor_dump(Tensor *t) { cout << *t << endl; }
+	void tensor_sketch(Tensor *t) { cout << TensorSketch(*t) << endl; }
 }
 
-char *genome_encode_patterns(Genome *g, int *o_length) {
-	string code = g->encode_patterns();
+char *patterns_template_encode(PatternsTemplate *t, int64_t *o_length) {
+	string code = t->encode();
 	*o_length = code.size();
 	char *result = new char[code.size()];
 	copy(code.begin(), code.end(), result);
 	return result;
-}
-
-Genome *genome_indices(Genome *g, int *is, int is_size) {
-	vector<int64_t> is_vec(is_size);
-	for(int i = 0; i < is_size; ++i) is_vec[i] = is[i];
-	return new Genome(g->indices(is_vec));
-}
-
-void evaluate(Genome *g, Boards *bs, float *out) {
-	Tensor out_tensor = evaluate(*g, *bs).to(kCPU).contiguous();
-	copy(out_tensor.data_ptr<float>(), out_tensor.data_ptr<float>() + bs->size(), out);
 }

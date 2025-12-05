@@ -80,7 +80,7 @@ main = do
 
 		on cnv (PropertyNotify #selected) \_ -> refreshGrid
 
-		w <- new Window $ tail [undefined
+		w <- new Window $ tail [ignored
 			, #title := "Ms. Mendel Genome Browser"
 			, #application := app
 			, #child := top

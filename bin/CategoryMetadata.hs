@@ -56,7 +56,7 @@ ftlFieldName = "frames to loss"
 frFieldName = "frames"
 
 instance ToJSON CategoryMetrics where
-	toJSON cm = object $ tail [undefined
+	toJSON cm = object $ tail [ignored
 		,  vkFieldName .= cmVirusesKilled cm
 		, ftwFieldName .= cmFramesToWin cm
 		, ftlFieldName .= cmFramesToLoss cm
@@ -96,7 +96,7 @@ rFieldName = "recent"
 cFieldName = "cumulative"
 
 instance ToJSON CategoryMetadata where
-	toJSON cm = object $ tail [undefined
+	toJSON cm = object $ tail [ignored
 		, bFieldName .= cmBest cm
 		, rFieldName .= cmLatest cm
 		, cFieldName .= cmCumulative cm

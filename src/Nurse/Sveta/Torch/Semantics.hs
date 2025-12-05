@@ -58,14 +58,14 @@ instance FromEndpoint Float where endpointIndex e i = coerce @CFloat (endpointIn
 
 -- | Assumes 8x16 boards
 instance Structured Board where
-	structure = SDictionary $ tail [undefined
+	structure = SDictionary $ tail [ignored
 		, ("shape", STensor Unit [GCShapes, GCWidth, GCHeight])
 		, ("color", STensor Unit [GCColors, GCWidth, GCHeight])
 		]
 
 -- | Assumes that all boards have the same size
 instance ToEndpoint Board where
-	toEndpoint boards = EDictionary $ tail [undefined
+	toEndpoint boards = EDictionary $ tail [ignored
 		, ("shape", full shape)
 		, ("color", full color)
 		] where
@@ -201,7 +201,7 @@ data NetInput = NetInput
 	} deriving (Eq, Ord, Read, Show)
 
 instance Structured NetInput where
-	structure = SDictionary $ tail [undefined
+	structure = SDictionary $ tail [ignored
 		, ("board", structure @Board)
 		, ("frames/10,000", STensor Positive [])
 		-- Positive isn't really right for log(frames), since it can be as low
@@ -247,7 +247,7 @@ data NetOutput = NetOutput
 	} deriving (Eq, Ord, Read, Show)
 
 instance Structured NetOutput where
-	structure = SDictionary $ tail [undefined
+	structure = SDictionary $ tail [ignored
 		, ("priors", STensor Categorical (indexCounts @Pill))
 		, ("valuation", STensor Unbounded [])
 		]

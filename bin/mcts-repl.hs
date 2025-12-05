@@ -222,7 +222,7 @@ sampleC = commandN "sample" sampleHelp [0, 1] \case
 				Just pill -> replLn (ppPill pill ++ " " ++ ppIndex (findIndex (pill==) (moves t)))
 	ppIndex Nothing = "(??)"
 	ppIndex (Just n) = "(" ++ show n ++ ")"
-	sampleHelp = intercalate "\n" $ tail [undefined
+	sampleHelp = intercalate "\n" $ tail [ignored
 		, "Usage: sample [METHOD]"
 		, "Choose a move. Available METHODs are:"
 		, "    best        Choose the move that was visited the most times during search."
@@ -247,7 +247,7 @@ weightsC = commandNR "weights" weightsHelp [0,1] \case
 				listAvailable root
 	where
 	listAvailable root = liftIO (traverse_ putStrLn . sortOn numberPrefix =<< listDirectory (absDirectoryName root Weights))
-	weightsHelp = init . unlines $ tail [undefined
+	weightsHelp = init . unlines $ tail [ignored
 		, "Usage: weights [FILE]"
 		, "Use the given neural net weights for evaluation. Paths are relative to Nurse Sveta's"
 		, "weights directory. If no file is given, list what's available."
@@ -280,7 +280,7 @@ rngC = commandN "rng" rngHelp [0,2,3] \case
 	[PrefixOf @"seed", _] -> Left "not enough arguments provided to seed (expected 2, received 1)."
 	s:_ -> Left $ "unrecognized board generation method " ++ s ++ "; recognized methods are max-level and seed."
 	where
-	rngHelp = init . unlines $ tail [undefined
+	rngHelp = init . unlines $ tail [ignored
 		, "USAGE: rng [METHOD]"
 		, "Generate a fresh board and reset the search tree. Available generation methods are:"
 		, ""

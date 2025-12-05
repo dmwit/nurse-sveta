@@ -93,7 +93,7 @@ data DrawingGrid = DG
 newDrawingGrid :: MonadIO m => Double -> Double -> m DrawingGrid
 newDrawingGrid w h = do
 	da <- new DrawingArea []
-	af <- new AspectFrame $ tail [undefined
+	af <- new AspectFrame $ tail [ignored
 		, #xalign := 0.5
 		, #yalign := 0.5
 		, #ratio := realToFrac (w / h)
@@ -550,7 +550,7 @@ newThreadManager nm aff mkView = do
 	lst <- new Box [#orientation := OrientationVertical]
 	scr <- new ScrolledWindow [#child := lst, #propagateNaturalHeight := True, #propagateNaturalWidth := True]
 	lbl <- new Label [#label := nm <> " threads"]
-	add <- new Button $ tail [undefined
+	add <- new Button $ tail [ignored
 		, #iconName := "list-add"
 		, #halign := AlignCenter
 		]
@@ -732,12 +732,12 @@ newSizeAllocationMonitor child_ = do
 	child <- toWidget child_
 	ha <- new DrawingArea [#hexpand := True , #vexpand := False]
 	va <- new DrawingArea [#hexpand := False, #vexpand := True ]
-	hb <- new Box $ tail [undefined
+	hb <- new Box $ tail [ignored
 		, #orientation := OrientationHorizontal
 		, #hexpand :=> G.get child #hexpand
 		, #widthRequest :=> G.get child #widthRequest
 		]
-	vb <- new Box $ tail [undefined
+	vb <- new Box $ tail [ignored
 		, #orientation := OrientationVertical
 		, #vexpand :=> G.get child #vexpand
 		, #heightRequest :=> G.get child #heightRequest

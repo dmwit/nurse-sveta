@@ -4,6 +4,7 @@ extern const torch::TensorOptions CPU_BYTE;
 extern const torch::TensorOptions CPU_FLOAT;
 extern const torch::TensorOptions GPU_BYTE;
 extern const torch::TensorOptions GPU_FLOAT;
+extern const torch::TensorOptions GPU_HALF;
 
 extern const int64_t BOARD_WIDTH;
 extern const int64_t BOARD_HEIGHT;

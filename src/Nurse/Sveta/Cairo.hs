@@ -83,7 +83,7 @@ bottleOutline_ w h xMid = do
 	mapM_ (centered lineTo) (tail coordinates)
 	stroke
 	where
-	coordinates = tail [undefined
+	coordinates = tail [ignored
 		, (xMid-1, h+3)
 		, (xMid-1, h+2)
 		, (xMid, h+2)
@@ -215,7 +215,7 @@ xMidFromWidth :: Int -> Double
 xMidFromWidth w = fromIntegral $ (w-1) `quot` 2
 
 gradientStops :: [(Double, Double, Double)]
-gradientStops = tail [undefined
+gradientStops = tail [ignored
 	, (0.27, 0.00, 0.00)
 	, (0.78, 0.78, 0.00)
 	, (0.00, 0.82, 0.20)
@@ -374,7 +374,7 @@ heatmapLabels ho w h = for_ (hoLegendLabels ho) \(l, r) -> do
 		setSource pat
 		fill
 	setSourceRGB 0 0 0
-	fitTexts $ tail [undefined
+	fitTexts $ tail [ignored
 		, TextRequest { trX =                   0.5*hoPadding ho, trY = h-1, trW = hoLabelWidth ho, trH = 1, trText = l }
 		, TextRequest { trX = w-hoLabelWidth ho-0.5*hoPadding ho, trY = h-1, trW = hoLabelWidth ho, trH = 1, trText = r }
 		]

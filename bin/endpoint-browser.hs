@@ -59,7 +59,7 @@ main = do
 			writeIORef netRef (Just net)
 			True <$ updateView
 
-		w <- new Window $ tail [undefined
+		w <- new Window $ tail [ignored
 			, #title := "Nurse Sveta endpoint browser"
 			, #application := app
 			, #child := top
@@ -93,7 +93,7 @@ setupEndpointView netRef inpRef gsRef ssRef = do
 				no <- netEvaluation' net ni
 				na <- netActivations' net ni
 				ng <- netGradients' net (lsEndpoint $ LossScaling 1 1) tesE
-				let combinedEndpoint = EDictionary $ tail [undefined
+				let combinedEndpoint = EDictionary $ tail [ignored
 				    	, ("input", ni)
 				    	, ("output", no)
 				    	, ("activations", na)
@@ -555,7 +555,7 @@ newFileSelector description dir glob = do
 	buf <- get txt #buffer
 	btn <- new Button [#iconName := "document-open"]
 	clr <- new Button [#iconName := "edit-clear"]
-	dlg <- new FileChooserNative $ tail [undefined
+	dlg <- new FileChooserNative $ tail [ignored
 		, #title := description
 		, #modal := True
 		, #filter := defaultFilter

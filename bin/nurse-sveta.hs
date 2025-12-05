@@ -70,7 +70,7 @@ main = do
 		tmWidget log >>= #append txt
 		#append top txt
 
-		w <- new Window $ tail [undefined
+		w <- new Window $ tail [ignored
 			, #title := "Nurse Sveta"
 			, #application := app
 			, #child := top
@@ -282,7 +282,7 @@ hyperParametersThreadView hpRef = do
 	let refresh = do
 	    	hpts <- readTVarIO tsRef
 	    	tWhenUpdated hpvTracker (currentHyperParameters hpts) (hpvSet hpv)
-	    	renderSpeeds srv $ tail [undefined
+	    	renderSpeeds srv $ tail [ignored
 	    		, ("games served (thread)", threadServed hpts)
 	    		, ("games served (config)", configServed hpts)
 	    		]
@@ -381,7 +381,7 @@ inferenceThreadView eval netUpdate = do
 	    	its <- readTVarIO ref
 	    	tWhenUpdated tracker (itsNet its) $ \mn ->
 	    		set lbl [#label := describeNet mn]
-	    	renderSpeeds spd $ tail [undefined
+	    	renderSpeeds spd $ tail [ignored
 	    		, ("positions (thread)", itsThreadPositions its)
 	    		, ("positions (net)   ", itsNetPositions its)
 	    		, ("batches (thread)", itsThreadBatches its)
@@ -402,7 +402,7 @@ inferenceThread :: Procedure NetInput NetOutput -> TVar (Maybe Integer) -> TVar 
 inferenceThread eval netUpdate itsRef sc = forever $ do
 	step <- atomically $ do
 		its <- readTVar itsRef
-		asum $ tail [undefined
+		asum $ tail [ignored
 			, ITSDie <$ scSTM sc
 			, ITSLoadNet <$> (readTVar netUpdate >>= ensure (itsNewNet its))
 			, case (itsUseNet its, sPayload (itsNet its)) of
@@ -909,7 +909,7 @@ trainingThread log netUpdate ref sc = do
 	    	-- die if it's been requested; otherwise wait until the end of the
 	    	-- duty cycle or a new duty cycle has been requested, whichever
 	    	-- comes first
-	    	join . atomically . asum $ tail [undefined
+	    	join . atomically . asum $ tail [ignored
 	    		, scIO sc (saveWeights ten') <$ scSTM sc
 	    		, do
 	    		  	True <- readTVar timeoutRef
@@ -1019,7 +1019,7 @@ loggingThread log sc = do
 	    getRuntime = getTime Monotonic <&> \now -> previousRuntime + round (now - start)
 
 	forever $ do
-		step <- atomically . asum $ tail [undefined
+		step <- atomically . asum $ tail [ignored
 			, Left <$> scSTM sc
 			, Right <$> serviceCallsSTM_ log (traverse go)
 			]

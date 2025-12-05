@@ -16,7 +16,7 @@ main = do
 		psvWidget psv >>= \w -> set w [#heightRequest := 500]
 		places <- new ListBox [#activateOnSingleClick := True]
 		for_ (sort . HM.toList . unsafeApproxReachable board $ launchPill (Lookahead Blue Red)) $ \(pill, move) -> do
-			btn <- new Button $ tail [undefined
+			btn <- new Button $ tail [ignored
 				, #label := T.pack (ppPill pill)
 				, On #clicked (setOverlay psv move)
 				]
@@ -25,7 +25,7 @@ main = do
 		box <- new Box [#orientation := OrientationVertical, #widthRequest := 1000]
 		psvWidget psv >>= #append box
 		#append box sw
-		w <- new Window $ tail [undefined
+		w <- new Window $ tail [ignored
 			, #title := "Nurse Sveta pathfinding demo"
 			, #application := app
 			, #child := box

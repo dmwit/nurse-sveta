@@ -26,6 +26,7 @@ module Nurse.Sveta.Util
 	, module Data.String
 	, module Data.Time
 	, module Data.Traversable
+	, module Data.Word
 	, module Dr.Mario.Model
 	, module Dr.Mario.Pathfinding
 	, module Dr.Mario.Util
@@ -45,7 +46,7 @@ module Nurse.Sveta.Util
 	, module Text.Printf
 	, module Text.Read
 	-- we don't export ByteString because there's two of them
-	, HashMap, HashSet, IntMap, IntSet, Map, Seq, Set, Text, Vector
+	, HashMap, HashSet, IntMap, IntSet, KeyMap, Map, Seq, Set, Text, Vector
 	) where
 
 import Control.Applicative
@@ -57,6 +58,7 @@ import Control.Monad.IO.Class
 import Control.Monad.ST
 import Control.Monad.State
 import Data.Aeson
+import Data.Aeson.KeyMap (KeyMap)
 import Data.Aeson.Types
 import Data.Bits hiding (rotate) -- conflicts with Dr.Mario.Pathfinding
 import Data.Char
@@ -84,6 +86,8 @@ import Data.Text (Text)
 import Data.Time
 import Data.Traversable
 import Data.Vector (Vector)
+import Data.Vector.Instances
+import Data.Word
 import Dr.Mario.Model
 import Dr.Mario.Pathfinding hiding (MidStep(..), rotate) -- MidStep(Down) conflicts with Data.Ord; rotate conflicts with Data.Bits
 import Dr.Mario.Util
@@ -110,6 +114,9 @@ False ? _ = Nothing
 
 enumerate :: (Traversable t, Num n) => t a -> t (n, a)
 enumerate t = evalState (traverse (\a -> state (\i -> ((i, a), i+1))) t) 0
+
+ignored :: HasCallStack => a
+ignored = error "a term was not ignored, but it was supposed to be"
 
 -- the arguments should always have been in this order
 forZipWithM :: Applicative f => [a] -> [b] -> (a -> b -> f c) -> f [c]

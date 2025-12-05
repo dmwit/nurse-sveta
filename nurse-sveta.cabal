@@ -86,9 +86,11 @@ library
     import:             shared
     hs-source-dirs:     src
     exposed-modules:      Ms.Mendel
+                        , Ms.Mendel.CXX.Raw
+                        , Ms.Mendel.CXX.Cooked
+                        , Ms.Mendel.Population
                         , Nurse.Sveta.Cairo
                         , Nurse.Sveta.Files
-                        , Nurse.Sveta.Genome
                         , Nurse.Sveta.STM
                         , Nurse.Sveta.STM.BatchProcessor
                         , Nurse.Sveta.Tomcats
@@ -114,6 +116,7 @@ library
                         , random ^>=1.2
                         , stm ^>=2.5.1
                         , time >=1.9 && <1.12
+                        , vector-instances ^>=3.4
     cxx-sources:          cxxbits/adapter.cpp
                         , cxxbits/constants.cpp
                         , cxxbits/debugging.cpp
@@ -168,14 +171,10 @@ executable ms-mendel
     import:             executable
     main-is:            ms-mendel.hs
 
-executable ms-mendel-genome-browser
+executable ms-mendel-browser
     import:             executable
-    main-is:            genome-browser.hs
+    main-is:            browser.hs
 
 executable ms-mendel-dasyuridia
     import:             executable
     main-is:            mm-dasyuridia.hs
-
-executable ms-mendel-population-from-patterns
-    import:             executable
-    main-is:            population-from-patterns.hs

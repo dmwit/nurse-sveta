@@ -37,7 +37,7 @@ main = do
 		replicateM_ ( ethreads    `quot` 2) (tmStartThread play2)
 		replicateM_ (mmcInitialEvolutionThreads mmc) (tmStartThread gen)
 
-		w <- new Window $ tail [undefined
+		w <- new Window $ tail [ignored
 			, #title := "Ms. Mendel"
 			, #application := app
 			, #child := top

@@ -294,7 +294,7 @@ parseEvent = \case
 	where
 	-- use Map search for the first character, but linear search for the rest;
 	-- the first character almost always uniquely identifies the event anyway
-	tbl = M.fromListWith (liftA2 (<|>)) $ tail [undefined
+	tbl = M.fromListWith (liftA2 (<|>)) $ tail [ignored
 		, "accepted" ~> finished EAccepted
 		, "board " ~> \s -> do
 			cells <- traverse parseCell (V.fromList s)
