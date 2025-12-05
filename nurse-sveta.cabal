@@ -171,9 +171,9 @@ executable ms-mendel
     import:             executable
     main-is:            ms-mendel.hs
 
-executable ms-mendel-browser
+executable ms-mendel-pattern-browser
     import:             executable
-    main-is:            browser.hs
+    main-is:            pattern-browser.hs
 
 executable ms-mendel-dasyuridia
     import:             executable
