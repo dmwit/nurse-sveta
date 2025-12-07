@@ -23,6 +23,8 @@ common shared
                         , bytestring >=0.10 && <0.12
                         , containers ^>=0.6
                         , gi-cairo-render ^>=0.1
+                        , gi-gio ^>=2.0
+                        , gi-gobject ^>=2.0
                         , gi-gtk ^>=4.0.8
                         , haskell-gi-base ^>=0.26
                         , maryodel ^>=0.1
@@ -61,6 +63,7 @@ common shared
                         , StandaloneDeriving
                         , TypeApplications
                         , TypeFamilies
+                        , TypeOperators
                         , UndecidableInstances
                         , ViewPatterns
     -- the following extensions get turned on only in the modules they get
@@ -68,6 +71,8 @@ common shared
     other-extensions:
                         -- ambiguous types are usually an error worth catching
                           AllowAmbiguousTypes
+                        -- can cause recompilation, see https://stackoverflow.com/q/26785036/791604
+                        , CPP
                         -- introduces too much extra stuff at the type/kind level
                         , DataKinds
     ghc-options:        -Wno-tabs -Wno-partial-type-signatures
@@ -86,6 +91,7 @@ library
     import:             shared
     hs-source-dirs:     src
     exposed-modules:      Ms.Mendel
+                        , Ms.Mendel.Cairo
                         , Ms.Mendel.CXX.Raw
                         , Ms.Mendel.CXX.Cooked
                         , Ms.Mendel.Population

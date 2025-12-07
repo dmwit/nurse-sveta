@@ -1,8 +1,13 @@
+{-# Language CPP #-}
+{-# Language AllowAmbiguousTypes #-}
 {-# Language DataKinds #-}
 module Ms.Mendel.Population where
 
 import Data.Aeson.Encoding (list, shortText, string)
 import Data.ByteString (ByteString)
+import Data.GI.Base
+import Data.GI.Base.GObject
+import Data.GI.Base.Overloading
 import Ms.Mendel.CXX.Cooked
 import Nurse.Sveta.Util
 
@@ -14,6 +19,7 @@ import qualified Data.Map.Strict as M
 import qualified Data.Set as S
 import qualified Data.Text as T
 import qualified Data.Vector as V
+import qualified GI.GObject as GI
 
 type IndexedBy a = Vector
 
@@ -34,10 +40,11 @@ type Tanh = Float
 type Rn = Tensor
 type Tanhn = Tensor
 
-data Purpose = Authoring | Browsing | Disk deriving (Bounded, Enum, Eq, Ord, Read, Show)
+data Purpose = Authoring | Browsing | Disk | GI deriving (Bounded, Enum, Eq, Ord, Read, Show)
 type Authoring = 'Authoring
 type Browsing = 'Browsing
 type Disk = 'Disk
+type GI = 'GI
 
 data family PatternGroups (a :: Purpose)
 data family PatternGroup (a :: Purpose)
@@ -53,8 +60,15 @@ class Repurpose (t :: Purpose -> *) src dst where
 	type family RepurposingEnvironment t src dst
 	repurpose :: RepurposingEnvironment t src dst -> t src -> t dst
 
+class RepurposeIO (t :: Purpose -> *) src dst where
+	type family RepurposingEnvironmentIO t src dst
+	repurposeIO :: RepurposingEnvironmentIO t src dst -> t src -> IO (t dst)
+
 repurpose_ :: (Repurpose t src dst, RepurposingEnvironment t src dst ~ ()) => t src -> t dst
 repurpose_ = repurpose ()
+
+repurposeIO_ :: (RepurposeIO t src dst, RepurposingEnvironmentIO t src dst ~ ()) => t src -> IO (t dst)
+repurposeIO_ = repurposeIO ()
 
 data instance PatternGroups Authoring = PatternGroupsAuthoring
 	{ pgaDefaultReplication :: Replication Bool
@@ -101,9 +115,13 @@ data instance SplitScores Disk = SplitScoresDisk
 	, ssdStatisticScores :: IndexedBy StatisticParameter R
 	} deriving (Eq, Ord, Read, Show)
 
-data instance PatternGroup Browsing = PatternGroupBrowsing
+newtype instance PatternGroups Browsing = PatternGroupsBrowsing
+	{ pgbPatternGroups :: IndexedBy PatternGroupIndex (PatternGroup Browsing)
+	} deriving (Eq, Ord, Read, Show)
+
+newtype instance PatternGroup Browsing = PatternGroupBrowsing
 	{ pgbPatterns :: IndexedBy IntraGroupIndex (Pattern Browsing)
-	} deriving (Show)
+	} deriving (Eq, Ord, Read, Show)
 
 data instance Pattern Browsing = PatternBrowsing
 	{ pbReplication :: Replication Bool
@@ -137,6 +155,16 @@ data Replication a = Replication
 caPatternGroupsName :: IsString s => s
 caPatternGroupsName = "groups"
 
+instance Repurpose PatternGroups Authoring Browsing where
+	type instance RepurposingEnvironment PatternGroups Authoring Browsing = ()
+	repurpose _ pga = PatternGroupsBrowsing
+		{ pgbPatternGroups = repurpose (pgaDefaultReplication pga) <$> pgaPatternGroups pga
+		}
+
+instance RepurposeIO PatternGroups Authoring GI where
+	type instance RepurposingEnvironmentIO PatternGroups Authoring GI = ()
+	repurposeIO _ = repurposeIO_ @_ @Browsing . repurpose_
+
 instance FromJSON (PatternGroups Authoring) where
 	parseJSON (Object o) = do
 		assertOnly [rMirroringName, rColoringName, caPatternGroupsName] o
@@ -155,6 +183,16 @@ instance FromJSON (PatternGroups Authoring) where
 pgaPatternsName, pgaDescriptionName :: IsString s => s
 pgaPatternsName = "patterns"
 pgaDescriptionName = "description"
+
+instance Repurpose PatternGroup Authoring Browsing where
+	type instance RepurposingEnvironment PatternGroup Authoring Browsing = Replication Bool
+	repurpose r pga = PatternGroupBrowsing
+		{ pgbPatterns = repurpose (liftA2 fromMaybe r (pgaOverrideReplication pga)) <$> pgaPatterns pga
+		}
+
+instance RepurposeIO PatternGroup Authoring GI where
+	type instance RepurposingEnvironmentIO PatternGroup Authoring GI = Replication Bool
+	repurposeIO r = repurposeIO_ @_ @Browsing . repurpose r
 
 instance FromJSON (PatternGroup Authoring) where
 	parseJSON (Object o) = do
@@ -183,6 +221,17 @@ instance FromJSON (PatternGroup Authoring) where
 paTemplateName :: IsString s => s
 paTemplateName = "pattern"
 
+instance Repurpose Pattern Authoring Browsing where
+	type instance RepurposingEnvironment Pattern Authoring Browsing = Replication Bool
+	repurpose r pa = PatternBrowsing
+		{ pbReplication = liftA2 fromMaybe r (paOverrideReplication pa)
+		, pbTemplate = repurpose_ (paTemplate pa)
+		}
+
+instance RepurposeIO Pattern Authoring GI where
+	type instance RepurposingEnvironmentIO Pattern Authoring GI = Replication Bool
+	repurposeIO r = repurposeIO_ @_ @Browsing . repurpose r
+
 instance FromJSON (Pattern Authoring) where
 	parseJSON (Object o) = do
 		assertOnly [rMirroringName, rColoringName, paTemplateName] o
@@ -203,6 +252,16 @@ instance FromJSON (Pattern Authoring) where
 		other
 
 ---------- PatternTemplate Authoring ----------
+
+instance Repurpose PatternTemplate Authoring Browsing where
+	type instance RepurposingEnvironment PatternTemplate Authoring Browsing = ()
+	repurpose _ pta = PatternTemplateBrowsing
+		{ ptbCells = toRectangle pcAnything . V.reverse $ ptaCells pta
+		}
+
+instance RepurposeIO PatternTemplate Authoring GI where
+	type instance RepurposingEnvironmentIO PatternTemplate Authoring GI = ()
+	repurposeIO _ = repurposeIO_ @_ @Browsing . repurpose_
 
 instance FromJSON (PatternTemplate Authoring) where
 	parseJSON v = do
@@ -349,22 +408,17 @@ instance ToJSON (SplitScores Disk) where
 instance FromJSON (SplitScores Disk) where
 	parseJSON vs = ssdFromTuple <$> parseJSON vs
 
+---------- PatternGroups Browsing ----------
+
+instance Default (PatternGroups Browsing) where
+	def = PatternGroupsBrowsing mempty
+
 ---------- PatternGroup Browsing ----------
 
-instance Repurpose PatternGroup Authoring Browsing where
-	type instance RepurposingEnvironment PatternGroup Authoring Browsing = Replication Bool
-	repurpose r pga = PatternGroupBrowsing
-		{ pgbPatterns = repurpose (liftA2 fromMaybe r (pgaOverrideReplication pga)) <$> pgaPatterns pga
-		}
+instance Default (PatternGroup Browsing) where
+	def = PatternGroupBrowsing mempty
 
 ---------- Pattern Browsing ----------
-
-instance Repurpose Pattern Authoring Browsing where
-	type instance RepurposingEnvironment Pattern Authoring Browsing = Replication Bool
-	repurpose r pa = PatternBrowsing
-		{ pbReplication = liftA2 fromMaybe r (paOverrideReplication pa)
-		, pbTemplate = repurpose_ (paTemplate pa)
-		}
 
 pbConvolutionSize :: Pattern Browsing -> ConvolutionSize
 pbConvolutionSize = ptbConvolutionSize . pbTemplate
@@ -374,6 +428,12 @@ pbMetadata pc = PatternMetadata
 	{ pmReplication = pbReplication pc
 	, pmConvolutionSize = pbConvolutionSize pc
 	}
+
+instance Default (Pattern Browsing) where
+	def = PatternBrowsing
+		{ pbReplication = Replication True True
+		, pbTemplate = def
+		}
 
 instance Hashable (Pattern Browsing) where
 	s `hashWithSalt` pc = s `hashWithSalt` pbReplication pc `hashWithSalt` pbTemplate pc
@@ -390,10 +450,9 @@ ptbConvolutionSize ptc = ConvolutionSize
 	, csHeight = V.length (ptbCells ptc)
 	}
 
-instance Repurpose PatternTemplate Authoring Browsing where
-	type instance RepurposingEnvironment PatternTemplate Authoring Browsing = ()
-	repurpose _ pta = PatternTemplateBrowsing
-		{ ptbCells = toRectangle pcAnything . V.reverse $ ptaCells pta
+instance Default (PatternTemplate Browsing) where
+	def = PatternTemplateBrowsing
+		{ ptbCells = V.singleton (V.singleton (pcNothing))
 		}
 
 instance ToJSON (PatternTemplate Browsing) where
@@ -440,6 +499,9 @@ pcAllDisjuncts = []
 
 pcAnything :: PatternCell
 pcAnything = PatternCell { pcAllowed = S.fromList pcAllDisjuncts }
+
+pcNothing :: PatternCell
+pcNothing = PatternCell { pcAllowed = S.empty }
 
 disjunctToChar :: WithSentinels (Either Color Shape) -> Char
 disjunctToChar = \case
@@ -592,6 +654,46 @@ instance Monad Replication where
 	return = pure
 	m >>= f = Replication x x' where
 		Replication (Replication x _) (Replication _ x') = f <$> m
+
+---------- PatternGroups GI ----------
+
+-- this #define uses explicit {;} style because C doesn't have significant
+-- whitespace, so the C preprocessor may not preserve the whitespace so
+-- carefully
+-- TODO: why is cons needed? why doesn't ty ## GI work?
+#define DEFINE_GOBJECT(ty, cons)\
+newtype instance ty GI = cons (ManagedPtr (ty GI));\
+instance GObject (ty GI);\
+instance TypedObject (ty GI) where {\
+	glibType = registerGType cons};\
+instance DerivedGObject (ty GI) where {\
+	type GObjectParentType (ty GI) = GI.Object;\
+	type GObjectPrivateData (ty GI) = ty Browsing;\
+	objectTypeName = "ty";\
+	objectClassInit = def;\
+	objectInstanceInit = def;\
+	objectInterfaces = def};\
+instance HasParentTypes (ty GI);\
+type instance ParentTypes (ty GI) = '[GI.Object];\
+instance RepurposeIO ty Browsing GI where {\
+	type RepurposingEnvironmentIO ty Browsing GI = ();\
+	repurposeIO _ browsing = do {\
+		gi <- new cons [];\
+		gi <$ gobjectModifyPrivateData gi (const browsing)}};
+
+DEFINE_GOBJECT(PatternGroups, PatternGroupsGI)
+
+---------- PatternGroup GI ----------
+
+DEFINE_GOBJECT(PatternGroup, PatternGroupGI)
+
+---------- Pattern GI ----------
+
+DEFINE_GOBJECT(Pattern, PatternGI)
+
+---------- PatternTemplate GI ----------
+
+DEFINE_GOBJECT(PatternTemplate, PatternTemplateGI)
 
 ---------- other ----------
 

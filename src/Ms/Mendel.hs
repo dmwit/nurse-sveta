@@ -1,5 +1,6 @@
 module Ms.Mendel
 	( module Ms.Mendel
+	, module Ms.Mendel.Population
 	, module Nurse.Sveta.Util
 	) where
 
@@ -79,30 +80,39 @@ makeLogger mmc threadName = do
 	putFlush s h = hPutStrLn h s >> hFlush h
 
 data LoadingError
-	= MissingGeneration FilePath
-	| MissingPopulation FilePath
+	= Missing FilePath String
 	| Corrupt FilePath String
 	deriving (Eq, Ord, Read, Show)
 
+-- | data dir
 loadPopulation_ :: FilePath -> IO (Population Disk)
-loadPopulation_ dir = reflectError $ loadPopulation dir
+loadPopulation_ = reflectError . loadPopulation
 
+-- | data dir
 loadPopulation :: FilePath -> IO (Either LoadingError (Population Disk))
 loadPopulation dir = runExceptT do
-	generation <- loadJSON (dir </> "latest.json") MissingGeneration
+	generation <- loadJSON (dir </> "latest.json") "generation"
 	let populationFilename = dir </> show generation <.> "json"
-	population <- loadJSON populationFilename MissingPopulation
+	population <- loadJSON populationFilename "population"
 	when (generation /= pdGeneration population) $
 		throwError (Corrupt populationFilename "filename/generation mismatch")
 	pure population
 
-loadJSON :: FromJSON a => FilePath -> (FilePath -> LoadingError) -> ExceptT LoadingError IO a
-loadJSON path fMissing = ExceptT $ handle (missing (fMissing path)) do
+-- | config dir
+loadPatterns_ :: FilePath -> IO (PatternGroups Authoring)
+loadPatterns_ = reflectError . loadPatterns
+
+-- | config dir
+loadPatterns :: FilePath -> IO (Either LoadingError (PatternGroups Authoring))
+loadPatterns dir = runExceptT (loadJSON (dir </> "patterns.json") "patterns")
+
+loadJSON :: FromJSON a => FilePath -> String -> ExceptT LoadingError IO a
+loadJSON path ty = ExceptT $ handle (missing path ty) do
 	bs <- LBS.readFile path
 	handle (corrupt path) (Right <$> throwDecode bs)
 
 corrupt :: FilePath -> AesonException -> IO (Either LoadingError a)
 corrupt fp (AesonException e) = pure (Left (Corrupt fp e))
 
-missing :: LoadingError -> IOException -> IO (Either LoadingError a)
-missing failure e = if isDoesNotExistError e then pure (Left failure) else throw e
+missing :: FilePath -> String -> IOException -> IO (Either LoadingError a)
+missing fp ty e = if isDoesNotExistError e then pure (Left (Missing fp ty)) else throw e
