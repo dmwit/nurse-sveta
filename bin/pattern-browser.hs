@@ -13,14 +13,6 @@ import qualified Data.Vector as V
 
 -- ╭╴w╶──────╮
 -- │╭╴top╶──╮│
--- ││╭╴gen╶╮││
--- ││╰─────╯││
--- ││╭╴ivd╶╮││
--- ││╰─────╯││
--- ││╭╴cnv╶╮││
--- ││╰─────╯││
--- ││╭╴hgv╶╮││
--- ││╰─────╯││
 -- │╰───────╯│
 -- ╰─────────╯
 main :: IO ()
@@ -33,7 +25,15 @@ main = do
 	on app #activate do
 		top <- new Box [#orientation := OrientationVertical, #spacing := 4]
 
-		pgView <- createListView =<< traverse (repurposeIO @_ @_ @GI (pgaDefaultReplication patternGroups)) (pgaPatternGroups patternGroups)
+		gPatternGroups <- traverse (newGIRef . repurpose @_ @_ @Browsing (pgaDefaultReplication patternGroups)) (pgaPatternGroups patternGroups)
+		pgView <- createListView ListViewParameters
+			{ lvpContents = gPatternGroups
+			, lvpSetupWidget = new Label []
+			, lvpBindWidget = \gPatternGroup lbl ->
+				set lbl [#label :=> pgbDescription <$> readGIRef gPatternGroup]
+			, lvpSelection = \i gPatternGroup -> print i >> readGIRef gPatternGroup >>= print
+			}
+
 		#append top pgView
 
 		w <- new Window $ tail [ignored
@@ -49,25 +49,37 @@ main = do
 	args <- getArgs
 	() <$ #run app (Just args)
 
+data ListViewParameters t a w = ListViewParameters
+	{ lvpContents :: t a
+	, lvpSetupWidget :: IO w
+	, lvpBindWidget :: a -> w -> IO ()
+	, lvpSelection :: Word32 -> a -> IO ()
+	}
+
 -- see https://discourse.haskell.org/t/haskell-gi-how-do-i-create-a-gtk-listview/11059/7
-createListView :: forall a t. (Traversable t, IsObject a) => t a -> IO ListView
-createListView as = do
+createListView :: forall a w t. (Traversable t, IsObject a, IsWidget w) => ListViewParameters t a w -> IO ListView
+createListView lvp = do
 	store <- new ListStore []
 	model <- new SingleSelection [#model := store]
 	factory <- new SignalListItemFactory []
 
-	traverse_ (#append store) as
+	traverse_ (#append store) (lvpContents lvp)
 
 	on factory #setup \objItem -> do
 		Just item <- castTo ListItem objItem
-		label <- new Label []
-		#setChild item (Just label)
+		widget <- lvpSetupWidget lvp
+		#setChild item (Just widget)
 	on factory #bind \objItem -> do
 		Just item <- castTo ListItem objItem
 		Just objRow <- #getItem item
 		Just objWidget <- #getChild item
 		Just row <- castTo @_ @a coerce objRow
-		Just widget <- castTo Label objWidget
-		set widget [#label := "hello there"]
+		Just widget <- castTo @_ @w coerce objWidget
+		lvpBindWidget lvp row widget
+	on model #selectionChanged \_ _ -> do
+		i <- get model #selected
+		Just objRow <- get model #selectedItem
+		Just obj <- castTo coerce objRow
+		lvpSelection lvp i obj
 
 	new ListView [#model := model, #factory := factory]

@@ -1,4 +1,5 @@
-{-# Language DataKinds #-} -- not on by default because of how much extra stuff it creates at the type/kind level
+{-# Language AllowAmbiguousTypes #-}
+{-# Language DataKinds #-}
 
 module Nurse.Sveta.Widget (
 	-- * Raw drawing grid
@@ -43,6 +44,11 @@ module Nurse.Sveta.Widget (
 	SizeAllocationMonitor, newSizeAllocationMonitor, samWidget,
 	samOnResize, samDisconnectHandler,
 
+	-- * Passing Haskell data types to gtk
+	GIRef(GIRef),
+	defGIRef, newGIRef, readGIRef, writeGIRef, modifyGIRef,
+	GNamed(..),
+
 	-- * Noticing when things change
 	Stable,
 	newStable,
@@ -59,6 +65,8 @@ module Nurse.Sveta.Widget (
 	) where
 
 import Data.GI.Base.Attributes
+import Data.GI.Base.GObject
+import Data.GI.Base.Overloading
 import Data.GI.Base.Signals
 import Dr.Mario.Model as DM
 import GI.Cairo.Render
@@ -74,6 +82,7 @@ import qualified Data.HashMap.Strict as HM
 import qualified Data.Text as T
 import qualified Data.Text.IO as T
 import qualified GHC.OverloadedLabels as Overload
+import qualified GI.GObject as GI
 
 data DrawingGrid = DG
 	{ dgCanvas :: DrawingArea
@@ -763,6 +772,43 @@ samDisconnectHandler sam [hid, vid] = liftIO do
 
 samWidget :: MonadIO m => SizeAllocationMonitor -> m Widget
 samWidget = toWidget . samVerticalBox
+
+class Default a => GNamed a where name :: T.Text
+
+-- most of this was stolen from
+-- https://discourse.haskell.org/t/haskell-gi-how-do-i-create-a-gtk-listview/11059/7
+-- TODO: would be nice to have a GtkRef with instance IsWidget GtkRef
+newtype GIRef a = GIRef (ManagedPtr (GIRef a))
+
+type instance ParentTypes (GIRef a) = '[GI.Object]
+instance HasParentTypes (GIRef a)
+instance GNamed a => GObject (GIRef a)
+instance GNamed a => TypedObject (GIRef a) where
+	glibType = registerGType (GIRef @a)
+instance GNamed a => DerivedGObject (GIRef a) where
+	type GObjectParentType (GIRef a) = GI.Object
+	type GObjectPrivateData (GIRef a) = a
+	objectTypeName = "Nurse-Sveta-GIRef-" <> name @a
+	objectClassInit = def
+	objectInstanceInit = def
+	objectInterfaces = def
+
+defGIRef :: (GNamed a, HasCallStack) => IO (GIRef a)
+defGIRef = new GIRef []
+
+newGIRef :: (GNamed a, HasCallStack) => a -> IO (GIRef a)
+newGIRef a = do
+	ref <- new GIRef []
+	ref <$ writeGIRef ref a
+
+readGIRef :: (GNamed a, HasCallStack) => GIRef a -> IO a
+readGIRef = gobjectGetPrivateData
+
+writeGIRef :: (GNamed a, HasCallStack) => GIRef a -> a -> IO ()
+writeGIRef = gobjectSetPrivateData
+
+modifyGIRef :: (GNamed a, HasCallStack) => GIRef a -> (a -> a) -> IO ()
+modifyGIRef = gobjectModifyPrivateData
 
 -- | A type for tracking the updates to something that doesn't change very often.
 data Stable a = Stable
