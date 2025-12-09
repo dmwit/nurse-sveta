@@ -4,8 +4,6 @@ import GI.Gtk hiding (ListStore(..))
 import GI.Gio.Objects.ListStore
 import GI.GObject.Objects.Object
 import Ms.Mendel hiding (get)
-import Nurse.Sveta.Cairo
-import Nurse.Sveta.Widget
 
 import qualified Data.HashMap.Strict as HM
 import qualified Data.Text as T
@@ -25,16 +23,31 @@ main = do
 	on app #activate do
 		top <- new Box [#orientation := OrientationVertical, #spacing := 4]
 
-		gPatternGroups <- traverse (newGIRef . repurpose @_ @_ @Browsing (pgaDefaultReplication patternGroups)) (pgaPatternGroups patternGroups)
-		pgView <- createListView ListViewParameters
+		renderingsView <- createListView @Widget ListViewParameters
+			{ lvpContents = []
+			, lvpSetupWidget = new Box []
+			, lvpBindWidget = #append
+			, lvpUnbindWidget = #remove
+			, lvpSelection = def
+			}
+		set renderingsView [#showSeparators := True]
+
+		gPatternGroups <- traverse newGIRef . pgbPatternGroups $ repurpose_ patternGroups
+		namesView <- createListView ListViewParameters
 			{ lvpContents = gPatternGroups
 			, lvpSetupWidget = new Label []
-			, lvpBindWidget = \gPatternGroup lbl ->
+			, lvpBindWidget = \lbl gPatternGroup ->
 				set lbl [#label :=> pgbDescription <$> readGIRef gPatternGroup]
-			, lvpSelection = \i gPatternGroup -> print i >> readGIRef gPatternGroup >>= print
+			, lvpUnbindWidget = def
+			, lvpSelection = \i gPatternGroup -> do
+				pgb <- readGIRef gPatternGroup
+				store <- new ListStore []
+				traverse_ (#append store <=< pgWidget <=< repurposeIO_) (pgbPatterns pgb)
+				set renderingsView [#model :=> new NoSelection [#model := store]]
 			}
 
-		#append top pgView
+		#append top namesView
+		#append top renderingsView
 
 		w <- new Window $ tail [ignored
 			, #title := "Ms. Mendel Pattern Browser"
@@ -52,7 +65,8 @@ main = do
 data ListViewParameters t a w = ListViewParameters
 	{ lvpContents :: t a
 	, lvpSetupWidget :: IO w
-	, lvpBindWidget :: a -> w -> IO ()
+	, lvpBindWidget :: w -> a -> IO ()
+	, lvpUnbindWidget :: w -> a -> IO ()
 	, lvpSelection :: Word32 -> a -> IO ()
 	}
 
@@ -73,13 +87,20 @@ createListView lvp = do
 		Just item <- castTo ListItem objItem
 		Just objRow <- #getItem item
 		Just objWidget <- #getChild item
-		Just row <- castTo @_ @a coerce objRow
-		Just widget <- castTo @_ @w coerce objWidget
-		lvpBindWidget lvp row widget
+		Just row <- castTo coerce objRow
+		Just widget <- castTo coerce objWidget
+		lvpBindWidget lvp widget row
+	on factory #unbind \objItem -> do
+		Just item <- castTo ListItem objItem
+		Just objRow <- #getItem item
+		Just objWidget <- #getChild item
+		Just row <- castTo coerce objRow
+		Just widget <- castTo coerce objWidget
+		lvpUnbindWidget lvp widget row
 	on model #selectionChanged \_ _ -> do
 		i <- get model #selected
 		Just objRow <- get model #selectedItem
-		Just obj <- castTo coerce objRow
-		lvpSelection lvp i obj
+		Just row <- castTo coerce objRow
+		lvpSelection lvp i row
 
 	new ListView [#model := model, #factory := factory]

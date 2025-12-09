@@ -7,7 +7,9 @@ import Nurse.Sveta.Cairo
 import Nurse.Sveta.Util
 
 import qualified Data.Set as S
+import qualified Data.Vector as V
 import qualified GI.Cairo.Render as C
+import qualified Ms.Mendel.Population as Mendel
 import qualified Nurse.Sveta.Cairo as NC
 
 pcRender :: PatternCell -> Render ()
@@ -37,3 +39,12 @@ pcRender pc = do
 		act
 		popGroupToSource
 		paintWithAlpha if ws `S.member` pcAllowed pc then 1 else 0.1
+
+ptbRender :: Mendel.PatternTemplate Browsing -> Render ()
+ptbRender ptb =
+	for_ [0..csWidth (ptbConvolutionSize ptb)-1] \x ->
+	for_ [0..csHeight (ptbConvolutionSize ptb)-1] \y -> do
+		C.save
+		translate (fromIntegral x) (fromIntegral y)
+		pcRender (ptbCells ptb V.! y V.! x)
+		C.restore

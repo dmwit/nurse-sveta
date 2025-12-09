@@ -95,6 +95,7 @@ library
                         , Ms.Mendel.CXX.Raw
                         , Ms.Mendel.CXX.Cooked
                         , Ms.Mendel.Population
+                        , Ms.Mendel.Widget
                         , Nurse.Sveta.Cairo
                         , Nurse.Sveta.Files
                         , Nurse.Sveta.STM

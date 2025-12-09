@@ -35,10 +35,11 @@ type Tanh = Float
 type Rn = Tensor
 type Tanhn = Tensor
 
-data Purpose = Authoring | Browsing | Disk deriving (Bounded, Enum, Eq, Ord, Read, Show)
+data Purpose = Authoring | Browsing | Disk | Gtk deriving (Bounded, Enum, Eq, Ord, Read, Show)
 type Authoring = 'Authoring
 type Browsing = 'Browsing
 type Disk = 'Disk
+type Gtk = 'Gtk
 
 data family PatternGroups (a :: Purpose)
 data family PatternGroup (a :: Purpose)
@@ -52,10 +53,19 @@ data family SplitScores (a :: Purpose)
 
 class Repurpose (t :: Purpose -> *) src dst where
 	type family RepurposingEnvironment t src dst
+	type instance RepurposingEnvironment t src dst = ()
 	repurpose :: RepurposingEnvironment t src dst -> t src -> t dst
+
+class RepurposeIO (t :: Purpose -> *) src dst where
+	type family RepurposingEnvironmentIO t src dst
+	type instance RepurposingEnvironmentIO t src dst = ()
+	repurposeIO :: RepurposingEnvironmentIO t src dst -> t src -> IO (t dst)
 
 repurpose_ :: (Repurpose t src dst, RepurposingEnvironment t src dst ~ ()) => t src -> t dst
 repurpose_ = repurpose ()
+
+repurposeIO_ :: (RepurposeIO t src dst, RepurposingEnvironmentIO t src dst ~ ()) => t src -> IO (t dst)
+repurposeIO_ = repurposeIO ()
 
 data instance PatternGroups Authoring = PatternGroupsAuthoring
 	{ pgaDefaultReplication :: Replication Bool
@@ -144,7 +154,6 @@ caPatternGroupsName :: IsString s => s
 caPatternGroupsName = "groups"
 
 instance Repurpose PatternGroups Authoring Browsing where
-	type instance RepurposingEnvironment PatternGroups Authoring Browsing = ()
 	repurpose _ pga = PatternGroupsBrowsing
 		{ pgbPatternGroups = repurpose (pgaDefaultReplication pga) <$> pgaPatternGroups pga
 		}
@@ -231,7 +240,6 @@ instance FromJSON (Pattern Authoring) where
 ---------- PatternTemplate Authoring ----------
 
 instance Repurpose PatternTemplate Authoring Browsing where
-	type instance RepurposingEnvironment PatternTemplate Authoring Browsing = ()
 	repurpose _ pta = PatternTemplateBrowsing
 		{ ptbCells = toRectangle pcAnything . V.reverse $ ptaCells pta
 		}

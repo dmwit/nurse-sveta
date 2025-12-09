@@ -1,12 +1,16 @@
 module Ms.Mendel
 	( module Ms.Mendel
+	, module Ms.Mendel.Cairo
 	, module Ms.Mendel.Population
+	, module Ms.Mendel.Widget
 	, module Nurse.Sveta.Util
 	) where
 
 import Control.Monad.Except
 import GHC.Generics
+import Ms.Mendel.Cairo
 import Ms.Mendel.Population
+import Ms.Mendel.Widget
 import Nurse.Sveta.Util
 
 import qualified Data.ByteString.Lazy.Char8 as LBS
