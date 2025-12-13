@@ -49,7 +49,6 @@ data family Population (a :: Purpose)
 data family Shared (a :: Purpose)
 data family Individual (a :: Purpose)
 data family SingleVirus (a :: Purpose)
-data family SplitScores (a :: Purpose)
 
 class Repurpose (t :: Purpose -> *) src dst where
 	type family RepurposingEnvironment t src dst
@@ -103,13 +102,9 @@ data instance Individual Disk = IndividualDisk
 	} deriving (Eq, Ord, Read, Show)
 
 data instance SingleVirus Disk = SingleVirusDisk
-	{ svdPosition :: SplitScores Disk
-	, svdMove :: SplitScores Disk
-	} deriving (Eq, Ord, Read, Show)
-
-data instance SplitScores Disk = SplitScoresDisk
-	{ ssdPatternScores :: IndexedBy PatternParameter R
-	, ssdStatisticScores :: IndexedBy StatisticParameter R
+	{ svdPosition :: IndexedBy PatternParameter R
+	, svdMove :: IndexedBy PatternParameter R
+	, svdStatistics :: IndexedBy StatisticParameter R
 	} deriving (Eq, Ord, Read, Show)
 
 newtype instance PatternGroups Browsing = PatternGroupsBrowsing
@@ -128,6 +123,17 @@ data instance Pattern Browsing = PatternBrowsing
 
 newtype instance PatternTemplate Browsing = PatternTemplateBrowsing
 	{ ptbCells :: IndexedBy Y0Lo (IndexedBy X PatternCell) -- ^ rectangular
+	} deriving (Eq, Ord, Read, Show)
+
+data instance Population Browsing = PopulationBrowsing
+	{ pbGeneration :: Int
+	, pbShared :: Shared Browsing
+	, pbIndividuals :: IndexedBy IndividualIndex (Individual Disk)
+	} deriving (Eq, Ord, Read, Show)
+
+data instance Shared Browsing = SharedBrowsing
+	{ sbPatterns :: Map (Replication Bool) (Map ConvolutionSize (Set (PatternTemplate Browsing)))
+	, sbStatisticNames :: IndexedBy StatisticParameter Text
 	} deriving (Eq, Ord, Read, Show)
 
 newtype PatternCell = PatternCell
@@ -149,6 +155,9 @@ data Replication a = Replication
 	} deriving (Eq, Ord, Read, Show, Functor)
 
 ---------- PatternGroups Authoring ----------
+
+pgaByMetadata :: PatternGroups Authoring -> Map (Replication Bool) (Map ConvolutionSize (Set (PatternTemplate Browsing)))
+pgaByMetadata = pgbByMetadata . repurpose_
 
 caPatternGroupsName :: IsString s => s
 caPatternGroupsName = "groups"
@@ -282,15 +291,23 @@ instance FromJSON (Population Disk) where
 
 ---------- Shared Disk ----------
 
-sdPatternCount :: Shared Disk -> Int
-sdPatternCount sd = sum (length <$> sdPatterns sd)
-
-sdStatisticCount :: Shared Disk -> Int
-sdStatisticCount = length . sdStatisticNames
-
 sdPatternsName, sdStatisticNamesName :: IsString s => s
 sdPatternsName = "patterns"
 sdStatisticNamesName = "statistic-names"
+
+instance RepurposeIO Shared Disk Browsing where
+	repurposeIO _ sd = do
+		patterns <- traverse (traverse (ptFromText >=> ptToSet)) (sdPatterns sd)
+		let sizes = fmap (fmap (ptbConvolutionSize . S.findMin)) patterns
+		unless (all strictlyAscending sizes) . fail $
+			"malformed Shared Disk: PatternsTemplates were not in order of increasing size\n"
+			++ show patterns
+		pure SharedBrowsing
+			{ sbStatisticNames = sdStatisticNames sd
+			, sbPatterns = M.intersectionWith
+				(\size pat -> M.fromList . V.toList $ V.zip size pat)
+				sizes patterns
+			}
 
 instance ToJSON (Shared Disk) where
 	toEncoding sd = pairs $ mempty
@@ -313,10 +330,13 @@ instance FromJSON (Shared Disk) where
 
 ---------- Individual Disk ----------
 
-newIndividualDisk :: Shared Disk -> IndexedBy ParameterIndex R -> Individual Disk
-newIndividualDisk sd ps = IndividualDisk
-	{ id0 = newSingleVirusDisk sd (V.take n ps)
-	, id84 = newSingleVirusDisk sd (V.drop n ps)
+newNormalIndividualDisk :: GenIO -> Shared Browsing -> IO (Individual Disk)
+newNormalIndividualDisk rng sb = newIndividualDisk sb . fmap realToFrac <$> V.replicateM (sbParameterCount sb) (standard rng)
+
+newIndividualDisk :: Shared Browsing -> IndexedBy ParameterIndex R -> Individual Disk
+newIndividualDisk sb ps = IndividualDisk
+	{ id0 = newSingleVirusDisk sb (V.take n ps)
+	, id84 = newSingleVirusDisk sb (V.drop n ps)
 	} where n = length ps `quot` 2
 
 idForget :: Individual Disk -> IndexedBy ParameterIndex R
@@ -337,59 +357,43 @@ instance FromJSON (Individual Disk) where
 
 ---------- SingleVirus Disk ----------
 
-newSingleVirusDisk :: Shared Disk -> IndexedBy ParameterIndex R -> SingleVirus Disk
-newSingleVirusDisk sd ps = SingleVirusDisk
-	{ svdPosition = newSplitScoresDisk sd (V.take n ps)
-	, svdMove = newSplitScoresDisk sd (V.drop n ps)
-	} where n = length ps `quot` 2
+newSingleVirusDisk :: Shared Browsing -> IndexedBy ParameterIndex R -> SingleVirus Disk
+newSingleVirusDisk sb ps
+	| length ps == n = SingleVirusDisk
+		{ svdPosition = V.take nPat ps
+		, svdMove = V.take nPat (V.drop nPat ps)
+		, svdStatistics = V.drop (2*nPat) ps
+		}
+	| otherwise = error $ printf "couldn't parse vector as a SingleVirus Disk; expected length %d but saw length %d" n (length ps)
+	where
+	n = 2*nPat + nStat
+	nPat = sbPatternCount sb
+	nStat = sbStatisticCount sb
 
 svdForget :: SingleVirus Disk -> IndexedBy ParameterIndex R
-svdForget svd = ssdForget (svdPosition svd) <> ssdForget (svdMove svd)
+svdForget svd = svdPosition svd <> svdMove svd <> svdStatistics svd
 
-svdToPair :: SingleVirus Disk -> (SplitScores Disk, SplitScores Disk)
-svdToPair svd = (svdPosition svd, svdMove svd)
+svdToTuple :: SingleVirus Disk -> (IndexedBy PatternParameter R, IndexedBy PatternParameter R, IndexedBy StatisticParameter R)
+svdToTuple svd = (svdPosition svd, svdMove svd, svdStatistics svd)
 
-svdFromPair :: (SplitScores Disk, SplitScores Disk) -> SingleVirus Disk
-svdFromPair (sdPos, sdMove) = SingleVirusDisk { svdPosition = sdPos, svdMove = sdMove }
+svdFromTuple :: (IndexedBy PatternParameter R, IndexedBy PatternParameter R, IndexedBy StatisticParameter R) -> SingleVirus Disk
+svdFromTuple (sdPos, sdMove, sdStat) = SingleVirusDisk { svdPosition = sdPos, svdMove = sdMove, svdStatistics = sdStat }
 
 instance ToJSON (SingleVirus Disk) where
-	toEncoding = toEncoding . svdToPair
-	toJSON = toJSON . svdToPair
+	toEncoding = toEncoding . svdToTuple
+	toJSON = toJSON . svdToTuple
 
 instance FromJSON (SingleVirus Disk) where
-	parseJSON vs = svdFromPair <$> parseJSON vs
-
----------- SplitScores Disk ----------
-
-newSplitScoresDisk :: Shared Disk -> IndexedBy ParameterIndex R -> SplitScores Disk
-newSplitScoresDisk sd ps
-	| length ps == n = SplitScoresDisk
-		{ ssdPatternScores = V.take nPatterns ps
-		, ssdStatisticScores = V.drop nPatterns ps
-		}
-	| otherwise = error $ printf "couldn't parse vector as a SplitScores Disk; expected length %d but saw length %d" n (length ps)
-	where
-	n = nPatterns + nStatistics
-	nPatterns = sdPatternCount sd
-	nStatistics = sdStatisticCount sd
-
-ssdForget :: SplitScores Disk -> IndexedBy ParameterIndex R
-ssdForget sd = ssdPatternScores sd <> ssdStatisticScores sd
-
-ssdToTuple :: SplitScores Disk -> (IndexedBy PatternParameter R, IndexedBy StatisticParameter R)
-ssdToTuple sd = (ssdPatternScores sd, ssdStatisticScores sd)
-
-ssdFromTuple :: (IndexedBy PatternParameter R, IndexedBy StatisticParameter R) -> SplitScores Disk
-ssdFromTuple (vPat, vStat) = SplitScoresDisk { ssdPatternScores = vPat, ssdStatisticScores = vStat }
-
-instance ToJSON (SplitScores Disk) where
-	toEncoding = toEncoding . ssdToTuple
-	toJSON = toJSON . ssdToTuple
-
-instance FromJSON (SplitScores Disk) where
-	parseJSON vs = ssdFromTuple <$> parseJSON vs
+	parseJSON vs = svdFromTuple <$> parseJSON vs
 
 ---------- PatternGroups Browsing ----------
+
+pgbByMetadata :: PatternGroups Browsing -> Map (Replication Bool) (Map ConvolutionSize (Set (PatternTemplate Browsing)))
+pgbByMetadata pgsb = M.fromListWith (M.unionWith S.union)
+	[ (pbReplication pb, M.singleton (pbConvolutionSize pb) (S.singleton (pbTemplate pb)))
+	| pgb <- V.toList (pgbPatternGroups pgsb)
+	, pb <- V.toList (pgbPatterns pgb)
+	]
 
 instance Default (PatternGroups Browsing) where
 	def = PatternGroupsBrowsing mempty
@@ -450,6 +454,43 @@ instance ToJSON (PatternTemplate Browsing) where
 
 instance Hashable (PatternTemplate Browsing) where
 	hashWithSalt s = hashWithSalt s . ptbCells
+
+---------- Population Browsing ----------
+
+newNormalPopulationBrowsing :: GenIO -> Shared Browsing -> Int -> IO (Population Browsing)
+newNormalPopulationBrowsing rng sb populationSize = do
+	is <- V.replicateM populationSize (newNormalIndividualDisk rng sb)
+	pure PopulationBrowsing
+		{ pbGeneration = 0
+		, pbShared = sb
+		, pbIndividuals = is
+		}
+
+---------- Shared Browsing ----------
+
+sbPatternCount :: Shared Browsing -> Int
+sbPatternCount = sum . fmap (sum . fmap S.size) . sbPatterns
+
+sbStatisticCount :: Shared Browsing -> Int
+sbStatisticCount = length . sbStatisticNames
+
+sbParameterCount :: Shared Browsing -> Int
+sbParameterCount sb = 2{- 0 virus/84 virus -} * (2{- position/move -} * sbPatternCount sb + sbStatisticCount sb)
+
+sbFromPatternGroupsB :: PatternGroups Browsing -> Shared Browsing
+sbFromPatternGroupsB pgb = SharedBrowsing
+	{ sbPatterns = pgbByMetadata pgb
+	, sbStatisticNames = currentStatisticNames
+	}
+
+sbFromPatternGroupsA :: PatternGroups Authoring -> Shared Browsing
+sbFromPatternGroupsA = sbFromPatternGroupsB . repurpose_
+
+instance RepurposeIO Shared Browsing Disk where
+	repurposeIO _ sb = traverse (ptsFromMap >=> ptsToText) (sbPatterns sb) <&> \patterns -> SharedDisk
+		{ sdPatterns = patterns
+		, sdStatisticNames = sbStatisticNames sb
+		}
 
 ---------- PatternCell ----------
 
@@ -646,6 +687,9 @@ instance Monad Replication where
 
 ---------- other ----------
 
+currentStatisticNames :: IndexedBy StatisticParameter Text
+currentStatisticNames = V.empty
+
 assertOnly :: [Key] -> KeyMap v -> Parser ()
 assertOnly ks km
 	| null leftovers = pure ()
@@ -679,28 +723,49 @@ decodePrintable = BS.pack . expand . contract where
 	expand 0 = []
 	expand n = fromInteger n : expand (shiftR n 8)
 
-ptFromSet :: ConvolutionSize -> Set [[PatternCell]] -> IO PatternsTemplate
+strictlyAscending :: Ord a => Vector a -> Bool
+strictlyAscending as = and (V.zipWith (<) as (V.drop 1 as))
+
+ptFromText :: Text -> IO PatternsTemplate
+ptFromText = ptDecode . decodePrintable
+
+ptFromSet :: ConvolutionSize -> Set (PatternTemplate Browsing) -> IO PatternsTemplate
 ptFromSet cs cells = do
 	pt <- newPatternsTemplate (fromIntegral (csWidth cs)) (fromIntegral (csHeight cs)) (fromIntegral (S.size cells))
-	pt <$ forZipWithM_ [0..] (S.toList cells) \i rectangle ->
-		forZipWithM_ [0..] rectangle \y row ->
-			forZipWithM_ [0..] row \x cell ->
+	pt <$ forZipWithM_ [0..] (S.toList cells) \i ptb ->
+		forZipWithM_ [0..] (V.toList (ptbCells ptb)) \y row ->
+			forZipWithM_ [0..] (V.toList row) \x cell ->
 				for_ (S.toList (pcAllowed cell)) \case
 					NonSentinel (Left color) -> ptSetColor pt i (NonSentinel color) (Position x y) False
 					NonSentinel (Right shape) -> ptSetShape pt i (NonSentinel shape) (Position x y) False
 					OutOfBoundsSentinel -> ptSetBoth pt i OutOfBoundsSentinel (Position x y) False
 					EmptySentinel -> ptSetBoth pt i EmptySentinel (Position x y) False
 
-ptToVector :: PatternsTemplate -> IO (Vector [[PatternCell]])
+ptsFromMap :: Map ConvolutionSize (Set (PatternTemplate Browsing)) -> IO (IndexedBy ConvolutionSizeIndex PatternsTemplate)
+ptsFromMap = traverse (uncurry ptFromSet) . V.fromList . M.toAscList
+
+ptToText :: PatternsTemplate -> IO Text
+ptToText = fmap encodePrintable . ptEncode
+
+ptsToText :: IndexedBy ConvolutionSizeIndex PatternsTemplate -> IO (IndexedBy ConvolutionSizeIndex Text)
+ptsToText = traverse ptToText
+
+ptToVector :: PatternsTemplate -> IO (Vector (PatternTemplate Browsing))
 ptToVector pt = V.generateM (fromIntegral (ptSize pt)) \i_ -> do
 	let i = fromIntegral i_
-	for [0..ptHeight pt] \y ->
-		for [0..ptWidth pt] \x -> let pos = Position (fromIntegral x) (fromIntegral y) in
+	PatternTemplateBrowsing <$> V.generateM (fromIntegral (ptHeight pt)) \y ->
+		V.generateM (fromIntegral (ptWidth pt)) \x -> let pos = Position x y in
 			PatternCell . S.fromList <$> flip filterM pcAllDisjuncts \disjunct -> not <$> case disjunct of
 				NonSentinel (Left color) -> ptGetColor pt i (NonSentinel color) pos
 				NonSentinel (Right shape) -> ptGetShape pt i (NonSentinel shape) pos
 				OutOfBoundsSentinel -> ptGetBoth pt i OutOfBoundsSentinel pos
 				EmptySentinel -> ptGetBoth pt i EmptySentinel pos
+
+ptToSet :: PatternsTemplate -> IO (Set (PatternTemplate Browsing))
+ptToSet pt = do
+	v <- ptToVector pt
+	unless (strictlyAscending v) (fail $ "malformed PatternsTemplate had templates in wrong order: " ++ show v)
+	pure . S.fromList . V.toList $ v
 
 ptSetBoth :: PatternsTemplate -> Int64 -> (forall a. WithSentinels a) -> Position -> Bool -> IO ()
 ptSetBoth pt i ws pos v = do
