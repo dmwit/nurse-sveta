@@ -360,11 +360,6 @@ pgbByMetadata pgsb = M.fromListWith (M.unionWith S.union)
 	, pb <- V.toList (pgbPatterns pgb)
 	]
 
-instance Default (PatternGroups Browsing) where
-	def = PatternGroupsBrowsing mempty
-
-instance GNamed (PatternGroups Browsing) where name = "PatternGroups-Browsing"
-
 ---------- PatternGroup Browsing ----------
 
 instance Default (PatternGroup Browsing) where
@@ -383,14 +378,6 @@ pbMetadata pc = PatternMetadata
 	, pmConvolutionSize = pbConvolutionSize pc
 	}
 
-instance Default (Pattern Browsing) where
-	def = PatternBrowsing
-		{ pbReplication = Replication True True
-		, pbTemplate = def
-		}
-
-instance GNamed (Pattern Browsing) where name = "Pattern-Browsing"
-
 instance Hashable (Pattern Browsing) where
 	s `hashWithSalt` pc = s `hashWithSalt` pbReplication pc `hashWithSalt` pbTemplate pc
 
@@ -405,17 +392,6 @@ ptbConvolutionSize ptc = ConvolutionSize
 	{ csWidth = V.head (V.map V.length (ptbCells ptc) <> V.singleton 0)
 	, csHeight = V.length (ptbCells ptc)
 	}
-
-instance Default (PatternTemplate Browsing) where
-	def = PatternTemplateBrowsing
-		{ ptbCells = V.singleton (V.singleton (pcNothing))
-		}
-
-instance GNamed (PatternTemplate Browsing) where name = "PatternTemplate-Browsing"
-
-instance ToJSON (PatternTemplate Browsing) where
-	toEncoding = toEncoding . V.reverse . ptbCells
-	toJSON = toJSON . V.reverse . ptbCells
 
 instance Hashable (PatternTemplate Browsing) where
 	hashWithSalt s = hashWithSalt s . ptbCells
