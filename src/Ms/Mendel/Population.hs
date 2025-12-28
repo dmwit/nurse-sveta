@@ -97,14 +97,8 @@ data instance Shared Disk = SharedDisk
 	, sdStatisticNames :: IndexedBy StatisticParameter Text
 	} deriving (Eq, Ord, Read, Show)
 
-data instance Individual Disk = IndividualDisk
-	{ id0, id84 :: SingleVirus Disk
-	} deriving (Eq, Ord, Read, Show)
-
-data instance SingleVirus Disk = SingleVirusDisk
-	{ svdPosition :: IndexedBy PatternParameter R
-	, svdMove :: IndexedBy PatternParameter R
-	, svdStatistics :: IndexedBy StatisticParameter R
+newtype instance Individual Disk = IndividualDisk
+	{ idParameters :: IndexedBy ParameterIndex R
 	} deriving (Eq, Ord, Read, Show)
 
 newtype instance PatternGroups Browsing = PatternGroupsBrowsing
@@ -128,12 +122,22 @@ newtype instance PatternTemplate Browsing = PatternTemplateBrowsing
 data instance Population Browsing = PopulationBrowsing
 	{ pbGeneration :: Int
 	, pbShared :: Shared Browsing
-	, pbIndividuals :: IndexedBy IndividualIndex (Individual Disk)
+	, pbIndividuals :: IndexedBy IndividualIndex (Individual Browsing)
 	} deriving (Eq, Ord, Read, Show)
 
 data instance Shared Browsing = SharedBrowsing
 	{ sbPatterns :: Map (Replication Bool) (Map ConvolutionSize (Set (PatternTemplate Browsing)))
 	, sbStatisticNames :: IndexedBy StatisticParameter Text
+	} deriving (Eq, Ord, Read, Show)
+
+data instance Individual Browsing = IndividualBrowsing
+	{ ib0, ib84 :: SingleVirus Browsing
+	} deriving (Eq, Ord, Read, Show)
+
+data instance SingleVirus Browsing = SingleVirusBrowsing
+	{ svbPosition :: IndexedBy PatternParameter R
+	, svbMove :: IndexedBy PatternParameter R
+	, svbStatistics :: IndexedBy StatisticParameter R
 	} deriving (Eq, Ord, Read, Show)
 
 newtype PatternCell = PatternCell
@@ -330,61 +334,22 @@ instance FromJSON (Shared Disk) where
 
 ---------- Individual Disk ----------
 
-newNormalIndividualDisk :: GenIO -> Shared Browsing -> IO (Individual Disk)
-newNormalIndividualDisk rng sb = newIndividualDisk sb . fmap realToFrac <$> V.replicateM (sbParameterCount sb) (standard rng)
-
-newIndividualDisk :: Shared Browsing -> IndexedBy ParameterIndex R -> Individual Disk
-newIndividualDisk sb ps = IndividualDisk
-	{ id0 = newSingleVirusDisk sb (V.take n ps)
-	, id84 = newSingleVirusDisk sb (V.drop n ps)
-	} where n = length ps `quot` 2
-
-idForget :: Individual Disk -> IndexedBy ParameterIndex R
-idForget id = svdForget (id0 id) <> svdForget (id84 id)
-
-idToTuple :: Individual Disk -> (SingleVirus Disk, SingleVirus Disk)
-idToTuple id = (id0 id, id84 id)
-
-idFromTuple :: (SingleVirus Disk, SingleVirus Disk) -> Individual Disk
-idFromTuple (svd0, svd84) = IndividualDisk { id0 = svd0 , id84 = svd84 }
+instance Repurpose Individual Disk Browsing where
+	type instance RepurposingEnvironment Individual Disk Browsing = Shared Browsing
+	repurpose sb id = IndividualBrowsing
+		{ ib0 = newSingleVirusBrowsing sb ps0
+		, ib84 = newSingleVirusBrowsing sb ps84
+		} where
+		n = length ps `quot` 2
+		ps = idParameters id
+		(ps0, ps84) = V.splitAt n ps
 
 instance ToJSON (Individual Disk) where
-	toEncoding = toEncoding . idToTuple
-	toJSON = toJSON . idToTuple
+	toEncoding = toEncoding . idParameters
+	toJSON = toJSON . idParameters
 
 instance FromJSON (Individual Disk) where
-	parseJSON vs = idFromTuple <$> parseJSON vs
-
----------- SingleVirus Disk ----------
-
-newSingleVirusDisk :: Shared Browsing -> IndexedBy ParameterIndex R -> SingleVirus Disk
-newSingleVirusDisk sb ps
-	| length ps == n = SingleVirusDisk
-		{ svdPosition = V.take nPat ps
-		, svdMove = V.take nPat (V.drop nPat ps)
-		, svdStatistics = V.drop (2*nPat) ps
-		}
-	| otherwise = error $ printf "couldn't parse vector as a SingleVirus Disk; expected length %d but saw length %d" n (length ps)
-	where
-	n = 2*nPat + nStat
-	nPat = sbPatternCount sb
-	nStat = sbStatisticCount sb
-
-svdForget :: SingleVirus Disk -> IndexedBy ParameterIndex R
-svdForget svd = svdPosition svd <> svdMove svd <> svdStatistics svd
-
-svdToTuple :: SingleVirus Disk -> (IndexedBy PatternParameter R, IndexedBy PatternParameter R, IndexedBy StatisticParameter R)
-svdToTuple svd = (svdPosition svd, svdMove svd, svdStatistics svd)
-
-svdFromTuple :: (IndexedBy PatternParameter R, IndexedBy PatternParameter R, IndexedBy StatisticParameter R) -> SingleVirus Disk
-svdFromTuple (sdPos, sdMove, sdStat) = SingleVirusDisk { svdPosition = sdPos, svdMove = sdMove, svdStatistics = sdStat }
-
-instance ToJSON (SingleVirus Disk) where
-	toEncoding = toEncoding . svdToTuple
-	toJSON = toJSON . svdToTuple
-
-instance FromJSON (SingleVirus Disk) where
-	parseJSON vs = svdFromTuple <$> parseJSON vs
+	parseJSON vs = IndividualDisk <$> parseJSON vs
 
 ---------- PatternGroups Browsing ----------
 
@@ -459,7 +424,7 @@ instance Hashable (PatternTemplate Browsing) where
 
 newNormalPopulationBrowsing :: GenIO -> Shared Browsing -> Int -> IO (Population Browsing)
 newNormalPopulationBrowsing rng sb populationSize = do
-	is <- V.replicateM populationSize (newNormalIndividualDisk rng sb)
+	is <- V.replicateM populationSize (newNormalIndividualBrowsing rng sb)
 	pure PopulationBrowsing
 		{ pbGeneration = 0
 		, pbShared = sb
@@ -491,6 +456,38 @@ instance RepurposeIO Shared Browsing Disk where
 		{ sdPatterns = patterns
 		, sdStatisticNames = sbStatisticNames sb
 		}
+
+---------- Individual Browsing ----------
+
+newNormalIndividualBrowsing :: GenIO -> Shared Browsing -> IO (Individual Browsing)
+newNormalIndividualBrowsing rng sb = id
+	. repurpose sb
+	. IndividualDisk
+	. fmap realToFrac
+	<$> V.replicateM (sbParameterCount sb) (standard rng)
+
+instance Repurpose Individual Browsing Disk where
+	repurpose _ ib = IndividualDisk $ mempty
+		<> svbParameters (ib0 ib)
+		<> svbParameters (ib84 ib)
+
+---------- SingleVirus Browsing ----------
+
+newSingleVirusBrowsing :: HasCallStack => Shared Browsing -> IndexedBy ParameterIndex R -> SingleVirus Browsing
+newSingleVirusBrowsing sb ps
+	| length ps == n = SingleVirusBrowsing
+		{ svbPosition = V.take nPat ps
+		, svbMove = V.take nPat (V.drop nPat ps)
+		, svbStatistics = V.drop (2*nPat) ps
+		}
+	| otherwise = error $ printf "couldn't parse vector as a SingleVirus Browsing; expected length %d but saw length %d" n (length ps)
+	where
+	n = 2*nPat + nStat
+	nPat = sbPatternCount sb
+	nStat = sbStatisticCount sb
+
+svbParameters :: SingleVirus Browsing -> IndexedBy ParameterIndex R
+svbParameters svb = svbPosition svb <> svbMove svb <> svbStatistics svb
 
 ---------- PatternCell ----------
 
