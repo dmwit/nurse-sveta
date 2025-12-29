@@ -474,16 +474,16 @@ extern "C" {
 	int64_t patterns_template_conv_height(PatternsTemplate *t) { return t->conv_height(); }
 	int64_t patterns_template_size(PatternsTemplate *t) { return t->size(); }
 
-	bool patterns_template_get_color_pattern(PatternsTemplate *t, int64_t pattern, int64_t color, int64_t x, int64_t y) { return t->get_color_pattern(pattern, color, x, y); }
-	bool patterns_template_get_shape_pattern(PatternsTemplate *t, int64_t pattern, int64_t shape, int64_t x, int64_t y) { return t->get_shape_pattern(pattern, shape, x, y); }
-	void patterns_template_set_color_pattern(PatternsTemplate *t, int64_t pattern, int64_t color, int64_t x, int64_t y, bool v) { t->set_color_pattern(pattern, color, x, y, v); }
-	void patterns_template_set_shape_pattern(PatternsTemplate *t, int64_t pattern, int64_t shape, int64_t x, int64_t y, bool v) { t->set_shape_pattern(pattern, shape, x, y, v); }
+	uint8_t patterns_template_get_color_pattern(PatternsTemplate *t, int64_t pattern, int64_t color, int64_t x, int64_t y) { return t->get_color_pattern(pattern, color, x, y); }
+	uint8_t patterns_template_get_shape_pattern(PatternsTemplate *t, int64_t pattern, int64_t shape, int64_t x, int64_t y) { return t->get_shape_pattern(pattern, shape, x, y); }
+	void patterns_template_set_color_pattern(PatternsTemplate *t, int64_t pattern, int64_t color, int64_t x, int64_t y, uint8_t v) { t->set_color_pattern(pattern, color, x, y, v); }
+	void patterns_template_set_shape_pattern(PatternsTemplate *t, int64_t pattern, int64_t shape, int64_t x, int64_t y, uint8_t v) { t->set_shape_pattern(pattern, shape, x, y, v); }
 
 	PatternsTemplate *patterns_template_decode(char *code, int64_t length) { return new PatternsTemplate(string(code, length)); }
 	char *patterns_template_encode(PatternsTemplate *t, int64_t *o_length);
 	void patterns_template_encoding_delete(char *code) { delete[] code; }
 
-	Patterns *patterns_new(PatternsTemplate *t, bool mirroring, bool coloring) { return new Patterns(*t, mirroring, coloring); }
+	Patterns *patterns_new(PatternsTemplate *t, uint8_t mirroring, uint8_t coloring) { return new Patterns(*t, mirroring, coloring); }
 	void patterns_delete(Patterns *ps) { delete ps; }
 
 	int64_t patterns_size(const Patterns *ps) { return ps->size(); }

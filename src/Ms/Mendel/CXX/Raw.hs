@@ -21,10 +21,10 @@ foreign import ccall unsafe "patterns_template_conv_width" patterns_template_con
 foreign import ccall unsafe "patterns_template_conv_height" patterns_template_conv_height :: Ptr PatternsTemplate -> IO Int64
 foreign import ccall unsafe "patterns_template_size" patterns_template_size :: Ptr PatternsTemplate -> IO Int64
 
-foreign import ccall unsafe "patterns_template_get_color_pattern" patterns_template_get_color_pattern :: Ptr PatternsTemplate -> Int64 -> Int64 -> Int64 -> Int64 -> IO Bool
-foreign import ccall unsafe "patterns_template_get_shape_pattern" patterns_template_get_shape_pattern :: Ptr PatternsTemplate -> Int64 -> Int64 -> Int64 -> Int64 -> IO Bool
-foreign import ccall unsafe "patterns_template_set_color_pattern" patterns_template_set_color_pattern :: Ptr PatternsTemplate -> Int64 -> Int64 -> Int64 -> Int64 -> Bool -> IO ()
-foreign import ccall unsafe "patterns_template_set_shape_pattern" patterns_template_set_shape_pattern :: Ptr PatternsTemplate -> Int64 -> Int64 -> Int64 -> Int64 -> Bool -> IO ()
+foreign import ccall unsafe "patterns_template_get_color_pattern" patterns_template_get_color_pattern :: Ptr PatternsTemplate -> Int64 -> Int64 -> Int64 -> Int64 -> IO Word8
+foreign import ccall unsafe "patterns_template_get_shape_pattern" patterns_template_get_shape_pattern :: Ptr PatternsTemplate -> Int64 -> Int64 -> Int64 -> Int64 -> IO Word8
+foreign import ccall unsafe "patterns_template_set_color_pattern" patterns_template_set_color_pattern :: Ptr PatternsTemplate -> Int64 -> Int64 -> Int64 -> Int64 -> Word8 -> IO ()
+foreign import ccall unsafe "patterns_template_set_shape_pattern" patterns_template_set_shape_pattern :: Ptr PatternsTemplate -> Int64 -> Int64 -> Int64 -> Int64 -> Word8 -> IO ()
 
 foreign import ccall "patterns_template_decode" patterns_template_decode :: Ptr CChar -> Int64 -> IO (Ptr PatternsTemplate)
 foreign import ccall "patterns_template_encode" patterns_template_encode :: Ptr PatternsTemplate -> Ptr Int64 -> IO (Ptr CChar)
@@ -35,7 +35,7 @@ foreign import ccall "patterns_template_dump" patterns_template_dump :: Ptr Patt
 foreign import ccall "patterns_template_sketch" patterns_template_sketch :: Ptr PatternsTemplate -> IO ()
 
 newtype Patterns = Patterns (ForeignPtr Patterns)
-foreign import ccall "patterns_new" patterns_new :: Ptr PatternsTemplate -> Bool -> Bool -> IO (Ptr Patterns)
+foreign import ccall "patterns_new" patterns_new :: Ptr PatternsTemplate -> Word8 -> Word8 -> IO (Ptr Patterns)
 foreign import ccall unsafe "&patterns_delete" patterns_delete_ptr :: FinalizerPtr Patterns
 foreign import ccall unsafe "patterns_delete" patterns_delete :: Ptr Patterns -> IO ()
 

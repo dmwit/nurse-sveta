@@ -78,16 +78,16 @@ ptSize :: PatternsTemplate -> Int64
 ptSize (PatternsTemplate pt) = unsafePerformIO (withForeignPtr pt patterns_template_size)
 
 ptGetColor :: PatternsTemplate -> Int64 -> WithSentinels Color -> Position -> IO Bool
-ptGetColor (PatternsTemplate pt) n c (Position x y) = withForeignPtr pt \ptRaw -> patterns_template_get_color_pattern ptRaw n (colorSentinelIndex c) (fromIntegral x) (fromIntegral y)
+ptGetColor (PatternsTemplate pt) n c (Position x y) = toBool <$> withForeignPtr pt \ptRaw -> patterns_template_get_color_pattern ptRaw n (colorSentinelIndex c) (fromIntegral x) (fromIntegral y)
 
 ptGetShape :: PatternsTemplate -> Int64 -> WithSentinels Shape -> Position -> IO Bool
-ptGetShape (PatternsTemplate pt) n s (Position x y) = withForeignPtr pt \ptRaw -> patterns_template_get_shape_pattern ptRaw n (shapeSentinelIndex s) (fromIntegral x) (fromIntegral y)
+ptGetShape (PatternsTemplate pt) n s (Position x y) = toBool <$> withForeignPtr pt \ptRaw -> patterns_template_get_shape_pattern ptRaw n (shapeSentinelIndex s) (fromIntegral x) (fromIntegral y)
 
 ptSetColor :: PatternsTemplate -> Int64 -> WithSentinels Color -> Position -> Bool -> IO ()
-ptSetColor (PatternsTemplate pt) n c (Position x y) v = withForeignPtr pt \ptRaw -> patterns_template_set_color_pattern ptRaw n (colorSentinelIndex c) (fromIntegral x) (fromIntegral y) v
+ptSetColor (PatternsTemplate pt) n c (Position x y) v = withForeignPtr pt \ptRaw -> patterns_template_set_color_pattern ptRaw n (colorSentinelIndex c) (fromIntegral x) (fromIntegral y) (fromBool v)
 
 ptSetShape :: PatternsTemplate -> Int64 -> WithSentinels Shape -> Position -> Bool -> IO ()
-ptSetShape (PatternsTemplate pt) n s (Position x y) v = withForeignPtr pt \ptRaw -> patterns_template_set_shape_pattern ptRaw n (shapeSentinelIndex s) (fromIntegral x) (fromIntegral y) v
+ptSetShape (PatternsTemplate pt) n s (Position x y) v = withForeignPtr pt \ptRaw -> patterns_template_set_shape_pattern ptRaw n (shapeSentinelIndex s) (fromIntegral x) (fromIntegral y) (fromBool v)
 
 ptDecode :: ByteString -> IO PatternsTemplate
 ptDecode bs = BS.useAsCStringLen bs \(bsRaw, len) -> newWrapperIO PatternsTemplate patterns_template_delete_ptr =<< patterns_template_decode bsRaw (fromIntegral len)
@@ -109,7 +109,7 @@ ptSketch (PatternsTemplate pt) = withForeignPtr pt patterns_template_sketch
 ---------- Patterns ----------
 
 newPatterns :: PatternsTemplate -> Bool -> Bool -> IO Patterns
-newPatterns (PatternsTemplate pt) mirroring coloring = newWrapperIO Patterns patterns_delete_ptr =<< withForeignPtr pt \ptRaw -> patterns_new ptRaw mirroring coloring
+newPatterns (PatternsTemplate pt) mirroring coloring = newWrapperIO Patterns patterns_delete_ptr =<< withForeignPtr pt \ptRaw -> patterns_new ptRaw (fromBool mirroring) (fromBool coloring)
 
 pSize, pWidth, pHeight, pMirroringSize, pColoringSize, pReplicationSize :: Patterns -> Int64
 [pSize, pWidth, pHeight, pMirroringSize, pColoringSize, pReplicationSize] = map pStatistic
