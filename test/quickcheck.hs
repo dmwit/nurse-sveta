@@ -81,6 +81,7 @@ instance Arbitrary (PatternTemplate Browsing) where
 		++ [fmap (V.drop halfw) cells | w - halfw < w]
 		++ [delete i cells | i <- [0..h-1]]
 		++ [fmap (delete i) cells | i <- [0..w-1]]
+		++ traverse (traverse shrink) cells
 		where
 		h = V.length cells
 		w = case h of
@@ -101,6 +102,10 @@ instance Arbitrary a => Arbitrary (WithSentinels a) where
 			0 -> pure EmptySentinel
 			1 -> pure OutOfBoundsSentinel
 			_ -> NonSentinel <$> arbitrary
+	shrink = \case
+		EmptySentinel -> []
+		OutOfBoundsSentinel -> [EmptySentinel]
+		NonSentinel a -> [EmptySentinel, OutOfBoundsSentinel] ++ map NonSentinel (shrink a)
 
 instance Arbitrary ConvolutionSize where
 	arbitrary = liftA2 (\w h -> ConvolutionSize
