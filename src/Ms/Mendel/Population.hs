@@ -1,5 +1,8 @@
 {-# Language DataKinds #-}
-module Ms.Mendel.Population where
+module Ms.Mendel.Population
+	( module Ms.Mendel.Population
+	, WithSentinels(..)
+	) where
 
 import Data.Aeson.Encoding (list, shortText, string)
 import Data.ByteString (ByteString)
@@ -299,8 +302,9 @@ sdPatternsName, sdStatisticNamesName :: IsString s => s
 sdPatternsName = "patterns"
 sdStatisticNamesName = "statistic-names"
 
-instance RepurposeIO Shared Disk Browsing where
-	repurposeIO _ sd = do
+instance Repurpose Shared Disk Browsing where
+	-- safety: we briefly construct a fresh mutable value via ptFromText, but we immediately read and discard it via ptToSet
+	repurpose _ sd = unsafePerformIO do
 		patterns <- traverse (traverse (ptFromText >=> ptToSet)) (sdPatterns sd)
 		let sizes = fmap (fmap (ptbConvolutionSize . S.findMin)) patterns
 		unless (all strictlyAscending sizes) . fail $
@@ -427,9 +431,10 @@ sbFromPatternGroupsB pgb = SharedBrowsing
 sbFromPatternGroupsA :: PatternGroups Authoring -> Shared Browsing
 sbFromPatternGroupsA = sbFromPatternGroupsB . repurpose_
 
-instance RepurposeIO Shared Browsing Disk where
-	repurposeIO _ sb = traverse (ptsFromMap >=> ptsToText) (sbPatterns sb) <&> \patterns -> SharedDisk
-		{ sdPatterns = patterns
+instance Repurpose Shared Browsing Disk where
+	repurpose _ sb = SharedDisk
+		-- safety: we briefly create a mutable thing with ptsFromMap, but we immediately do a complete read of it into a pure value with ptsToText and throw it away
+		{ sdPatterns = unsafePerformIO $ traverse (ptsFromMap >=> ptsToText) (sbPatterns sb)
 		, sdStatisticNames = sbStatisticNames sb
 		}
 

@@ -38,6 +38,7 @@ module Nurse.Sveta.Util
 	, module System.FilePath
 	, module System.IO
 	, module System.IO.Error
+	, module System.IO.Unsafe
 	, module System.Mem
 	, module System.Process
 	, module System.Random.MWC
@@ -93,12 +94,13 @@ import Dr.Mario.Pathfinding hiding (MidStep(..), rotate) -- MidStep(Down) confli
 import Dr.Mario.Util
 import GHC.Stack
 import Numeric
-import System.IO
-import System.IO.Error
 import System.Directory
 import System.Environment
 import System.Exit
 import System.FilePath
+import System.IO
+import System.IO.Error
+import System.IO.Unsafe
 import System.Mem
 import System.Process
 import System.Random.MWC
@@ -136,6 +138,9 @@ maxOn f a a' = if f a < f a' then a' else a
 
 minOn :: Ord b => (a -> b) -> a -> a -> a
 minOn f a a' = if f a > f a' then a' else a
+
+hay :: Foldable f => f a -> Bool
+hay = not . null
 
 -- | On my machine, torch and gtk fight over the GPU. This environment variable
 -- setting instructs gtk not to do hardware acceleration -- letting torch win

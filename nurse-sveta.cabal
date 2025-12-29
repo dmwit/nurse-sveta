@@ -75,6 +75,8 @@ common shared
                         , CPP
                         -- introduces too much extra stuff at the type/kind level
                         , DataKinds
+                        -- increases compile times, I think, and can make recompilation checking much more pessimistic
+                        , TemplateHaskell
     ghc-options:        -Wno-tabs -Wno-partial-type-signatures
     if flag(debug)
         ghc-options:    -g
@@ -86,6 +88,11 @@ common executable
     hs-source-dirs:     bin
     build-depends:      nurse-sveta
     ghc-options:        -threaded -rtsopts
+
+common test
+    import:             shared
+    hs-source-dirs:     test
+    build-depends:      nurse-sveta
 
 library
     import:             shared
@@ -185,3 +192,9 @@ executable ms-mendel-pattern-browser
 executable ms-mendel-dasyuridia
     import:             executable
     main-is:            mm-dasyuridia.hs
+
+test-suite ms-mendel-quickcheck
+    import:             test
+    main-is:            quickcheck.hs
+    build-depends:      QuickCheck ^>=2.15
+    type:               exitcode-stdio-1.0
