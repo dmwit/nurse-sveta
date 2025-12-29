@@ -473,6 +473,15 @@ svbParameters svb = svbPosition svb <> svbMove svb <> svbStatistics svb
 
 ---------- PatternCell ----------
 
+newPatternCell :: Set (WithSentinels (Either Color Shape)) -> PatternCell
+newPatternCell = PatternCell . S.map \case
+	NonSentinel (Right North) -> NonSentinel (Right Disconnected)
+	NonSentinel (Right South) -> NonSentinel (Right Disconnected)
+	other -> other
+
+pcNormalize :: PatternCell -> PatternCell
+pcNormalize = newPatternCell . pcAllowed
+
 instance FromJSON PatternCell where
 	parseJSON json = do
 		t <- parseJSON json

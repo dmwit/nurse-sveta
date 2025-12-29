@@ -92,7 +92,7 @@ instance Arbitrary (PatternTemplate Browsing) where
 		delete i v = V.take i v <> V.drop (i+1) v
 
 instance Arbitrary PatternCell where
-	arbitrary = PatternCell <$> arbitrary
+	arbitrary = newPatternCell <$> arbitrary
 	shrink = shrinkMap PatternCell pcAllowed
 
 instance Arbitrary a => Arbitrary (WithSentinels a) where
