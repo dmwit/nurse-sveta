@@ -294,10 +294,10 @@ PatternsTemplate::PatternsTemplate(const string &ps) {
 	int bit = 0, byte = 0;
 
 	// metadata
-	const int64_t n = byte < ps.size() ? ps[byte] : 0;
+	const int64_t n = byte < ps.size() ? (uint8_t)ps[byte] : 0;
 	++byte;
 	const int64_t h = 1 + (byte < ps.size() ? (ps[byte] & 0xf) : 0),
-	              w = 1 + (byte < ps.size() ? (ps[byte] >> 4) : 0);
+	              w = 1 + (byte < ps.size() ? ((uint8_t)ps[byte] >> 4) : 0);
 	++byte;
 	reset_patterns(w, h, n);
 
