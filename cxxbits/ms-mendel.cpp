@@ -247,8 +247,8 @@ string PatternsTemplate::encode() const {
 
 	// metadata
 	assert(0 <= n && n < 256);
-	assert(1 <= h && h < 16);
-	assert(1 <= w && w < 16);
+	assert(0 < h && h <= 16);
+	assert(0 < w && w <= 16);
 	result[byte++] = n;
 	result[byte  ] |= (h-1);
 	result[byte++] |= (w-1) << 4;
