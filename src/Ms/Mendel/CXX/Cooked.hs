@@ -332,7 +332,7 @@ shapeSentinelIndex = \case
 distinguisher0, distinguisher1, distinguisher2 :: Int
 distinguisher0 = fromIntegral $ (maxBound :: Word) `quot` 7
 distinguisher1 = distinguisher0 `shiftL` 1
-distinguisher2 = distinguisher1 `shiftL` 2
+distinguisher2 = distinguisher1 `shiftL` 1
 
 -- TODO: everything below here can get deleted eventually
 
