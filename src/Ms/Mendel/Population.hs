@@ -393,9 +393,9 @@ toRectangle pad xss = (\row -> row <> V.replicate (w - length row) pad) <$> xss 
 	w = V.maximum (V.singleton 0 <> V.map V.length xss)
 
 ptbConvolutionSize :: PatternTemplate Browsing -> ConvolutionSize
-ptbConvolutionSize ptc = ConvolutionSize
-	{ csWidth = V.head (V.map V.length (ptbCells ptc) <> V.singleton 0)
-	, csHeight = V.length (ptbCells ptc)
+ptbConvolutionSize ptb = ConvolutionSize
+	{ csWidth = maybe 0 V.length $ ptbCells ptb V.!? 0
+	, csHeight = V.length (ptbCells ptb)
 	}
 
 instance Hashable (PatternTemplate Browsing) where
