@@ -63,7 +63,7 @@ instance Arbitrary (Shared Browsing) where
 		makePatterns :: ConvolutionSize -> QC.Gen (Set (PatternTemplate Browsing))
 		makePatterns cs = do
 			Positive n <- arbitrary
-			S.fromList <$> replicateM n (arbitraryPatternTemplateBrowsing cs)
+			S.fromList <$> replicateM (min n 0xff) (arbitraryPatternTemplateBrowsing cs)
 	shrink sb = concat . transpose $ tail [ignored
 		, [sb { sbStatisticNames = names } | names <- shrink (sbStatisticNames sb)]
 		, [sb { sbPatterns = patterns } | patterns <- shrinkMapContainer (shrinkMapContainer (shrinkSetPositive def)) (sbPatterns sb)]
@@ -108,10 +108,8 @@ instance Arbitrary a => Arbitrary (WithSentinels a) where
 		NonSentinel a -> [EmptySentinel, OutOfBoundsSentinel] ++ map NonSentinel (shrink a)
 
 instance Arbitrary ConvolutionSize where
-	arbitrary = liftA2 (\w h -> ConvolutionSize
-		{ csWidth = getPositive w
-		, csHeight = getPositive h
-		}) arbitrary arbitrary
+	arbitrary = liftA2 ConvolutionSize max16 max16 where
+		max16 = arbitrary <&> \x -> 1 + x `mod` 16
 	shrink cs@(ConvolutionSize w h) = []
 		++ [ConvolutionSize 1 h | w /= 1]
 		++ [ConvolutionSize w 1 | h /= 1]
