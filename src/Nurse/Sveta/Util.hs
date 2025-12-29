@@ -9,6 +9,7 @@ module Nurse.Sveta.Util
 	, module Control.Monad.ST
 	, module Data.Aeson
 	, module Data.Aeson.Types
+	, module Data.Bifunctor
 	, module Data.Bits
 	, module Data.Char
 	, module Data.Coerce
@@ -61,6 +62,7 @@ import Control.Monad.State
 import Data.Aeson
 import Data.Aeson.KeyMap (KeyMap)
 import Data.Aeson.Types
+import Data.Bifunctor
 import Data.Bits hiding (rotate) -- conflicts with Dr.Mario.Pathfinding
 import Data.Char
 import Data.Coerce

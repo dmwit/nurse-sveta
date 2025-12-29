@@ -4,6 +4,7 @@ module Ms.Mendel.Population
 	, WithSentinels(..)
 	) where
 
+import Control.Arrow
 import Data.Aeson.Encoding (list, shortText, string)
 import Data.ByteString (ByteString)
 import Ms.Mendel.CXX.Cooked
@@ -531,7 +532,7 @@ instance Hashable PatternCell where
 ---------- PatternMetadata ----------
 
 pmToTuple :: PatternMetadata -> (ConvolutionSize, Replication Bool)
-pmToTuple pm = (pmConvolutionSize pm, pmReplication pm)
+pmToTuple = pmConvolutionSize &&& pmReplication
 
 pmFromTuple :: (ConvolutionSize, Replication Bool) -> PatternMetadata
 pmFromTuple (cs, r) = PatternMetadata
@@ -566,7 +567,7 @@ instance Hashable PatternMetadata where
 ---------- ConvolutionSize ----------
 
 csToTuple :: ConvolutionSize -> (Int, Int)
-csToTuple cs = (csWidth cs, csHeight cs)
+csToTuple = csWidth &&& csHeight
 
 csFromTuple :: (Int, Int) -> ConvolutionSize
 csFromTuple (w, h) = ConvolutionSize { csWidth = w, csHeight = h }
@@ -599,7 +600,7 @@ instance Hashable ConvolutionSize where
 ---------- Replication ----------
 
 rToTuple :: Replication a -> (a, a)
-rToTuple r = (rMirroring r, rColoring r)
+rToTuple = rMirroring &&& rColoring
 
 rFromTuple :: (a, a) -> Replication a
 rFromTuple (m, c) = Replication { rMirroring = m, rColoring = c }
@@ -743,7 +744,7 @@ ptToSet :: PatternsTemplate -> IO (Set (PatternTemplate Browsing))
 ptToSet pt = do
 	v <- ptToVector pt
 	unless (strictlyAscending v) (fail $ "malformed PatternsTemplate had templates in wrong order: " ++ show v)
-	pure . S.fromList . V.toList $ v
+	pure . S.fromAscList . V.toList $ v
 
 ptSetBoth :: PatternsTemplate -> Int64 -> (forall a. WithSentinels a) -> Position -> Bool -> IO ()
 ptSetBoth pt i ws pos v = do
