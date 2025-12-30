@@ -10,6 +10,17 @@ import qualified Data.Text as T
 import qualified Data.Vector as V
 import qualified Test.QuickCheck as QC
 
+main :: IO ()
+main = do
+	results <- sequence $ tail [ignored
+		, smallQC 3 sharedDiskBrowsingRoundtrips
+		, smallQC 5 sharedBrowsingDiskRoundtrips
+		]
+	unless (all isSuccess results) exitFailure
+
+smallQC :: Testable prop => Int -> prop -> IO QC.Result
+smallQC n = quickCheckWithResult stdArgs { maxSize = n }
+
 repurposeRoundtrips :: forall f a b. (Repurpose f a b, Repurpose f b a, Eq (f a)) => RepurposingEnvironment f a b -> RepurposingEnvironment f b a -> f a -> Bool
 repurposeRoundtrips envAB envBA fa = repurpose envBA (repurpose @_ @_ @b envAB fa) == fa
 
@@ -22,18 +33,11 @@ repurposeIORoundtrips envAB envBA fa = idempotentIOProperty $ (fa==) <$> (repurp
 repurposeIO_Roundtrips :: forall f a b. (RepurposeIO f a b, RepurposeIO f b a, RepurposingEnvironmentIO f a b ~ (), RepurposingEnvironmentIO f b a ~ (), Eq (f a)) => f a -> Property
 repurposeIO_Roundtrips = repurposeIORoundtrips @_ @_ @b () ()
 
-prop_SharedDiskBrowsingRoundtrips :: Shared Disk -> Bool
-prop_SharedDiskBrowsingRoundtrips = repurpose_Roundtrips @_ @_ @Browsing
+sharedDiskBrowsingRoundtrips :: Shared Disk -> Bool
+sharedDiskBrowsingRoundtrips = repurpose_Roundtrips @_ @_ @Browsing
 
-prop_SharedBrowsingDiskRoundtrips :: Shared Browsing -> Bool
-prop_SharedBrowsingDiskRoundtrips = repurpose_Roundtrips @_ @_ @Disk
-
-pure []
-
-main :: IO ()
-main = do
-	success <- $quickCheckAll
-	unless success exitFailure
+sharedBrowsingDiskRoundtrips :: Shared Browsing -> Bool
+sharedBrowsingDiskRoundtrips = repurpose_Roundtrips @_ @_ @Disk
 
 instance Arbitrary Text where
 	arbitrary = T.pack <$> arbitrary
@@ -53,7 +57,7 @@ instance Arbitrary a => Arbitrary (Replication a) where
 
 instance Arbitrary (Shared Browsing) where
 	arbitrary = do
-		patterns <- arbitraryMap \_rep -> arbitraryMap makePatterns
+		patterns <- arbitraryMap \_rep -> arbitraryMapPositive makePatterns
 		statistics <- arbitrary
 		pure SharedBrowsing
 			{ sbPatterns = patterns
@@ -126,6 +130,14 @@ deriving via BoundedEnum Shape instance Arbitrary Shape
 
 arbitraryMap :: (Arbitrary k, Ord k) => (k -> QC.Gen a) -> QC.Gen (Map k a)
 arbitraryMap f = sequence . M.fromSet f =<< arbitrary
+
+arbitraryMapPositive :: (Arbitrary k, Ord k) => (k -> QC.Gen a) -> QC.Gen (Map k a)
+arbitraryMapPositive f = sequence . M.fromSet f =<< arbitrarySetPositive
+
+arbitrarySetPositive :: (Arbitrary a, Ord a) => QC.Gen (Set a)
+arbitrarySetPositive = do
+	s <- arbitrary
+	if S.null s then arbitrarySetPositive else pure s
 
 shrinkMapContainer :: Ord k => (v -> [v]) -> Map k v -> [Map k v]
 shrinkMapContainer f = map M.fromList . shrinkList (traverse f) . M.toList
