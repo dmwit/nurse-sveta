@@ -303,6 +303,10 @@ sdPatternsName, sdStatisticNamesName :: IsString s => s
 sdPatternsName = "patterns"
 sdStatisticNamesName = "statistic-names"
 
+-- could be optimized a bit by decoding the Texts and then just querying their size rather than reading in all the values in the patterns
+sdParameterCount :: Shared Disk -> Int
+sdParameterCount = sbParameterCount . repurpose_
+
 instance Repurpose Shared Disk Browsing where
 	-- safety: we briefly construct a fresh mutable value via ptFromText, but we immediately read and discard it via ptToSet
 	repurpose _ sd = unsafePerformIO do

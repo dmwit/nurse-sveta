@@ -15,8 +15,18 @@ main = do
 	results <- sequence $ tail [ignored
 		, smallQC 3 sharedDiskBrowsingRoundtrips
 		, smallQC 5 sharedBrowsingDiskRoundtrips
+		, smallQC 2 populationDiskJSON
 		]
 	unless (all isSuccess results) exitFailure
+
+sharedDiskBrowsingRoundtrips :: Shared Disk -> Bool
+sharedDiskBrowsingRoundtrips = repurpose_Roundtrips @_ @_ @Browsing
+
+sharedBrowsingDiskRoundtrips :: Shared Browsing -> Bool
+sharedBrowsingDiskRoundtrips = repurpose_Roundtrips @_ @_ @Disk
+
+populationDiskJSON :: Population Disk -> Property
+populationDiskJSON = jsonSensible
 
 smallQC :: Testable prop => Int -> prop -> IO QC.Result
 smallQC n = quickCheckWithResult stdArgs { maxSize = n }
@@ -33,11 +43,14 @@ repurposeIORoundtrips envAB envBA fa = idempotentIOProperty $ (fa==) <$> (repurp
 repurposeIO_Roundtrips :: forall f a b. (RepurposeIO f a b, RepurposeIO f b a, RepurposingEnvironmentIO f a b ~ (), RepurposingEnvironmentIO f b a ~ (), Eq (f a)) => f a -> Property
 repurposeIO_Roundtrips = repurposeIORoundtrips @_ @_ @b () ()
 
-sharedDiskBrowsingRoundtrips :: Shared Disk -> Bool
-sharedDiskBrowsingRoundtrips = repurpose_Roundtrips @_ @_ @Browsing
+jsonRoundtrips :: (FromJSON a, ToJSON a, Eq a, Show a) => a -> Property
+jsonRoundtrips a = decode (encode a) === Just a
 
-sharedBrowsingDiskRoundtrips :: Shared Browsing -> Bool
-sharedBrowsingDiskRoundtrips = repurpose_Roundtrips @_ @_ @Disk
+jsonEncodingMatches :: (ToJSON a, Show a) => a -> Property
+jsonEncodingMatches a = toEncoding a === toEncoding (toJSON a)
+
+jsonSensible :: (FromJSON a, ToJSON a, Eq a, Show a) => a -> Property
+jsonSensible a = jsonRoundtrips a .&&. jsonEncodingMatches a
 
 instance Arbitrary Text where
 	arbitrary = T.pack <$> arbitrary
@@ -94,6 +107,23 @@ instance Arbitrary (PatternTemplate Browsing) where
 		halfh = h `quot` 2
 		halfw = w `quot` 2
 		delete i v = V.take i v <> V.drop (i+1) v
+
+instance Arbitrary (Population Disk) where
+	arbitrary = do
+		generation <- arbitrary
+		shared <- arbitrary
+		individuals <- arbitraryIndividualDisks shared
+		pure PopulationDisk
+			{ pdGeneration = generation
+			, pdShared = shared
+			, pdIndividuals = individuals
+			}
+	-- TODO: shrink while maintaining invariants, seems annoying
+
+arbitraryIndividualDisks :: Shared Disk -> QC.Gen (IndexedBy IndividualIndex (Individual Disk))
+arbitraryIndividualDisks sd = do
+	NonNegative populationSize <- arbitrary
+	V.replicateM populationSize (IndividualDisk <$> V.replicateM (sdParameterCount sd) arbitrary)
 
 instance Arbitrary PatternCell where
 	arbitrary = newPatternCell <$> arbitrary
