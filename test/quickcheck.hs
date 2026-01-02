@@ -3,6 +3,7 @@
 
 import Data.Aeson.Encoding
 import Data.Aeson.Key
+import Data.ByteString (ByteString)
 import Ms.Mendel
 import Test.QuickCheck
 
@@ -19,27 +20,23 @@ main = do
 	results <- sequence $ tail [ignored
 		, qc "Individual Disk <-> JSON" (diskSensible @Individual)
 		, qc "PatternCell <-> JSON" (jsonSensible @PatternCell)
-		-- TODO: instance Arbitrary PatternMetadata
-		-- , qc "PatternMetadata <-> JSON" (jsonSensible @PatternMetadata)
+		, qc "PatternMetadata <-> JSON" (jsonSensible @PatternMetadata)
 		, qc "ConvolutionSize <-> JSON" (jsonSensible @ConvolutionSize)
 		, qc "Replication <-> JSON" (jsonSensible @(Replication Int))
-		-- TODO: instance Arbitrary PatternMetadata
-		-- , qc "PatternMetadata <-> JSONKey" (jsonKeySensible @PatternMetadata)
+		, qc "PatternMetadata <-> JSONKey" (jsonKeySensible @PatternMetadata)
 		, qc "ConvolutionSize <-> JSONKey" (jsonKeySensible @ConvolutionSize)
 		, qc "Replication <-> JSONKey" (jsonKeySensible @(Replication Bool))
-		, qc "toRectangle" \x xss_ -> let xss = toRectangle (x :: Int) xss_ in all (\xs -> length xs == length (V.head xss)) xss
+		, qc "toRectangle @Int" \x xss_ -> let xss = toRectangle (x :: Int) xss_ in all (\xs -> length xs == length (V.head xss)) xss
 		, qc "newPatternCell/pcNormalize" \s -> pcNormalize (PatternCell s) === newPatternCell s
 		, qc "pcNormalize/pcAllDisjuncts" \c -> all (`elem` pcAllDisjuncts) (pcAllowed (pcNormalize c))
-		-- TODO: instance Arbitrary BS.ByteString
-		-- , qc "printable ByteString <-> Text" \bs -> decodePrintable (encodePrintable bs) === BS.dropWhileEnd (0==) bs
-		-- TODO: this has to be restricted to Texts that only have printable characters, and that don't represent something with a trailing 0
-		-- , qc "printable Text <-> ByteString" \t -> encodePrintable (decodePrintable t) === t
+		, qc "ByteString <-> printable Text" \bs -> decodePrintable (encodePrintable bs) === BS.dropWhileEnd (0==) bs
+		, qc "printable Text <-> ByteString" \(SingleBytes t) -> encodePrintable (decodePrintable t) === t
 		, qc "strictlyAscending/sort" $ strictlyAscending . V.fromList . map head . group . sort . id @[Int]
-		-- TODO: can we get a "dupes cause False" test for strictlyAscending?
-		-- TODO: can we get a "something descends causes False" test for strictlyAscending?
+		, qc "strictlyAscending/replicate" $ ruinsStrictAscension @Int (replicate 2)
+		, qc "strictlyAscending/minus" $ ruinsStrictAscension @Int (\n -> [n, n-1])
 		-- TODO: ptToText >=> ptFromText === pure
-		-- TODO: instance Arbitrary PatternMetadata
-		-- , qc "PatternMetadata <-> (,)" \pm -> pmFromTuple (pmToTuple pm) === pm
+		-- you may like arbitraryPatternsTemplate if you decide to complete this TODO
+		, qc "PatternMetadata <-> (,)" \pm -> pmFromTuple (pmToTuple pm) === pm
 		, qc "ConvolutionSize <-> (,)" \cs -> csFromTuple (csToTuple cs) === cs
 		, qc "Replication <-> (,)" \r -> rFromTuple (rToTuple r) == (r :: Replication Int)
 		, qc "(,) <-> PatternMetadata" \t -> pmToTuple (pmFromTuple t) === t
@@ -108,16 +105,48 @@ jsonKeyEncodingMatches = case toJSONKey of
 	ToJSONKeyValue toValue toEncoding -> \a -> decode (encodingToLazyByteString (toEncoding a)) === Just (toValue a)
 	ToJSONKeyText toKey toEncoding -> \a -> text (toText (toKey a)) === toEncoding a
 
-jsonKeySensible :: (FromJSONKey a, ToJSONKey a, Eq a, Show a) => a -> Property
-jsonKeySensible a = jsonKeyRoundtrips a .&&. jsonKeyEncodingMatches a
+jsonKeySensible :: forall a. (Arbitrary a, FromJSONKey a, ToJSONKey a, Eq a, Show a) => Property
+jsonKeySensible = jsonKeyRoundtrips @a .&&. jsonKeyEncodingMatches @a
+
+ruinsStrictAscension :: Ord a => (a -> [a]) -> Int -> [a] -> Property
+ruinsStrictAscension ruin n xs = hay xs ==> prop xs .&&. (prop . map head . group . sort) xs where
+	tweak xs' = b ++ ruin h ++ e where (b, h:e) = splitAt (n `mod` length xs') xs'
+	prop = not . strictlyAscending . V.fromList . tweak
 
 -- TODO: test that lerp and repurpose commute
 lerpBoundaries :: (Lerp a, Eq a, Show a) => a -> a -> Property
 lerpBoundaries a b = lerp 0 a b === a .&&. lerp 1 a b === b
 
+instance Arbitrary ByteString where
+	arbitrary = BS.pack <$> arbitrary
+	shrink = shrinkMap BS.pack BS.unpack
+
 instance Arbitrary Text where
 	arbitrary = T.pack <$> arbitrary
 	shrink = shrinkMap T.pack T.unpack
+
+newtype SingleBytes = SingleBytes Text deriving (Eq, Ord, Read, Show)
+instance Arbitrary SingleBytes where
+	arbitrary = arbitrary <&> id
+		. SingleBytes
+		. T.pack
+		. map toEnum
+		. reverse
+		. dropWhile (32==)
+		. filter (`S.member` singleBytes)
+		where
+		singleBytes = S.fromList [32..126] S.\\ S.fromList [34, 92]
+	shrink (SingleBytes t) = id
+		. map (SingleBytes . T.pack . map toEnum)
+		. shrinkList shrinkSingleByte
+		. map fromEnum
+		. T.unpack
+		$ t
+		where
+		shrinkSingleByte 32 = []
+		shrinkSingleByte 35 = [32, 33]
+		shrinkSingleByte 93 = [32, 91]
+		shrinkSingleByte other = [32, other - 1]
 
 instance Arbitrary a => Arbitrary (Vector a) where
 	arbitrary = V.fromList <$> arbitrary
@@ -133,21 +162,35 @@ instance Arbitrary a => Arbitrary (Replication a) where
 
 instance Arbitrary (Shared Browsing) where
 	arbitrary = do
-		patterns <- arbitraryMap \_rep -> arbitraryMapPositive makePatterns
+		patterns <- arbitraryMap \_rep -> arbitraryMapPositive arbitraryPatternTemplateBrowsings
 		statistics <- arbitrary
 		pure SharedBrowsing
 			{ sbPatterns = patterns
 			, sbStatisticNames = statistics
 			}
-		where
-		makePatterns :: ConvolutionSize -> QC.Gen (Set (PatternTemplate Browsing))
-		makePatterns cs = do
-			Positive n <- arbitrary
-			S.fromList <$> replicateM (min n 0xff) (arbitraryPatternTemplateBrowsing cs)
 	shrink sb = concat . transpose $ tail [ignored
 		, [sb { sbStatisticNames = names } | names <- shrink (sbStatisticNames sb)]
 		, [sb { sbPatterns = patterns } | patterns <- shrinkMapContainer (shrinkMapContainer (shrinkSetPositive def)) (sbPatterns sb)]
 		]
+
+-- This wildcard stands for PatternsTemplate, which isn't in scope. There's at
+-- least three solutions: import PatternsTemplate, change the type to one of
+-- our data families with a PatternsTemplate field, or delete this method. I
+-- don't want to delete because it's likely to be useful for a test that
+-- ptToText and ptFromText roundtrip, but since it's not being used for that
+-- yet, it's not really possible to decide between importing and retyping.
+arbitraryPatternsTemplate :: QC.Gen (IO _)
+arbitraryPatternsTemplate = do
+	size <- getSize
+	cs <- arbitrary
+	-- There's a size limit of 0xff in the C++ code.
+	ptFromSet cs <$> resize (min size 0xff) (arbitraryPatternTemplateBrowsings cs)
+
+arbitraryPatternTemplateBrowsings :: ConvolutionSize -> QC.Gen (Set (PatternTemplate Browsing))
+arbitraryPatternTemplateBrowsings cs = do
+	size <- max 1 <$> getSize
+	Positive n <- arbitrary
+	S.fromList <$> replicateM (min n size) (arbitraryPatternTemplateBrowsing cs)
 
 arbitraryPatternTemplateBrowsing :: ConvolutionSize -> QC.Gen (PatternTemplate Browsing)
 arbitraryPatternTemplateBrowsing cs = PatternTemplateBrowsing <$> V.replicateM (csHeight cs) (V.replicateM (csWidth cs) arbitrary)
@@ -224,6 +267,10 @@ instance Arbitrary a => Arbitrary (WithSentinels a) where
 		EmptySentinel -> []
 		OutOfBoundsSentinel -> [EmptySentinel]
 		NonSentinel a -> [EmptySentinel, OutOfBoundsSentinel] ++ map NonSentinel (shrink a)
+
+instance Arbitrary PatternMetadata where
+	arbitrary = liftA2 PatternMetadata arbitrary arbitrary
+	shrink = shrinkMap pmFromTuple pmToTuple
 
 instance Arbitrary ConvolutionSize where
 	arbitrary = liftA2 ConvolutionSize max16 max16 where
