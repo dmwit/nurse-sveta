@@ -1,9 +1,13 @@
 {-# Language AllowAmbiguousTypes #-}
 {-# Language TemplateHaskell #-}
 
+import Data.Aeson.Encoding
+import Data.Aeson.Key
 import Ms.Mendel
 import Test.QuickCheck
 
+import qualified Data.Aeson as A
+import qualified Data.ByteString as BS
 import qualified Data.Map.Strict as M
 import qualified Data.Set as S
 import qualified Data.Text as T
@@ -13,44 +17,109 @@ import qualified Test.QuickCheck as QC
 main :: IO ()
 main = do
 	results <- sequence $ tail [ignored
-		, smallQC 3 sharedDiskBrowsingRoundtrips
-		, smallQC 5 sharedBrowsingDiskRoundtrips
-		, smallQC 2 populationDiskJSON
+		, qc "Individual Disk <-> JSON" (diskSensible @Individual)
+		, qc "PatternCell <-> JSON" (jsonSensible @PatternCell)
+		-- TODO: instance Arbitrary PatternMetadata
+		-- , qc "PatternMetadata <-> JSON" (jsonSensible @PatternMetadata)
+		, qc "ConvolutionSize <-> JSON" (jsonSensible @ConvolutionSize)
+		, qc "Replication <-> JSON" (jsonSensible @(Replication Int))
+		-- TODO: instance Arbitrary PatternMetadata
+		-- , qc "PatternMetadata <-> JSONKey" (jsonKeySensible @PatternMetadata)
+		, qc "ConvolutionSize <-> JSONKey" (jsonKeySensible @ConvolutionSize)
+		, qc "Replication <-> JSONKey" (jsonKeySensible @(Replication Bool))
+		, qc "toRectangle" \x xss_ -> let xss = toRectangle (x :: Int) xss_ in all (\xs -> length xs == length (V.head xss)) xss
+		, qc "newPatternCell/pcNormalize" \s -> pcNormalize (PatternCell s) === newPatternCell s
+		, qc "pcNormalize/pcAllDisjuncts" \c -> all (`elem` pcAllDisjuncts) (pcAllowed (pcNormalize c))
+		-- TODO: instance Arbitrary BS.ByteString
+		-- , qc "printable ByteString <-> Text" \bs -> decodePrintable (encodePrintable bs) === BS.dropWhileEnd (0==) bs
+		-- TODO: this has to be restricted to Texts that only have printable characters, and that don't represent something with a trailing 0
+		-- , qc "printable Text <-> ByteString" \t -> encodePrintable (decodePrintable t) === t
+		, qc "strictlyAscending/sort" $ strictlyAscending . V.fromList . map head . group . sort . id @[Int]
+		-- TODO: can we get a "dupes cause False" test for strictlyAscending?
+		-- TODO: can we get a "something descends causes False" test for strictlyAscending?
+		-- TODO: ptToText >=> ptFromText === pure
+		-- TODO: instance Arbitrary PatternMetadata
+		-- , qc "PatternMetadata <-> (,)" \pm -> pmFromTuple (pmToTuple pm) === pm
+		, qc "ConvolutionSize <-> (,)" \cs -> csFromTuple (csToTuple cs) === cs
+		, qc "Replication <-> (,)" \r -> rFromTuple (rToTuple r) == (r :: Replication Int)
+		, qc "(,) <-> PatternMetadata" \t -> pmToTuple (pmFromTuple t) === t
+		, qc "(,) <-> ConvolutionSize" \t -> csToTuple (csFromTuple t) === t
+		, qc "(,) <-> Replication" \t -> rToTuple (rFromTuple t :: Replication Int) === t
+		, smallQC 5 "Shared Disk <-> Browsing" (repurposeuuRoundtrips @Shared @Disk @Browsing)
+		, smallQC 5 "Shared Browsing <-> Disk" (repurposeuuRoundtrips @Shared @Browsing @Disk)
+		, smallQC 5 "Individual Disk <-> Browsing" (repurposeeuRoundtrips @Individual @Disk @Browsing)
+		, smallQC 5 "Individual Browsing <-> Disk" (repurposeueRoundtrips @Disk arbitraryIndividualBrowsing)
+		, smallQC 5 "Population Disk <-> JSON" (diskSensible @Population)
+		, smallQC 7 "Shared Disk <-> JSON" (diskSensible @Shared)
 		]
 	unless (all isSuccess results) exitFailure
 
-sharedDiskBrowsingRoundtrips :: Shared Disk -> Bool
-sharedDiskBrowsingRoundtrips = repurpose_Roundtrips @_ @_ @Browsing
+smallQC :: Testable prop => Int -> String -> prop -> IO QC.Result
+smallQC n nm prop = putStrLn nm >> quickCheckWithResult stdArgs { maxSize = n } prop
 
-sharedBrowsingDiskRoundtrips :: Shared Browsing -> Bool
-sharedBrowsingDiskRoundtrips = repurpose_Roundtrips @_ @_ @Disk
+qc :: Testable prop => String -> prop -> IO QC.Result
+qc = smallQC 100
 
-populationDiskJSON :: Population Disk -> Property
-populationDiskJSON = jsonSensible
+repurposeeeRoundtrips :: forall f a b. (Repurpose f a b, Repurpose f b a, Eq (f a)) => RepurposingEnvironment f a b -> RepurposingEnvironment f b a -> f a -> Bool
+repurposeeeRoundtrips envAB envBA fa = repurpose envBA (repurpose @_ @_ @b envAB fa) == fa
 
-smallQC :: Testable prop => Int -> prop -> IO QC.Result
-smallQC n = quickCheckWithResult stdArgs { maxSize = n }
+repurposeeuRoundtrips :: forall f a b. (Repurpose f a b, Repurpose f b a, RepurposingEnvironment f b a ~ (), Eq (f a)) => RepurposingEnvironment f a b -> f a -> Bool
+repurposeeuRoundtrips envAB = repurposeeeRoundtrips @f @a @b envAB ()
 
-repurposeRoundtrips :: forall f a b. (Repurpose f a b, Repurpose f b a, Eq (f a)) => RepurposingEnvironment f a b -> RepurposingEnvironment f b a -> f a -> Bool
-repurposeRoundtrips envAB envBA fa = repurpose envBA (repurpose @_ @_ @b envAB fa) == fa
+repurposeueRoundtrips :: forall b f a env. (Repurpose f a b, Repurpose f b a, RepurposingEnvironment f a b ~ (), RepurposingEnvironment f b a ~ env, Eq (f a)) => (env -> QC.Gen (f a)) -> env -> QC.Gen Bool
+repurposeueRoundtrips mkA envBA = mkA envBA <&> \a -> repurpose @_ @b envBA (repurpose_ a) == a
 
-repurpose_Roundtrips :: forall f a b. (Repurpose f a b, Repurpose f b a, RepurposingEnvironment f a b ~ (), RepurposingEnvironment f b a ~ (), Eq (f a)) => f a -> Bool
-repurpose_Roundtrips = repurposeRoundtrips @_ @_ @b () ()
+repurposeuuRoundtrips :: forall f a b. (Repurpose f a b, Repurpose f b a, RepurposingEnvironment f a b ~ (), RepurposingEnvironment f b a ~ (), Eq (f a)) => f a -> Bool
+repurposeuuRoundtrips = repurposeeeRoundtrips @_ @_ @b () ()
 
-repurposeIORoundtrips :: forall f a b. (RepurposeIO f a b, RepurposeIO f b a, Eq (f a)) => RepurposingEnvironmentIO f a b -> RepurposingEnvironmentIO f b a -> f a -> Property
-repurposeIORoundtrips envAB envBA fa = idempotentIOProperty $ (fa==) <$> (repurposeIO envBA =<< repurposeIO @_ @_ @b envAB fa)
+repurposeIOeeRoundtrips :: forall f a b. (RepurposeIO f a b, RepurposeIO f b a, Eq (f a)) => RepurposingEnvironmentIO f a b -> RepurposingEnvironmentIO f b a -> f a -> Property
+repurposeIOeeRoundtrips envAB envBA fa = idempotentIOProperty $ (fa==) <$> (repurposeIO envBA =<< repurposeIO @_ @_ @b envAB fa)
 
-repurposeIO_Roundtrips :: forall f a b. (RepurposeIO f a b, RepurposeIO f b a, RepurposingEnvironmentIO f a b ~ (), RepurposingEnvironmentIO f b a ~ (), Eq (f a)) => f a -> Property
-repurposeIO_Roundtrips = repurposeIORoundtrips @_ @_ @b () ()
+repurposeIOuuRoundtrips :: forall f a b. (RepurposeIO f a b, RepurposeIO f b a, RepurposingEnvironmentIO f a b ~ (), RepurposingEnvironmentIO f b a ~ (), Eq (f a)) => f a -> Property
+repurposeIOuuRoundtrips = repurposeIOeeRoundtrips @_ @_ @b () ()
 
 jsonRoundtrips :: (FromJSON a, ToJSON a, Eq a, Show a) => a -> Property
 jsonRoundtrips a = decode (encode a) === Just a
 
 jsonEncodingMatches :: (ToJSON a, Show a) => a -> Property
-jsonEncodingMatches a = toEncoding a === toEncoding (toJSON a)
+jsonEncodingMatches a = decode (encode a) === Just (toJSON a)
 
+-- | @jsonRoundtrips .&&. jsonEncodingMatches@, but maybe a little more efficient
 jsonSensible :: (FromJSON a, ToJSON a, Eq a, Show a) => a -> Property
-jsonSensible a = jsonRoundtrips a .&&. jsonEncodingMatches a
+jsonSensible a = decode encoding === Just a .&&. decode encoding === Just (toJSON a) where
+	encoding = encode a
+
+diskSensible :: (f Disk ~ a, FromJSON a, ToJSON a, Eq a, Show a) => a -> Property
+diskSensible = jsonSensible
+
+jsonKeyRoundtrips :: (FromJSONKey a, ToJSONKey a, Eq a, Show a) => a -> Property
+jsonKeyRoundtrips = case (toJSONKey, fromJSONKey) of
+	(ToJSONKeyValue toValue toEncoding, FromJSONKeyValue fromValue) -> \a -> case parse fromValue (toValue a) of
+		A.Success a' -> a === a'
+		A.Error s -> counterexample s False
+	(ToJSONKeyValue{}, _) -> mismatch
+	(ToJSONKeyText toKey toEncoding, _) -> case fromJSONKey of
+		FromJSONKeyCoerce -> k (pure . coerce)
+		FromJSONKeyText f -> k (pure . f)
+		FromJSONKeyTextParser f -> k f
+		FromJSONKeyValue _ -> mismatch
+		where
+		k parser a = case parse parser (toText (toKey a)) of
+			A.Success a' -> a === a'
+			A.Error s -> counterexample s False
+	where mismatch = counterexample "encode/decode mismatch" . const False
+
+jsonKeyEncodingMatches :: (ToJSONKey a, Show a) => a -> Property
+jsonKeyEncodingMatches = case toJSONKey of
+	ToJSONKeyValue toValue toEncoding -> \a -> decode (encodingToLazyByteString (toEncoding a)) === Just (toValue a)
+	ToJSONKeyText toKey toEncoding -> \a -> text (toText (toKey a)) === toEncoding a
+
+jsonKeySensible :: (FromJSONKey a, ToJSONKey a, Eq a, Show a) => a -> Property
+jsonKeySensible a = jsonKeyRoundtrips a .&&. jsonKeyEncodingMatches a
+
+-- TODO: test that lerp and repurpose commute
+lerpBoundaries :: (Lerp a, Eq a, Show a) => a -> a -> Property
+lerpBoundaries a b = lerp 0 a b === a .&&. lerp 1 a b === b
 
 instance Arbitrary Text where
 	arbitrary = T.pack <$> arbitrary
@@ -124,6 +193,24 @@ arbitraryIndividualDisks :: Shared Disk -> QC.Gen (IndexedBy IndividualIndex (In
 arbitraryIndividualDisks sd = do
 	NonNegative populationSize <- arbitrary
 	V.replicateM populationSize (IndividualDisk <$> V.replicateM (sdParameterCount sd) arbitrary)
+
+arbitraryIndividualBrowsing :: Shared Browsing -> QC.Gen (Individual Browsing)
+arbitraryIndividualBrowsing = liftA2 (liftA2 IndividualBrowsing) arbitrarySingleVirusBrowsing arbitrarySingleVirusBrowsing
+
+arbitrarySingleVirusBrowsing :: Shared Browsing -> QC.Gen (SingleVirus Browsing)
+arbitrarySingleVirusBrowsing sb = do
+	position <- V.replicateM (sbPatternCount sb) arbitrary
+	move <- V.replicateM (sbPatternCount sb) arbitrary
+	statistics <- V.replicateM (sbStatisticCount sb) arbitrary
+	pure SingleVirusBrowsing
+		{ svbPosition = position
+		, svbMove = move
+		, svbStatistics = statistics
+		}
+
+instance Arbitrary (Individual Disk) where
+	arbitrary = IndividualDisk <$> arbitrary
+	shrink = shrinkMap IndividualDisk idParameters
 
 instance Arbitrary PatternCell where
 	arbitrary = newPatternCell <$> arbitrary

@@ -304,6 +304,7 @@ sdPatternsName = "patterns"
 sdStatisticNamesName = "statistic-names"
 
 -- could be optimized a bit by decoding the Texts and then just querying their size rather than reading in all the values in the patterns
+-- (if you do that, maybe add a quickcheck test that it behaves the same as this spec)
 sdParameterCount :: Shared Disk -> Int
 sdParameterCount = sbParameterCount . repurpose_
 
