@@ -47,7 +47,7 @@ main = do
 		, qc "(,) <-> Replication" \t -> rToTuple (rFromTuple t :: Replication Int) === t
 		, smallQC 5 "Shared Disk <-> Browsing" (repurposeuuRoundtrips @Shared @Disk @Browsing)
 		, smallQC 5 "Shared Browsing <-> Disk" (repurposeuuRoundtrips @Shared @Browsing @Disk)
-		, smallQC 5 "Individual Disk <-> Browsing" (repurposeeuRoundtrips @Individual @Disk @Browsing)
+		, smallQC 5 "Individual Disk <-> Browsing" (repurposeeuRoundtrips @Individual @Disk @Browsing (arbitraryIndividualDisk . sbParameterCount))
 		, smallQC 5 "Individual Browsing <-> Disk" (repurposeueRoundtrips @Disk arbitraryIndividualBrowsing)
 		, smallQC 5 "Population Disk <-> JSON" (diskSensible @Population)
 		, smallQC 7 "Shared Disk <-> JSON" (diskSensible @Shared)
@@ -60,23 +60,17 @@ smallQC n nm prop = putStrLn nm >> quickCheckWithResult stdArgs { maxSize = n } 
 qc :: Testable prop => String -> prop -> IO QC.Result
 qc = smallQC 100
 
-repurposeeeRoundtrips :: forall f a b. (Repurpose f a b, Repurpose f b a, Eq (f a)) => RepurposingEnvironment f a b -> RepurposingEnvironment f b a -> f a -> Bool
-repurposeeeRoundtrips envAB envBA fa = repurpose envBA (repurpose @_ @_ @b envAB fa) == fa
+repurposeeeRoundtrips :: forall f a b envAB envBA. (Repurpose f a b, Repurpose f b a, Eq (f a), envAB ~ RepurposingEnvironment f a b, envBA ~ RepurposingEnvironment f b a) => (envAB -> envBA -> QC.Gen (f a)) -> envAB -> envBA -> QC.Gen Bool
+repurposeeeRoundtrips mkA envAB envBA = mkA envAB envBA <&> \fa -> repurpose envBA (repurpose @_ @_ @b envAB fa) == fa
 
-repurposeeuRoundtrips :: forall f a b. (Repurpose f a b, Repurpose f b a, RepurposingEnvironment f b a ~ (), Eq (f a)) => RepurposingEnvironment f a b -> f a -> Bool
-repurposeeuRoundtrips envAB = repurposeeeRoundtrips @f @a @b envAB ()
+repurposeeuRoundtrips :: forall f a b envAB. (Repurpose f a b, Repurpose f b a, RepurposingEnvironment f b a ~ (), Eq (f a), envAB ~ RepurposingEnvironment f a b) => (envAB -> QC.Gen (f a)) -> envAB -> QC.Gen Bool
+repurposeeuRoundtrips mkA envAB = repurposeeeRoundtrips @f @a @b (const . mkA) envAB ()
 
-repurposeueRoundtrips :: forall b f a env. (Repurpose f a b, Repurpose f b a, RepurposingEnvironment f a b ~ (), RepurposingEnvironment f b a ~ env, Eq (f a)) => (env -> QC.Gen (f a)) -> env -> QC.Gen Bool
-repurposeueRoundtrips mkA envBA = mkA envBA <&> \a -> repurpose @_ @b envBA (repurpose_ a) == a
+repurposeueRoundtrips :: forall b f a envBA. (Repurpose f a b, Repurpose f b a, RepurposingEnvironment f a b ~ (), envBA ~ RepurposingEnvironment f b a, Eq (f a)) => (envBA -> QC.Gen (f a)) -> envBA -> QC.Gen Bool
+repurposeueRoundtrips mkA = repurposeeeRoundtrips @f @a @b (const mkA) ()
 
-repurposeuuRoundtrips :: forall f a b. (Repurpose f a b, Repurpose f b a, RepurposingEnvironment f a b ~ (), RepurposingEnvironment f b a ~ (), Eq (f a)) => f a -> Bool
-repurposeuuRoundtrips = repurposeeeRoundtrips @_ @_ @b () ()
-
-repurposeIOeeRoundtrips :: forall f a b. (RepurposeIO f a b, RepurposeIO f b a, Eq (f a)) => RepurposingEnvironmentIO f a b -> RepurposingEnvironmentIO f b a -> f a -> Property
-repurposeIOeeRoundtrips envAB envBA fa = idempotentIOProperty $ (fa==) <$> (repurposeIO envBA =<< repurposeIO @_ @_ @b envAB fa)
-
-repurposeIOuuRoundtrips :: forall f a b. (RepurposeIO f a b, RepurposeIO f b a, RepurposingEnvironmentIO f a b ~ (), RepurposingEnvironmentIO f b a ~ (), Eq (f a)) => f a -> Property
-repurposeIOuuRoundtrips = repurposeIOeeRoundtrips @_ @_ @b () ()
+repurposeuuRoundtrips :: forall f a b. (Repurpose f a b, Repurpose f b a, RepurposingEnvironment f a b ~ (), RepurposingEnvironment f b a ~ (), Eq (f a)) => f a -> QC.Gen Bool
+repurposeuuRoundtrips a = repurposeeeRoundtrips @_ @_ @b (\_ _ -> pure a) () ()
 
 jsonRoundtrips :: (FromJSON a, ToJSON a, Eq a, Show a) => a -> Property
 jsonRoundtrips a = decode (encode a) === Just a
@@ -180,19 +174,22 @@ instance Arbitrary (PatternTemplate Browsing) where
 instance Arbitrary (Population Disk) where
 	arbitrary = do
 		generation <- arbitrary
-		shared <- arbitrary
-		individuals <- arbitraryIndividualDisks shared
+		sharedBrowsing <- arbitrary
+		individuals <- arbitraryIndividualDisks (sbParameterCount sharedBrowsing)
 		pure PopulationDisk
 			{ pdGeneration = generation
-			, pdShared = shared
+			, pdShared = repurpose_ sharedBrowsing
 			, pdIndividuals = individuals
 			}
 	-- TODO: shrink while maintaining invariants, seems annoying
 
-arbitraryIndividualDisks :: Shared Disk -> QC.Gen (IndexedBy IndividualIndex (Individual Disk))
-arbitraryIndividualDisks sd = do
+arbitraryIndividualDisk :: Int -> QC.Gen (Individual Disk)
+arbitraryIndividualDisk parameterCount = IndividualDisk <$> V.replicateM parameterCount arbitrary
+
+arbitraryIndividualDisks :: Int -> QC.Gen (IndexedBy IndividualIndex (Individual Disk))
+arbitraryIndividualDisks parameterCount = do
 	NonNegative populationSize <- arbitrary
-	V.replicateM populationSize (IndividualDisk <$> V.replicateM (sdParameterCount sd) arbitrary)
+	V.replicateM populationSize (arbitraryIndividualDisk parameterCount)
 
 arbitraryIndividualBrowsing :: Shared Browsing -> QC.Gen (Individual Browsing)
 arbitraryIndividualBrowsing = liftA2 (liftA2 IndividualBrowsing) arbitrarySingleVirusBrowsing arbitrarySingleVirusBrowsing
