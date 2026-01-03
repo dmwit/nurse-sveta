@@ -42,11 +42,11 @@ main = do
 		, qc "(,) <-> PatternMetadata" \t -> pmToTuple (pmFromTuple t) === t
 		, qc "(,) <-> ConvolutionSize" \t -> csToTuple (csFromTuple t) === t
 		, qc "(,) <-> Replication" \t -> rToTuple (rFromTuple t :: Replication Int) === t
-		, smallQC 5 "Shared Disk <-> Browsing" (repurposeuuRoundtrips @Shared @Disk @Browsing)
-		, smallQC 5 "Shared Browsing <-> Disk" (repurposeuuRoundtrips @Shared @Browsing @Disk)
-		, smallQC 5 "Individual Disk <-> Browsing" (repurposeeuRoundtrips @Individual @Disk @Browsing (arbitraryIndividualDisk . sbParameterCount))
+		, smallQC 5 "Shared Disk <-> Browsing" (repurposeuuRoundtrips @Disk @Shared @Browsing)
+		, smallQC 5 "Shared Browsing <-> Disk" (repurposeuuRoundtrips @Browsing @Shared @Disk)
+		, smallQC 5 "Individual Disk <-> Browsing" (repurposeeuRoundtrips @Browsing (arbitraryIndividualDisk . sbParameterCount))
 		, smallQC 5 "Individual Browsing <-> Disk" (repurposeueRoundtrips @Disk arbitraryIndividualBrowsing)
-		, smallQC 5 "Population Disk <-> JSON" (diskSensible @Population)
+		, smallQC 7 "Population Disk <-> JSON" (diskSensible @Population)
 		, smallQC 7 "Shared Disk <-> JSON" (diskSensible @Shared)
 		]
 	unless (all isSuccess results) exitFailure
@@ -57,17 +57,17 @@ smallQC n nm prop = putStrLn nm >> quickCheckWithResult stdArgs { maxSize = n } 
 qc :: Testable prop => String -> prop -> IO QC.Result
 qc = smallQC 100
 
-repurposeeeRoundtrips :: forall f a b envAB envBA. (Repurpose f a b, Repurpose f b a, Eq (f a), envAB ~ RepurposingEnvironment f a b, envBA ~ RepurposingEnvironment f b a) => (envAB -> envBA -> QC.Gen (f a)) -> envAB -> envBA -> QC.Gen Bool
+repurposeeeRoundtrips :: forall b f a envAB envBA. (Repurpose f a b, Repurpose f b a, Eq (f a), envAB ~ RepurposingEnvironment f a b, envBA ~ RepurposingEnvironment f b a) => (envAB -> envBA -> QC.Gen (f a)) -> envAB -> envBA -> QC.Gen Bool
 repurposeeeRoundtrips mkA envAB envBA = mkA envAB envBA <&> \fa -> repurpose envBA (repurpose @_ @_ @b envAB fa) == fa
 
-repurposeeuRoundtrips :: forall f a b envAB. (Repurpose f a b, Repurpose f b a, RepurposingEnvironment f b a ~ (), Eq (f a), envAB ~ RepurposingEnvironment f a b) => (envAB -> QC.Gen (f a)) -> envAB -> QC.Gen Bool
-repurposeeuRoundtrips mkA envAB = repurposeeeRoundtrips @f @a @b (const . mkA) envAB ()
+repurposeeuRoundtrips :: forall b f a envAB. (Repurpose f a b, Repurpose f b a, RepurposingEnvironment f b a ~ (), Eq (f a), envAB ~ RepurposingEnvironment f a b) => (envAB -> QC.Gen (f a)) -> envAB -> QC.Gen Bool
+repurposeeuRoundtrips mkA envAB = repurposeeeRoundtrips @b (const . mkA) envAB ()
 
 repurposeueRoundtrips :: forall b f a envBA. (Repurpose f a b, Repurpose f b a, RepurposingEnvironment f a b ~ (), envBA ~ RepurposingEnvironment f b a, Eq (f a)) => (envBA -> QC.Gen (f a)) -> envBA -> QC.Gen Bool
-repurposeueRoundtrips mkA = repurposeeeRoundtrips @f @a @b (const mkA) ()
+repurposeueRoundtrips mkA = repurposeeeRoundtrips @b (const mkA) ()
 
-repurposeuuRoundtrips :: forall f a b. (Repurpose f a b, Repurpose f b a, RepurposingEnvironment f a b ~ (), RepurposingEnvironment f b a ~ (), Eq (f a)) => f a -> QC.Gen Bool
-repurposeuuRoundtrips a = repurposeeeRoundtrips @_ @_ @b (\_ _ -> pure a) () ()
+repurposeuuRoundtrips :: forall b f a. (Repurpose f a b, Repurpose f b a, RepurposingEnvironment f a b ~ (), RepurposingEnvironment f b a ~ (), Eq (f a)) => f a -> QC.Gen Bool
+repurposeuuRoundtrips a = repurposeeeRoundtrips @b (\_ _ -> pure a) () ()
 
 jsonRoundtrips :: (FromJSON a, ToJSON a, Eq a, Show a) => a -> Property
 jsonRoundtrips a = decode (encode a) === Just a
