@@ -297,6 +297,13 @@ instance FromJSON (Population Disk) where
 			, pdIndividuals = individuals
 			}
 
+instance Repurpose Population Disk Browsing where
+	repurpose _ pd = PopulationBrowsing
+		{ pbGeneration = pdGeneration pd
+		, pbShared = sb
+		, pbIndividuals = repurpose sb <$> pdIndividuals pd
+		} where sb = repurpose_ (pdShared pd)
+
 ---------- Shared Disk ----------
 
 sdPatternsName, sdStatisticNamesName :: IsString s => s
@@ -415,6 +422,13 @@ newNormalPopulationBrowsing rng sb populationSize = do
 		{ pbGeneration = 0
 		, pbShared = sb
 		, pbIndividuals = is
+		}
+
+instance Repurpose Population Browsing Disk where
+	repurpose _ pb = PopulationDisk
+		{ pdGeneration = pbGeneration pb
+		, pdShared = repurpose_ (pbShared pb)
+		, pdIndividuals = fmap repurpose_ (pbIndividuals pb)
 		}
 
 ---------- Shared Browsing ----------

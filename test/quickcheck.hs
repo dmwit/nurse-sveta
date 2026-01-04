@@ -42,6 +42,8 @@ main = do
 		, qc "(,) <-> PatternMetadata" \t -> pmToTuple (pmFromTuple t) === t
 		, qc "(,) <-> ConvolutionSize" \t -> csToTuple (csFromTuple t) === t
 		, qc "(,) <-> Replication" \t -> rToTuple (rFromTuple t :: Replication Int) === t
+		, smallQC 5 "Population Disk <-> Browsing" (repurposeuuRoundtrips @Disk @Population @Browsing)
+		, smallQC 5 "Population Browsing <-> Disk" (repurposeuuRoundtrips @Browsing @Population @Disk)
 		, smallQC 5 "Shared Disk <-> Browsing" (repurposeuuRoundtrips @Disk @Shared @Browsing)
 		, smallQC 5 "Shared Browsing <-> Disk" (repurposeuuRoundtrips @Browsing @Shared @Disk)
 		, smallQC 5 "Individual Disk <-> Browsing" (repurposeeuRoundtrips @Browsing (arbitraryIndividualDisk . sbParameterCount))
@@ -228,13 +230,29 @@ instance Arbitrary (Population Disk) where
 			}
 	-- TODO: shrink while maintaining invariants, seems annoying
 
-arbitraryIndividualDisk :: Int -> QC.Gen (Individual Disk)
-arbitraryIndividualDisk parameterCount = IndividualDisk <$> V.replicateM parameterCount arbitrary
-
 arbitraryIndividualDisks :: Int -> QC.Gen (IndexedBy IndividualIndex (Individual Disk))
 arbitraryIndividualDisks parameterCount = do
 	NonNegative populationSize <- arbitrary
 	V.replicateM populationSize (arbitraryIndividualDisk parameterCount)
+
+arbitraryIndividualDisk :: Int -> QC.Gen (Individual Disk)
+arbitraryIndividualDisk parameterCount = IndividualDisk <$> V.replicateM parameterCount arbitrary
+
+instance Arbitrary (Population Browsing) where
+	arbitrary = do
+		generation <- arbitrary
+		sb <- arbitrary
+		individuals <- arbitraryIndividualBrowsings sb
+		pure PopulationBrowsing
+			{ pbGeneration = generation
+			, pbShared = sb
+			, pbIndividuals = individuals
+			}
+
+arbitraryIndividualBrowsings :: Shared Browsing -> QC.Gen (IndexedBy IndividualIndex (Individual Browsing))
+arbitraryIndividualBrowsings sb = do
+	NonNegative populationSize <- arbitrary
+	V.replicateM populationSize (arbitraryIndividualBrowsing sb)
 
 arbitraryIndividualBrowsing :: Shared Browsing -> QC.Gen (Individual Browsing)
 arbitraryIndividualBrowsing = liftA2 (liftA2 IndividualBrowsing) arbitrarySingleVirusBrowsing arbitrarySingleVirusBrowsing
