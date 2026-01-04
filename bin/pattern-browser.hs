@@ -32,7 +32,7 @@ main = do
 			}
 		set renderingsView [#showSeparators := True]
 
-		gPatternGroups <- traverse newGIRef . pgbPatternGroups $ repurpose_ patternGroups
+		gPatternGroups <- traverse newGIRef . pgbPatternGroups $ repurpose' patternGroups
 		namesView <- createListView ListViewParameters
 			{ lvpContents = gPatternGroups
 			, lvpSetupWidget = new Label []
@@ -42,7 +42,7 @@ main = do
 			, lvpSelection = \i gPatternGroup -> do
 				pgb <- readGIRef gPatternGroup
 				store <- new ListStore []
-				traverse_ (#append store <=< pgWidget <=< repurposeIO_) (pgbPatterns pgb)
+				traverse_ (#append store <=< pgWidget <=< repurposeIO') (pgbPatterns pgb)
 				set renderingsView [#model :=> new NoSelection [#model := store]]
 			}
 

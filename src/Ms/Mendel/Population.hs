@@ -64,11 +64,11 @@ class RepurposeIO dst src (t :: Purpose -> *) where
 	type instance RepurposingEnvironmentIO dst src t = ()
 	repurposeIO :: RepurposingEnvironmentIO dst src t -> t src -> IO (t dst)
 
-repurpose_ :: forall dst src t. (Repurpose dst src t, RepurposingEnvironment dst src t ~ ()) => t src -> t dst
-repurpose_ = repurpose ()
+repurpose' :: forall dst src t. (Repurpose dst src t, RepurposingEnvironment dst src t ~ ()) => t src -> t dst
+repurpose' = repurpose ()
 
-repurposeIO_ :: forall dst src t. (RepurposeIO dst src t, RepurposingEnvironmentIO dst src t ~ ()) => t src -> IO (t dst)
-repurposeIO_ = repurposeIO ()
+repurposeIO' :: forall dst src t. (RepurposeIO dst src t, RepurposingEnvironmentIO dst src t ~ ()) => t src -> IO (t dst)
+repurposeIO' = repurposeIO ()
 
 data instance PatternGroups Authoring = PatternGroupsAuthoring
 	{ pgaDefaultReplication :: Replication Bool
@@ -165,7 +165,7 @@ data Replication a = Replication
 ---------- PatternGroups Authoring ----------
 
 pgaByMetadata :: PatternGroups Authoring -> Map (Replication Bool) (Map ConvolutionSize (Set (PatternTemplate Browsing)))
-pgaByMetadata = pgbByMetadata . repurpose_
+pgaByMetadata = pgbByMetadata . repurpose'
 
 caPatternGroupsName :: IsString s => s
 caPatternGroupsName = "groups"
@@ -232,7 +232,7 @@ instance Repurpose Browsing Authoring Pattern where
 	type instance RepurposingEnvironment Browsing Authoring Pattern = Replication Bool
 	repurpose r pa = PatternBrowsing
 		{ pbReplication = liftA2 fromMaybe r (paOverrideReplication pa)
-		, pbTemplate = repurpose_ (paTemplate pa)
+		, pbTemplate = repurpose' (paTemplate pa)
 		}
 
 instance FromJSON (Pattern Authoring) where
@@ -302,7 +302,7 @@ instance Repurpose Browsing Disk Population where
 		{ pbGeneration = pdGeneration pd
 		, pbShared = sb
 		, pbIndividuals = repurpose sb <$> pdIndividuals pd
-		} where sb = repurpose_ (pdShared pd)
+		} where sb = repurpose' (pdShared pd)
 
 ---------- Shared Disk ----------
 
@@ -313,7 +313,7 @@ sdStatisticNamesName = "statistic-names"
 -- could be optimized a bit by decoding the Texts and then just querying their size rather than reading in all the values in the patterns
 -- (if you do that, maybe add a quickcheck test that it behaves the same as this spec)
 sdParameterCount :: Shared Disk -> Int
-sdParameterCount = sbParameterCount . repurpose_
+sdParameterCount = sbParameterCount . repurpose'
 
 instance Repurpose Browsing Disk Shared where
 	-- safety: we briefly construct a fresh mutable value via ptFromText, but we immediately read and discard it via ptToSet
@@ -427,8 +427,8 @@ newNormalPopulationBrowsing rng sb populationSize = do
 instance Repurpose Disk Browsing Population where
 	repurpose _ pb = PopulationDisk
 		{ pdGeneration = pbGeneration pb
-		, pdShared = repurpose_ (pbShared pb)
-		, pdIndividuals = fmap repurpose_ (pbIndividuals pb)
+		, pdShared = repurpose' (pbShared pb)
+		, pdIndividuals = fmap repurpose' (pbIndividuals pb)
 		}
 
 ---------- Shared Browsing ----------
@@ -449,7 +449,7 @@ sbFromPatternGroupsB pgb = SharedBrowsing
 	}
 
 sbFromPatternGroupsA :: PatternGroups Authoring -> Shared Browsing
-sbFromPatternGroupsA = sbFromPatternGroupsB . repurpose_
+sbFromPatternGroupsA = sbFromPatternGroupsB . repurpose'
 
 instance Repurpose Disk Browsing Shared where
 	repurpose _ sb = SharedDisk

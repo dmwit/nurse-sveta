@@ -157,8 +157,8 @@ instance Arbitrary a => Arbitrary (Vector a) where
 	shrink = shrinkMap V.fromList V.toList
 
 instance Arbitrary (Shared Disk) where
-	arbitrary = repurpose_ <$> arbitrary @(Shared Browsing)
-	shrink = shrinkMap repurpose_ (repurpose_ @Browsing)
+	arbitrary = repurpose' <$> arbitrary @(Shared Browsing)
+	shrink = shrinkMap repurpose' (repurpose' @Browsing)
 
 instance Arbitrary a => Arbitrary (Replication a) where
 	arbitrary = rFromTuple <$> arbitrary
@@ -225,7 +225,7 @@ instance Arbitrary (Population Disk) where
 		individuals <- arbitraryIndividualDisks (sbParameterCount sharedBrowsing)
 		pure PopulationDisk
 			{ pdGeneration = generation
-			, pdShared = repurpose_ sharedBrowsing
+			, pdShared = repurpose' sharedBrowsing
 			, pdIndividuals = individuals
 			}
 	-- TODO: shrink while maintaining invariants, seems annoying
