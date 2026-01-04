@@ -15,7 +15,7 @@ data instance Pattern Gtk = PatternGtk
 	, pgContainer :: Box
 	}
 
-instance RepurposeIO Pattern Browsing Gtk where
+instance RepurposeIO Gtk Browsing Pattern where
 	repurposeIO _ pb = do
 		let cs = pbConvolutionSize pb
 		top <- new Box []

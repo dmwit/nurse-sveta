@@ -59,16 +59,16 @@ smallQC n nm prop = putStrLn nm >> quickCheckWithResult stdArgs { maxSize = n } 
 qc :: Testable prop => String -> prop -> IO QC.Result
 qc = smallQC 100
 
-repurposeeeRoundtrips :: forall b f a envAB envBA. (Repurpose f a b, Repurpose f b a, Eq (f a), envAB ~ RepurposingEnvironment f a b, envBA ~ RepurposingEnvironment f b a) => (envAB -> envBA -> QC.Gen (f a)) -> envAB -> envBA -> QC.Gen Bool
-repurposeeeRoundtrips mkA envAB envBA = mkA envAB envBA <&> \fa -> repurpose envBA (repurpose @_ @_ @b envAB fa) == fa
+repurposeeeRoundtrips :: forall b f a envAB envBA. (Repurpose b a f, Repurpose a b f, Eq (f a), envAB ~ RepurposingEnvironment b a f, envBA ~ RepurposingEnvironment a b f) => (envAB -> envBA -> QC.Gen (f a)) -> envAB -> envBA -> QC.Gen Bool
+repurposeeeRoundtrips mkA envAB envBA = mkA envAB envBA <&> \fa -> repurpose envBA (repurpose @b envAB fa) == fa
 
-repurposeeuRoundtrips :: forall b f a envAB. (Repurpose f a b, Repurpose f b a, RepurposingEnvironment f b a ~ (), Eq (f a), envAB ~ RepurposingEnvironment f a b) => (envAB -> QC.Gen (f a)) -> envAB -> QC.Gen Bool
+repurposeeuRoundtrips :: forall b f a envAB. (Repurpose b a f, Repurpose a b f, RepurposingEnvironment a b f ~ (), Eq (f a), envAB ~ RepurposingEnvironment b a f) => (envAB -> QC.Gen (f a)) -> envAB -> QC.Gen Bool
 repurposeeuRoundtrips mkA envAB = repurposeeeRoundtrips @b (const . mkA) envAB ()
 
-repurposeueRoundtrips :: forall b f a envBA. (Repurpose f a b, Repurpose f b a, RepurposingEnvironment f a b ~ (), envBA ~ RepurposingEnvironment f b a, Eq (f a)) => (envBA -> QC.Gen (f a)) -> envBA -> QC.Gen Bool
+repurposeueRoundtrips :: forall b f a envBA. (Repurpose b a f, Repurpose a b f, RepurposingEnvironment b a f ~ (), envBA ~ RepurposingEnvironment a b f, Eq (f a)) => (envBA -> QC.Gen (f a)) -> envBA -> QC.Gen Bool
 repurposeueRoundtrips mkA = repurposeeeRoundtrips @b (const mkA) ()
 
-repurposeuuRoundtrips :: forall b f a. (Repurpose f a b, Repurpose f b a, RepurposingEnvironment f a b ~ (), RepurposingEnvironment f b a ~ (), Eq (f a)) => f a -> QC.Gen Bool
+repurposeuuRoundtrips :: forall b f a. (Repurpose b a f, Repurpose a b f, RepurposingEnvironment b a f ~ (), RepurposingEnvironment a b f ~ (), Eq (f a)) => f a -> QC.Gen Bool
 repurposeuuRoundtrips a = repurposeeeRoundtrips @b (\_ _ -> pure a) () ()
 
 jsonRoundtrips :: (FromJSON a, ToJSON a, Eq a, Show a) => a -> Property
@@ -158,7 +158,7 @@ instance Arbitrary a => Arbitrary (Vector a) where
 
 instance Arbitrary (Shared Disk) where
 	arbitrary = repurpose_ <$> arbitrary @(Shared Browsing)
-	shrink = shrinkMap repurpose_ (repurpose_ @_ @_ @Browsing)
+	shrink = shrinkMap repurpose_ (repurpose_ @Browsing)
 
 instance Arbitrary a => Arbitrary (Replication a) where
 	arbitrary = rFromTuple <$> arbitrary
