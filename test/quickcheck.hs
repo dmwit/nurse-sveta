@@ -105,8 +105,10 @@ jsonKeyEncodingMatches = case toJSONKey of
 	ToJSONKeyValue toValue toEncoding -> \a -> decode (encodingToLazyByteString (toEncoding a)) === Just (toValue a)
 	ToJSONKeyText toKey toEncoding -> \a -> text (toText (toKey a)) === toEncoding a
 
-jsonKeySensible :: forall a. (Arbitrary a, FromJSONKey a, ToJSONKey a, Eq a, Show a) => Property
-jsonKeySensible = jsonKeyRoundtrips @a .&&. jsonKeyEncodingMatches @a
+-- The type of (.&&.) would let us eta contract, but that would generate twice
+-- as many inputs as necessary.
+jsonKeySensible :: (Arbitrary a, FromJSONKey a, ToJSONKey a, Eq a, Show a) => a -> Property
+jsonKeySensible a = jsonKeyRoundtrips a .&&. jsonKeyEncodingMatches a
 
 ruinsStrictAscension :: Ord a => (a -> [a]) -> Int -> [a] -> Property
 ruinsStrictAscension ruin n xs = hay xs ==> prop xs .&&. (prop . map head . group . sort) xs where
