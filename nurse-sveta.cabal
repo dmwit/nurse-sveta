@@ -37,6 +37,7 @@ common shared
     default-language:   Haskell2010
     default-extensions:   BinaryLiterals
                         , BlockArguments
+                        , ConstraintKinds
                         , DefaultSignatures
                         , DeriveAnyClass
                         , DeriveFoldable

@@ -1,4 +1,6 @@
+{-# Language AllowAmbiguousTypes #-}
 {-# Language DataKinds #-}
+
 module Ms.Mendel.Population
 	( module Ms.Mendel.Population
 	, WithSentinels(..)
@@ -58,6 +60,8 @@ class Repurpose dst src (t :: Purpose -> *) where
 	type family RepurposingEnvironment dst src t
 	type instance RepurposingEnvironment dst src t = ()
 	repurpose :: RepurposingEnvironment dst src t -> t src -> t dst
+	default repurpose :: src ~ dst => RepurposingEnvironment dst src t -> t src -> t dst
+	repurpose _ = id
 
 class RepurposeIO dst src (t :: Purpose -> *) where
 	type family RepurposingEnvironmentIO dst src t
@@ -69,6 +73,15 @@ repurpose' = repurpose ()
 
 repurposeIO' :: forall dst src t. (RepurposeIO dst src t, RepurposingEnvironmentIO dst src t ~ ()) => t src -> IO (t dst)
 repurposeIO' = repurposeIO ()
+
+-- | for errors and the like
+class HasFamilyName (f :: Purpose -> *) where familyName :: String
+type LoadableDisk f = (FromJSON (f Disk), HasFamilyName f) :: Constraint
+type Loadable f a = (LoadableDisk f, Repurpose a Disk f) :: Constraint
+type LoadableIO f a = (LoadableDisk f, RepurposeIO a Disk f) :: Constraint
+type SavableDisk f = (ToJSON (f Disk), HasFamilyName f) :: Constraint
+type Savable f a = (SavableDisk f, Repurpose Disk a f) :: Constraint
+type SavableIO f a = (SavableDisk f, RepurposeIO Disk a f) :: Constraint
 
 data instance PatternGroups Authoring = PatternGroupsAuthoring
 	{ pgaDefaultReplication :: Replication Bool
@@ -162,6 +175,15 @@ data Replication a = Replication
 	, rColoring :: a
 	} deriving (Eq, Ord, Read, Show, Functor)
 
+instance HasFamilyName PatternGroups   where familyName = "pattern groups"
+instance HasFamilyName PatternGroup    where familyName = "pattern group"
+instance HasFamilyName Pattern         where familyName = "pattern"
+instance HasFamilyName PatternTemplate where familyName = "pattern template"
+instance HasFamilyName Population      where familyName = "population"
+instance HasFamilyName Shared          where familyName = "shared"
+instance HasFamilyName Individual      where familyName = "individual"
+instance HasFamilyName SingleVirus     where familyName = "single virus"
+
 ---------- PatternGroups Authoring ----------
 
 pgaByMetadata :: PatternGroups Authoring -> Map (Replication Bool) (Map ConvolutionSize (Set (PatternTemplate Browsing)))
@@ -187,6 +209,8 @@ instance FromJSON (PatternGroups Authoring) where
 	parseJSON other = typeMismatch
 		("PatternGroups (an object with \"" ++ caPatternGroupsName ++ "\", \"" ++ rMirroringName ++ "\", and \"" ++ rColoringName ++ "\" keys)")
 		other
+
+instance Repurpose Authoring Authoring PatternGroups
 
 ---------- PatternGroup Authoring ----------
 
@@ -223,6 +247,8 @@ instance FromJSON (PatternGroup Authoring) where
 		("PatternGroup (a list of Patterns, or an object with a \"" ++ pgaPatternsName ++ "\" key and optionally \"" ++ pgaDescriptionName ++ "\", \"" ++ rMirroringName ++ "\", and \"" ++ rColoringName ++ "\" keys)")
 		other
 
+instance Repurpose Authoring Authoring PatternGroup
+
 ---------- Pattern Authoring ----------
 
 paTemplateName :: IsString s => s
@@ -254,6 +280,8 @@ instance FromJSON (Pattern Authoring) where
 		("Pattern (a list of list of PatternCells, or an object with a \"" ++ paTemplateName ++ "\" key and optionally \"" ++ rMirroringName ++ "\" and \"" ++ rColoringName ++ "\" keys)")
 		other
 
+instance Repurpose Authoring Authoring Pattern
+
 ---------- PatternTemplate Authoring ----------
 
 instance Repurpose Browsing Authoring PatternTemplate where
@@ -266,6 +294,8 @@ instance FromJSON (PatternTemplate Authoring) where
 		cells <- parseJSON v
 		when (all null cells) (fail "empty patterns are not supported")
 		pure PatternTemplateAuthoring { ptaCells = cells }
+
+instance Repurpose Authoring Authoring PatternTemplate
 
 ---------- Population Disk ----------
 
@@ -303,6 +333,8 @@ instance Repurpose Browsing Disk Population where
 		, pbShared = sb
 		, pbIndividuals = repurpose sb <$> pdIndividuals pd
 		} where sb = repurpose' (pdShared pd)
+
+instance Repurpose Disk Disk Population
 
 ---------- Shared Disk ----------
 
@@ -349,6 +381,8 @@ instance FromJSON (Shared Disk) where
 			, sdStatisticNames = statisticNames
 			}
 
+instance Repurpose Disk Disk Shared
+
 ---------- Individual Disk ----------
 
 instance Repurpose Browsing Disk Individual where
@@ -368,6 +402,8 @@ instance ToJSON (Individual Disk) where
 instance FromJSON (Individual Disk) where
 	parseJSON vs = IndividualDisk <$> parseJSON vs
 
+instance Repurpose Disk Disk Individual
+
 ---------- PatternGroups Browsing ----------
 
 pgbByMetadata :: PatternGroups Browsing -> Map (Replication Bool) (Map ConvolutionSize (Set (PatternTemplate Browsing)))
@@ -377,12 +413,16 @@ pgbByMetadata pgsb = M.fromListWith (M.unionWith S.union)
 	, pb <- V.toList (pgbPatterns pgb)
 	]
 
+instance Repurpose Browsing Browsing PatternGroups
+
 ---------- PatternGroup Browsing ----------
 
 instance Default (PatternGroup Browsing) where
 	def = PatternGroupBrowsing mempty mempty
 
 instance GNamed (PatternGroup Browsing) where name = "PatternGroup-Browsing"
+
+instance Repurpose Browsing Browsing PatternGroup
 
 ---------- Pattern Browsing ----------
 
@@ -398,6 +438,8 @@ pbMetadata pc = PatternMetadata
 instance Hashable (Pattern Browsing) where
 	s `hashWithSalt` pc = s `hashWithSalt` pbReplication pc `hashWithSalt` pbTemplate pc
 
+instance Repurpose Browsing Browsing Pattern
+
 ---------- PatternTemplate Browsing ----------
 
 toRectangle :: a -> Vector (Vector a) -> Vector (Vector a)
@@ -412,6 +454,8 @@ ptbConvolutionSize ptb = ConvolutionSize
 
 instance Hashable (PatternTemplate Browsing) where
 	hashWithSalt s = hashWithSalt s . ptbCells
+
+instance Repurpose Browsing Browsing PatternTemplate
 
 ---------- Population Browsing ----------
 
@@ -430,6 +474,8 @@ instance Repurpose Disk Browsing Population where
 		, pdShared = repurpose' (pbShared pb)
 		, pdIndividuals = fmap repurpose' (pbIndividuals pb)
 		}
+
+instance Repurpose Browsing Browsing Population
 
 ---------- Shared Browsing ----------
 
@@ -458,6 +504,8 @@ instance Repurpose Disk Browsing Shared where
 		, sdStatisticNames = sbStatisticNames sb
 		}
 
+instance Repurpose Browsing Browsing Shared
+
 ---------- Individual Browsing ----------
 
 newNormalIndividualBrowsing :: GenIO -> Shared Browsing -> IO (Individual Browsing)
@@ -471,6 +519,8 @@ instance Repurpose Disk Browsing Individual where
 	repurpose _ ib = IndividualDisk $ mempty
 		<> svbParameters (ib0 ib)
 		<> svbParameters (ib84 ib)
+
+instance Repurpose Browsing Browsing Individual
 
 ---------- SingleVirus Browsing ----------
 
@@ -489,6 +539,8 @@ newSingleVirusBrowsing sb ps
 
 svbParameters :: SingleVirus Browsing -> IndexedBy ParameterIndex R
 svbParameters svb = svbPosition svb <> svbMove svb <> svbStatistics svb
+
+instance Repurpose Browsing Browsing SingleVirus
 
 ---------- PatternCell ----------
 

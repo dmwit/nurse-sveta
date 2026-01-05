@@ -19,6 +19,7 @@ module Nurse.Sveta.Util
 	, module Data.Hashable
 	, module Data.Int
 	, module Data.IORef
+	, module Data.Kind
 	, module Data.List
 	, module Data.Maybe
 	, module Data.Monoid
@@ -76,6 +77,7 @@ import Data.Int
 import Data.IntMap (IntMap)
 import Data.IntSet (IntSet)
 import Data.IORef
+import Data.Kind
 import Data.List
 import Data.Maybe
 import Data.Map (Map)

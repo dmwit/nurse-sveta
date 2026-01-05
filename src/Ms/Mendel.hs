@@ -44,10 +44,13 @@ loadFromConfiguration nm = do
 loadConfiguration :: IO MsMendelConfig
 loadConfiguration = loadFromConfiguration "config"
 
-savePopulation :: FilePath -> Population Disk -> Int -> IO ()
-savePopulation dir pop generation = do
+savePopulation :: (Repurpose Disk purpose Population, RepurposingEnvironment Disk purpose Population ~ ()) => FilePath -> Population purpose -> IO ()
+savePopulation dir pop_ = do
 	saveAtomically dir (show generation <.> "json") pop
 	saveAtomically dir "latest.json" generation
+	where
+	pop = repurpose' pop_
+	generation = pdGeneration pop
 
 saveAtomically :: ToJSON a => FilePath -> FilePath -> a -> IO ()
 saveAtomically dir nm a = do
@@ -88,19 +91,33 @@ data LoadingError
 	| Corrupt FilePath String
 	deriving (Eq, Ord, Read, Show)
 
+-- | full path
+loadFromDisk :: forall f purpose. Loadable f purpose => FilePath -> RepurposingEnvironment purpose Disk f -> ExceptT LoadingError IO (f purpose)
+loadFromDisk path env = repurpose @_ @Disk env <$> loadJSON path (familyName @f)
+
+loadFromDisk_ :: forall f purpose. Loadable f purpose => FilePath -> RepurposingEnvironment purpose Disk f -> IO (f purpose)
+loadFromDisk' :: forall f purpose. (Loadable f purpose, RepurposingEnvironment purpose Disk f ~ ()) => FilePath -> ExceptT LoadingError IO (f purpose)
+loadFromDisk_' :: forall f purpose. (Loadable f purpose, RepurposingEnvironment purpose Disk f ~ ()) => FilePath -> IO (f purpose)
+loadFromDisk'_ :: forall f purpose. (Loadable f purpose, RepurposingEnvironment purpose Disk f ~ ()) => FilePath -> IO (f purpose)
+
+loadFromDisk_ = (reflectError .) . (runExceptT .) . loadFromDisk
+loadFromDisk' = flip loadFromDisk ()
+loadFromDisk_' = flip loadFromDisk_ ()
+loadFromDisk'_ = loadFromDisk_'
+
 -- | data dir
 loadPopulation_ :: FilePath -> IO (Population Disk)
 loadPopulation_ = reflectError . loadPopulation
 
 -- | data dir
-loadPopulation :: FilePath -> IO (Either LoadingError (Population Disk))
+loadPopulation :: (Repurpose purpose Disk Population, RepurposingEnvironment purpose Disk Population ~ ()) => FilePath -> IO (Either LoadingError (Population purpose))
 loadPopulation dir = runExceptT do
 	generation <- loadJSON (dir </> "latest.json") "generation"
 	let populationFilename = dir </> show generation <.> "json"
-	population <- loadJSON populationFilename "population"
+	population <- loadFromDisk' populationFilename
 	when (generation /= pdGeneration population) $
 		throwError (Corrupt populationFilename "filename/generation mismatch")
-	pure population
+	pure (repurpose' population)
 
 -- | config dir
 loadPatterns_ :: FilePath -> IO (PatternGroups Authoring)
@@ -110,6 +127,7 @@ loadPatterns_ = reflectError . loadPatterns
 loadPatterns :: FilePath -> IO (Either LoadingError (PatternGroups Authoring))
 loadPatterns dir = runExceptT (loadJSON (dir </> "patterns.json") "patterns")
 
+-- | full path
 loadJSON :: FromJSON a => FilePath -> String -> ExceptT LoadingError IO a
 loadJSON path ty = ExceptT $ handle (missing path ty) do
 	bs <- LBS.readFile path
