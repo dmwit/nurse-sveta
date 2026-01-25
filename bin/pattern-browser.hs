@@ -32,7 +32,7 @@ main = do
 			}
 		set renderingsView [#showSeparators := True]
 
-		gPatternGroups <- traverse newGIRef . pgbPatternGroups $ repurpose' patternGroups
+		gPatternGroups <- traverse newGIRef $ pgbPatternGroups patternGroups
 		namesView <- createListView ListViewParameters
 			{ lvpContents = gPatternGroups
 			, lvpSetupWidget = new Label []

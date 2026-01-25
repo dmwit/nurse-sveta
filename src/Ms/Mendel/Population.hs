@@ -58,15 +58,19 @@ data family SingleVirus (a :: Purpose)
 
 class Repurpose dst src (t :: Purpose -> *) where
 	type family RepurposingEnvironment dst src t
-	type instance RepurposingEnvironment dst src t = ()
 	repurpose :: RepurposingEnvironment dst src t -> t src -> t dst
+
+	type instance RepurposingEnvironment dst src t = ()
 	default repurpose :: src ~ dst => RepurposingEnvironment dst src t -> t src -> t dst
 	repurpose _ = id
 
 class RepurposeIO dst src (t :: Purpose -> *) where
 	type family RepurposingEnvironmentIO dst src t
-	type instance RepurposingEnvironmentIO dst src t = ()
 	repurposeIO :: RepurposingEnvironmentIO dst src t -> t src -> IO (t dst)
+
+	type instance RepurposingEnvironmentIO dst src t = RepurposingEnvironment dst src t
+	default repurposeIO :: (Repurpose dst src t, RepurposingEnvironment dst src t ~ RepurposingEnvironmentIO dst src t) => RepurposingEnvironmentIO dst src t -> t src -> IO (t dst)
+	repurposeIO env = pure . repurpose env
 
 type Repurpose' dst src t = (Repurpose dst src t, RepurposingEnvironment dst src t ~ ())
 type RepurposeIO' dst src t = (RepurposeIO dst src t, RepurposingEnvironmentIO dst src t ~ ())
@@ -80,15 +84,11 @@ repurposeIO' = repurposeIO ()
 -- | for errors and the like
 class HasFamilyName (f :: Purpose -> *) where familyName :: String
 type LoadableDisk f = (FromJSON (f Disk), HasFamilyName f) :: Constraint
-type Loadable    f a = (LoadableDisk f, Repurpose a    Disk f) :: Constraint
-type Loadable'   f a = (LoadableDisk f, Repurpose' a   Disk f) :: Constraint
-type LoadableIO  f a = (LoadableDisk f, RepurposeIO a  Disk f) :: Constraint
-type LoadableIO' f a = (LoadableDisk f, RepurposeIO' a Disk f) :: Constraint
+type Loadable    f a = (LoadableDisk f, RepurposeIO  a Disk f) :: Constraint
+type Loadable'   f a = (LoadableDisk f, RepurposeIO' a Disk f) :: Constraint
 type SavableDisk f = (ToJSON (f Disk), HasFamilyName f) :: Constraint
-type Savable    f a = (SavableDisk f, Repurpose    Disk a f) :: Constraint
-type Savable'   f a = (SavableDisk f, Repurpose'   Disk a f) :: Constraint
-type SavableIO  f a = (SavableDisk f, RepurposeIO  Disk a f) :: Constraint
-type SavableIO' f a = (SavableDisk f, RepurposeIO' Disk a f) :: Constraint
+type Savable    f a = (SavableDisk f, RepurposeIO  Disk a f) :: Constraint
+type Savable'   f a = (SavableDisk f, RepurposeIO' Disk a f) :: Constraint
 
 data instance PatternGroups Authoring = PatternGroupsAuthoring
 	{ pgaDefaultReplication :: Replication Bool
@@ -199,6 +199,7 @@ pgaByMetadata = pgbByMetadata . repurpose'
 caPatternGroupsName :: IsString s => s
 caPatternGroupsName = "groups"
 
+instance RepurposeIO Browsing Authoring PatternGroups
 instance Repurpose Browsing Authoring PatternGroups where
 	repurpose _ pga = PatternGroupsBrowsing
 		{ pgbPatternGroups = repurpose (pgaDefaultReplication pga) <$> pgaPatternGroups pga
@@ -217,6 +218,7 @@ instance FromJSON (PatternGroups Authoring) where
 		("PatternGroups (an object with \"" ++ caPatternGroupsName ++ "\", \"" ++ rMirroringName ++ "\", and \"" ++ rColoringName ++ "\" keys)")
 		other
 
+instance RepurposeIO Authoring Authoring PatternGroups
 instance Repurpose Authoring Authoring PatternGroups
 
 ---------- PatternGroup Authoring ----------
@@ -225,6 +227,7 @@ pgaPatternsName, pgaDescriptionName :: IsString s => s
 pgaPatternsName = "patterns"
 pgaDescriptionName = "description"
 
+instance RepurposeIO Browsing Authoring PatternGroup
 instance Repurpose Browsing Authoring PatternGroup where
 	type instance RepurposingEnvironment Browsing Authoring PatternGroup = Replication Bool
 	repurpose r pga = PatternGroupBrowsing
@@ -254,6 +257,7 @@ instance FromJSON (PatternGroup Authoring) where
 		("PatternGroup (a list of Patterns, or an object with a \"" ++ pgaPatternsName ++ "\" key and optionally \"" ++ pgaDescriptionName ++ "\", \"" ++ rMirroringName ++ "\", and \"" ++ rColoringName ++ "\" keys)")
 		other
 
+instance RepurposeIO Authoring Authoring PatternGroup
 instance Repurpose Authoring Authoring PatternGroup
 
 ---------- Pattern Authoring ----------
@@ -261,6 +265,7 @@ instance Repurpose Authoring Authoring PatternGroup
 paTemplateName :: IsString s => s
 paTemplateName = "pattern"
 
+instance RepurposeIO Browsing Authoring Pattern
 instance Repurpose Browsing Authoring Pattern where
 	type instance RepurposingEnvironment Browsing Authoring Pattern = Replication Bool
 	repurpose r pa = PatternBrowsing
@@ -287,10 +292,12 @@ instance FromJSON (Pattern Authoring) where
 		("Pattern (a list of list of PatternCells, or an object with a \"" ++ paTemplateName ++ "\" key and optionally \"" ++ rMirroringName ++ "\" and \"" ++ rColoringName ++ "\" keys)")
 		other
 
+instance RepurposeIO Authoring Authoring Pattern
 instance Repurpose Authoring Authoring Pattern
 
 ---------- PatternTemplate Authoring ----------
 
+instance RepurposeIO Browsing Authoring PatternTemplate
 instance Repurpose Browsing Authoring PatternTemplate where
 	repurpose _ pta = PatternTemplateBrowsing
 		{ ptbCells = toRectangle pcAnything . V.reverse $ ptaCells pta
@@ -302,6 +309,7 @@ instance FromJSON (PatternTemplate Authoring) where
 		when (all null cells) (fail "empty patterns are not supported")
 		pure PatternTemplateAuthoring { ptaCells = cells }
 
+instance RepurposeIO Authoring Authoring PatternTemplate
 instance Repurpose Authoring Authoring PatternTemplate
 
 ---------- Population Disk ----------
@@ -334,6 +342,7 @@ instance FromJSON (Population Disk) where
 			, pdIndividuals = individuals
 			}
 
+instance RepurposeIO Browsing Disk Population
 instance Repurpose Browsing Disk Population where
 	repurpose _ pd = PopulationBrowsing
 		{ pbGeneration = pdGeneration pd
@@ -341,6 +350,7 @@ instance Repurpose Browsing Disk Population where
 		, pbIndividuals = repurpose sb <$> pdIndividuals pd
 		} where sb = repurpose' (pdShared pd)
 
+instance RepurposeIO Disk Disk Population
 instance Repurpose Disk Disk Population
 
 ---------- Shared Disk ----------
@@ -354,6 +364,7 @@ sdStatisticNamesName = "statistic-names"
 sdParameterCount :: Shared Disk -> Int
 sdParameterCount = sbParameterCount . repurpose'
 
+instance RepurposeIO Browsing Disk Shared
 instance Repurpose Browsing Disk Shared where
 	-- safety: we briefly construct a fresh mutable value via ptFromText, but we immediately read and discard it via ptToSet
 	repurpose _ sd = unsafePerformIO do
@@ -388,10 +399,12 @@ instance FromJSON (Shared Disk) where
 			, sdStatisticNames = statisticNames
 			}
 
+instance RepurposeIO Disk Disk Shared
 instance Repurpose Disk Disk Shared
 
 ---------- Individual Disk ----------
 
+instance RepurposeIO Browsing Disk Individual
 instance Repurpose Browsing Disk Individual where
 	type instance RepurposingEnvironment Browsing Disk Individual = Shared Browsing
 	repurpose sb id = IndividualBrowsing
@@ -409,6 +422,7 @@ instance ToJSON (Individual Disk) where
 instance FromJSON (Individual Disk) where
 	parseJSON vs = IndividualDisk <$> parseJSON vs
 
+instance RepurposeIO Disk Disk Individual
 instance Repurpose Disk Disk Individual
 
 ---------- PatternGroups Browsing ----------
@@ -420,6 +434,7 @@ pgbByMetadata pgsb = M.fromListWith (M.unionWith S.union)
 	, pb <- V.toList (pgbPatterns pgb)
 	]
 
+instance RepurposeIO Browsing Browsing PatternGroups
 instance Repurpose Browsing Browsing PatternGroups
 
 ---------- PatternGroup Browsing ----------
@@ -429,6 +444,7 @@ instance Default (PatternGroup Browsing) where
 
 instance GNamed (PatternGroup Browsing) where name = "PatternGroup-Browsing"
 
+instance RepurposeIO Browsing Browsing PatternGroup
 instance Repurpose Browsing Browsing PatternGroup
 
 ---------- Pattern Browsing ----------
@@ -445,6 +461,7 @@ pbMetadata pc = PatternMetadata
 instance Hashable (Pattern Browsing) where
 	s `hashWithSalt` pc = s `hashWithSalt` pbReplication pc `hashWithSalt` pbTemplate pc
 
+instance RepurposeIO Browsing Browsing Pattern
 instance Repurpose Browsing Browsing Pattern
 
 ---------- PatternTemplate Browsing ----------
@@ -462,6 +479,7 @@ ptbConvolutionSize ptb = ConvolutionSize
 instance Hashable (PatternTemplate Browsing) where
 	hashWithSalt s = hashWithSalt s . ptbCells
 
+instance RepurposeIO Browsing Browsing PatternTemplate
 instance Repurpose Browsing Browsing PatternTemplate
 
 ---------- Population Browsing ----------
@@ -475,6 +493,7 @@ newNormalPopulationBrowsing rng sb populationSize = do
 		, pbIndividuals = is
 		}
 
+instance RepurposeIO Disk Browsing Population
 instance Repurpose Disk Browsing Population where
 	repurpose _ pb = PopulationDisk
 		{ pdGeneration = pbGeneration pb
@@ -482,6 +501,7 @@ instance Repurpose Disk Browsing Population where
 		, pdIndividuals = fmap repurpose' (pbIndividuals pb)
 		}
 
+instance RepurposeIO Browsing Browsing Population
 instance Repurpose Browsing Browsing Population
 
 ---------- Shared Browsing ----------
@@ -501,6 +521,7 @@ sbFromPatternGroups pgb = SharedBrowsing
 	, sbStatisticNames = currentStatisticNames
 	}
 
+instance RepurposeIO Disk Browsing Shared
 instance Repurpose Disk Browsing Shared where
 	repurpose _ sb = SharedDisk
 		-- safety: we briefly create a mutable thing with ptsFromMap, but we immediately do a complete read of it into a pure value with ptsToText and throw it away
@@ -508,6 +529,7 @@ instance Repurpose Disk Browsing Shared where
 		, sdStatisticNames = sbStatisticNames sb
 		}
 
+instance RepurposeIO Browsing Browsing Shared
 instance Repurpose Browsing Browsing Shared
 
 ---------- Individual Browsing ----------
@@ -519,11 +541,13 @@ newNormalIndividualBrowsing rng sb = id
 	. fmap realToFrac
 	<$> V.replicateM (sbParameterCount sb) (standard rng)
 
+instance RepurposeIO Disk Browsing Individual
 instance Repurpose Disk Browsing Individual where
 	repurpose _ ib = IndividualDisk $ mempty
 		<> svbParameters (ib0 ib)
 		<> svbParameters (ib84 ib)
 
+instance RepurposeIO Browsing Browsing Individual
 instance Repurpose Browsing Browsing Individual
 
 ---------- SingleVirus Browsing ----------
@@ -544,6 +568,7 @@ newSingleVirusBrowsing sb ps
 svbParameters :: SingleVirus Browsing -> IndexedBy ParameterIndex R
 svbParameters svb = svbPosition svb <> svbMove svb <> svbStatistics svb
 
+instance RepurposeIO Browsing Browsing SingleVirus
 instance Repurpose Browsing Browsing SingleVirus
 
 ---------- PatternCell ----------
