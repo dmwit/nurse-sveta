@@ -68,20 +68,27 @@ class RepurposeIO dst src (t :: Purpose -> *) where
 	type instance RepurposingEnvironmentIO dst src t = ()
 	repurposeIO :: RepurposingEnvironmentIO dst src t -> t src -> IO (t dst)
 
-repurpose' :: forall dst src t. (Repurpose dst src t, RepurposingEnvironment dst src t ~ ()) => t src -> t dst
+type Repurpose' dst src t = (Repurpose dst src t, RepurposingEnvironment dst src t ~ ())
+type RepurposeIO' dst src t = (RepurposeIO dst src t, RepurposingEnvironmentIO dst src t ~ ())
+
+repurpose' :: forall dst src t. Repurpose' dst src t => t src -> t dst
 repurpose' = repurpose ()
 
-repurposeIO' :: forall dst src t. (RepurposeIO dst src t, RepurposingEnvironmentIO dst src t ~ ()) => t src -> IO (t dst)
+repurposeIO' :: forall dst src t. RepurposeIO' dst src t => t src -> IO (t dst)
 repurposeIO' = repurposeIO ()
 
 -- | for errors and the like
 class HasFamilyName (f :: Purpose -> *) where familyName :: String
 type LoadableDisk f = (FromJSON (f Disk), HasFamilyName f) :: Constraint
-type Loadable f a = (LoadableDisk f, Repurpose a Disk f) :: Constraint
-type LoadableIO f a = (LoadableDisk f, RepurposeIO a Disk f) :: Constraint
+type Loadable    f a = (LoadableDisk f, Repurpose a    Disk f) :: Constraint
+type Loadable'   f a = (LoadableDisk f, Repurpose' a   Disk f) :: Constraint
+type LoadableIO  f a = (LoadableDisk f, RepurposeIO a  Disk f) :: Constraint
+type LoadableIO' f a = (LoadableDisk f, RepurposeIO' a Disk f) :: Constraint
 type SavableDisk f = (ToJSON (f Disk), HasFamilyName f) :: Constraint
-type Savable f a = (SavableDisk f, Repurpose Disk a f) :: Constraint
-type SavableIO f a = (SavableDisk f, RepurposeIO Disk a f) :: Constraint
+type Savable    f a = (SavableDisk f, Repurpose    Disk a f) :: Constraint
+type Savable'   f a = (SavableDisk f, Repurpose'   Disk a f) :: Constraint
+type SavableIO  f a = (SavableDisk f, RepurposeIO  Disk a f) :: Constraint
+type SavableIO' f a = (SavableDisk f, RepurposeIO' Disk a f) :: Constraint
 
 data instance PatternGroups Authoring = PatternGroupsAuthoring
 	{ pgaDefaultReplication :: Replication Bool
@@ -488,14 +495,11 @@ sbStatisticCount = length . sbStatisticNames
 sbParameterCount :: Shared Browsing -> Int
 sbParameterCount sb = 2{- 0 virus/84 virus -} * (2{- position/move -} * sbPatternCount sb + sbStatisticCount sb)
 
-sbFromPatternGroupsB :: PatternGroups Browsing -> Shared Browsing
-sbFromPatternGroupsB pgb = SharedBrowsing
+sbFromPatternGroups :: PatternGroups Browsing -> Shared Browsing
+sbFromPatternGroups pgb = SharedBrowsing
 	{ sbPatterns = pgbByMetadata pgb
 	, sbStatisticNames = currentStatisticNames
 	}
-
-sbFromPatternGroupsA :: PatternGroups Authoring -> Shared Browsing
-sbFromPatternGroupsA = sbFromPatternGroupsB . repurpose'
 
 instance Repurpose Disk Browsing Shared where
 	repurpose _ sb = SharedDisk

@@ -44,7 +44,7 @@ loadFromConfiguration nm = do
 loadConfiguration :: IO MsMendelConfig
 loadConfiguration = loadFromConfiguration "config"
 
-savePopulation :: (Repurpose Disk purpose Population, RepurposingEnvironment Disk purpose Population ~ ()) => FilePath -> Population purpose -> IO ()
+savePopulation :: Repurpose' Disk purpose Population => FilePath -> Population purpose -> IO ()
 savePopulation dir pop_ = do
 	saveAtomically dir (show generation <.> "json") pop
 	saveAtomically dir "latest.json" generation
@@ -96,9 +96,9 @@ loadFromDisk :: forall f purpose. Loadable f purpose => FilePath -> RepurposingE
 loadFromDisk path env = repurpose @_ @Disk env <$> loadJSON path (familyName @f)
 
 loadFromDisk_ :: forall f purpose. Loadable f purpose => FilePath -> RepurposingEnvironment purpose Disk f -> IO (f purpose)
-loadFromDisk' :: forall f purpose. (Loadable f purpose, RepurposingEnvironment purpose Disk f ~ ()) => FilePath -> ExceptT LoadingError IO (f purpose)
-loadFromDisk_' :: forall f purpose. (Loadable f purpose, RepurposingEnvironment purpose Disk f ~ ()) => FilePath -> IO (f purpose)
-loadFromDisk'_ :: forall f purpose. (Loadable f purpose, RepurposingEnvironment purpose Disk f ~ ()) => FilePath -> IO (f purpose)
+loadFromDisk' :: forall f purpose. Loadable' f purpose => FilePath -> ExceptT LoadingError IO (f purpose)
+loadFromDisk_' :: forall f purpose. Loadable' f purpose => FilePath -> IO (f purpose)
+loadFromDisk'_ :: forall f purpose. Loadable' f purpose => FilePath -> IO (f purpose)
 
 loadFromDisk_ = (reflectError .) . (runExceptT .) . loadFromDisk
 loadFromDisk' = flip loadFromDisk ()
@@ -106,11 +106,11 @@ loadFromDisk_' = flip loadFromDisk_ ()
 loadFromDisk'_ = loadFromDisk_'
 
 -- | data dir
-loadPopulation_ :: FilePath -> IO (Population Disk)
+loadPopulation_ :: Repurpose' purpose Disk Population => FilePath -> IO (Population purpose)
 loadPopulation_ = reflectError . loadPopulation
 
 -- | data dir
-loadPopulation :: (Repurpose purpose Disk Population, RepurposingEnvironment purpose Disk Population ~ ()) => FilePath -> IO (Either LoadingError (Population purpose))
+loadPopulation :: Repurpose' purpose Disk Population => FilePath -> IO (Either LoadingError (Population purpose))
 loadPopulation dir = runExceptT do
 	generation <- loadJSON (dir </> "latest.json") "generation"
 	let populationFilename = dir </> show generation <.> "json"
@@ -120,12 +120,12 @@ loadPopulation dir = runExceptT do
 	pure (repurpose' population)
 
 -- | config dir
-loadPatterns_ :: FilePath -> IO (PatternGroups Authoring)
+loadPatterns_ :: Repurpose' purpose Authoring PatternGroups => FilePath -> IO (PatternGroups purpose)
 loadPatterns_ = reflectError . loadPatterns
 
 -- | config dir
-loadPatterns :: FilePath -> IO (Either LoadingError (PatternGroups Authoring))
-loadPatterns dir = runExceptT (loadJSON (dir </> "patterns.json") "patterns")
+loadPatterns :: Repurpose' purpose Authoring PatternGroups => FilePath -> IO (Either LoadingError (PatternGroups purpose))
+loadPatterns dir = runExceptT (repurpose' @_ @Authoring <$> loadJSON (dir </> "patterns.json") "patterns")
 
 -- | full path
 loadJSON :: FromJSON a => FilePath -> String -> ExceptT LoadingError IO a
