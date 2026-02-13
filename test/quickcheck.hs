@@ -5,14 +5,17 @@ import Data.Aeson.Encoding
 import Data.Aeson.Key
 import Data.ByteString (ByteString)
 import Ms.Mendel
+import Nurse.Sveta.GameBrowser (GameStateEdit(..))
 import Test.QuickCheck
 
 import qualified Data.Aeson as A
 import qualified Data.ByteString as BS
 import qualified Data.Map.Strict as M
+import qualified Data.Sequence as Seq
 import qualified Data.Set as S
 import qualified Data.Text as T
 import qualified Data.Vector as V
+import qualified Nurse.Sveta.GameBrowser as GB
 import qualified Test.QuickCheck as QC
 
 main :: IO ()
@@ -42,6 +45,10 @@ main = do
 		, qc "(,) <-> PatternMetadata" \t -> pmToTuple (pmFromTuple t) === t
 		, qc "(,) <-> ConvolutionSize" \t -> csToTuple (csFromTuple t) === t
 		, qc "(,) <-> Replication" \t -> rToTuple (rFromTuple t :: Replication Int) === t
+		, qc "uiTryAdvance allows legal lock without lookahead match" unitUiTryAdvanceAllowsLegalLock
+		, qc "uiTryAdvance rejects illegal lock" unitUiTryAdvanceRejectsIllegalLock
+		, qc "uiTryAdvance legal equals uiAdvance" unitUiTryAdvanceMatchesAdvanceOnLegal
+		, qc "uiAdvance appends novel variation at end" unitUiAdvanceAppendsVariationAtEnd
 		, smallQC 5 "Population Disk <-> Browsing" (repurposeuuRoundtrips @Disk @Population @Browsing)
 		, smallQC 5 "Population Browsing <-> Disk" (repurposeuuRoundtrips @Browsing @Population @Disk)
 		, smallQC 5 "Shared Disk <-> Browsing" (repurposeuuRoundtrips @Disk @Shared @Browsing)
@@ -58,6 +65,48 @@ smallQC n nm prop = putStrLn nm >> quickCheckWithResult stdArgs { maxSize = n } 
 
 qc :: Testable prop => String -> prop -> IO QC.Result
 qc = smallQC 100
+
+unitUiTryAdvanceAllowsLegalLock :: Property
+unitUiTryAdvanceAllowsLegalLock =
+	isJust (GB.uiTryAdvance (Lock legalPill) (def :: GB.UIModel)) === True
+	where
+	legalPill = Pill
+		{ content = PillContent Horizontal Blue Red
+		, bottomLeftPosition = Position 0 0
+		}
+
+unitUiTryAdvanceRejectsIllegalLock :: Property
+unitUiTryAdvanceRejectsIllegalLock =
+	isNothing (GB.uiTryAdvance (Lock illegalPill) (def :: GB.UIModel)) === True
+	where
+	illegalPill = Pill
+		{ content = PillContent Horizontal Blue Red
+		, bottomLeftPosition = Position (-1) 0
+		}
+
+unitUiTryAdvanceMatchesAdvanceOnLegal :: Property
+unitUiTryAdvanceMatchesAdvanceOnLegal =
+	GB.uiTryAdvance edit ui === Just (GB.uiAdvance edit ui)
+	where
+	ui = def :: GB.UIModel
+	edit = GenerateLevel 0x2222 0
+
+unitUiAdvanceAppendsVariationAtEnd :: Property
+unitUiAdvanceAppendsVariationAtEnd =
+	counterexample (show (GB.nodes ui3)) $
+		editAtPath (Seq.singleton 2) 0 ui3 === Just e3
+	where
+	e1 = GenerateLevel 0x2222 0
+	e2 = GenerateLevel 0x3333 0
+	e3 = GenerateLevel 0x4444 0
+	ui1 = GB.uiAdvance e1 (def :: GB.UIModel)
+	ui2 = GB.uiAdvance e2 (GB.setSelection ui1 def)
+	ui3 = GB.uiAdvance e3 (GB.setSelection ui2 def)
+
+	editAtPath is i ui = do
+		mt <- GB.indexVariations (GB.nodes ui) is
+		(e, _gs) <- GB.mainSequence mt Seq.!? i
+		pure e
 
 repurposeeeRoundtrips :: forall b f a envAB envBA. (Repurpose b a f, Repurpose a b f, Eq (f a), envAB ~ RepurposingEnvironment b a f, envBA ~ RepurposingEnvironment a b f) => (envAB -> envBA -> QC.Gen (f a)) -> envAB -> envBA -> QC.Gen Bool
 repurposeeeRoundtrips mkA envAB envBA = mkA envAB envBA <&> \fa -> repurpose envBA (repurpose @b envAB fa) == fa

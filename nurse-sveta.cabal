@@ -106,6 +106,7 @@ library
                         , Ms.Mendel.Widget
                         , Nurse.Sveta.Cairo
                         , Nurse.Sveta.Files
+                        , Nurse.Sveta.GameBrowser
                         , Nurse.Sveta.STM
                         , Nurse.Sveta.STM.BatchProcessor
                         , Nurse.Sveta.Tomcats
