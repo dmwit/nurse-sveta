@@ -23,6 +23,7 @@ common shared
                         , bytestring >=0.10 && <0.12
                         , containers ^>=0.6
                         , gi-cairo-render ^>=0.1
+                        , gi-cairo-connector ^>=0.1
                         , gi-gio ^>=2.0
                         , gi-gobject ^>=2.0
                         , gi-gtk ^>=4.0.8
