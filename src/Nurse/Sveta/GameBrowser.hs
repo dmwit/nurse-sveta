@@ -166,10 +166,22 @@ extendVariationAtDepth :: Int -> Int -> Maybe ActiveVariations -> Maybe ActiveVa
 extendVariationAtDepth d i = atDepth d (singletonVariations i <>)
 
 splitVariationAtDepth :: Int -> Maybe ActiveVariations -> Maybe ActiveVariations
-splitVariationAtDepth d = atDepth d \av -> ActiveVariations
-	{ activeHere = 1
-	, activeChildren = IM.singleton 0 av
-	}
+splitVariationAtDepth d = Just . go d where
+	go 0 Nothing = singletonVariations 1
+	go 0 (Just av) = ActiveVariations
+		{ activeHere = 1
+		, activeChildren = IM.singleton 0 av
+		}
+	go n Nothing = ActiveVariations
+		{ activeHere = 0
+		, activeChildren = IM.singleton 0 (go (n-1) Nothing)
+		}
+	go n (Just av) = av
+		{ activeChildren = IM.insert i (go (n-1) child) (activeChildren av)
+		}
+		where
+		i = activeHere av
+		child = activeChildren av IM.!? i
 
 ensureDepth :: Int -> Maybe ActiveVariations -> Maybe ActiveVariations
 ensureDepth n = (<> fromVariations (Seq.replicate n 0))

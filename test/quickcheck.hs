@@ -10,6 +10,7 @@ import Test.QuickCheck
 
 import qualified Data.Aeson as A
 import qualified Data.ByteString as BS
+import qualified Data.IntMap as IM
 import qualified Data.Map.Strict as M
 import qualified Data.Sequence as Seq
 import qualified Data.Set as S
@@ -49,6 +50,7 @@ main = do
 		, qc "uiTryAdvance rejects illegal lock" unitUiTryAdvanceRejectsIllegalLock
 		, qc "uiTryAdvance legal equals uiAdvance" unitUiTryAdvanceMatchesAdvanceOnLegal
 		, qc "uiAdvance appends novel variation at end" unitUiAdvanceAppendsVariationAtEnd
+		, qc "uiAdvance edge-case activeVariations" unitUiAdvanceEdgeCaseActiveVariations
 		, smallQC 5 "Population Disk <-> Browsing" (repurposeuuRoundtrips @Disk @Population @Browsing)
 		, smallQC 5 "Population Browsing <-> Disk" (repurposeuuRoundtrips @Browsing @Population @Disk)
 		, smallQC 5 "Shared Disk <-> Browsing" (repurposeuuRoundtrips @Disk @Shared @Browsing)
@@ -107,6 +109,40 @@ unitUiAdvanceAppendsVariationAtEnd =
 		mt <- GB.indexVariations (GB.nodes ui) is
 		(e, _gs) <- GB.mainSequence mt Seq.!? i
 		pure e
+
+unitUiAdvanceEdgeCaseActiveVariations :: Property
+unitUiAdvanceEdgeCaseActiveVariations =
+	counterexample (show observed) (observed === expected)
+	where
+	a = GenerateLevel 0x2222 0
+	b = GenerateLevel 0x3333 0
+	c = GenerateLevel 0x4444 0
+	d = GenerateLevel 0x5555 0
+
+	leaf e = GB.MoveTree (Seq.singleton e) Seq.empty
+	root ms vs = GB.MoveTree (Seq.fromList ms) (Seq.fromList (leaf <$> vs))
+	ui mt = (def :: GB.UIModel)
+		{ GB.nodes = GB.applyEdits mt
+		, GB.moveSelection = def
+		}
+	advance m = GB.activeVariations . GB.uiAdvance m
+
+	observed =
+		[ advance a (ui (root [] [a, b]))   -- AlreadyInVariation 0 (out of 2)
+		, advance b (ui (root [] [a, b]))   -- AlreadyInVariation 1 (out of 2)
+		, advance c (ui (root [a, b] []))   -- SplitAndInserted
+		, advance c (ui (root [] [a, b]))   -- Inserted 2
+		, advance d (ui (root [a] [b, c]))
+			{ GB.activeVariations = Just (GB.ActiveVariations 0 mempty)
+			}
+		]
+	expected =
+		[ Just (GB.ActiveVariations 0 mempty)
+		, Just (GB.ActiveVariations 1 mempty)
+		, Just (GB.ActiveVariations 1 mempty)
+		, Just (GB.ActiveVariations 2 mempty)
+		, Just (GB.ActiveVariations 1 (IM.singleton 0 (GB.ActiveVariations 0 mempty)))
+		]
 
 repurposeeeRoundtrips :: forall b f a envAB envBA. (Repurpose b a f, Repurpose a b f, Eq (f a), envAB ~ RepurposingEnvironment b a f, envBA ~ RepurposingEnvironment a b f) => (envAB -> envBA -> QC.Gen (f a)) -> envAB -> envBA -> QC.Gen Bool
 repurposeeeRoundtrips mkA envAB envBA = mkA envAB envBA <&> \fa -> repurpose envBA (repurpose @b envAB fa) == fa
