@@ -22,6 +22,7 @@ main = do
 			}
 
 		tools <- new Box [#orientation := OrientationVertical]
+		uiRef <- newIORef (def :: UIModel)
 
 		seedEntry <- new Entry [#placeholderText := "seed", #maxLength := 4]
 		levelEntry <- new Entry [#placeholderText := "level", #maxLength := 2, #inputPurpose := InputPurposeDigits]
@@ -38,7 +39,9 @@ main = do
 			case levelMaybe of
 				Nothing -> #addCssClass levelEntry "error"
 				Just{} -> #removeCssClass levelEntry "error"
-			for_ seedMaybe \seed -> for_ levelMaybe \level -> print (seed, level)
+			for_ seedMaybe \seed -> for_ levelMaybe \level -> do
+				modifyIORef uiRef \ui -> fromMaybe ui (uiTryAdvance (GenerateLevel seed level) ui)
+				readIORef uiRef >>= psvSet boardView . uiCurrentPSM
 
 		#append tools seedEntry
 		#append tools levelEntry
@@ -69,7 +72,7 @@ parseSeed = \t -> do
 		++ zip ['A'..'F'] [10..]
 
 parseLevel :: Text -> Maybe Int
-parseLevel t = tread t >>= ensure (<25)
+parseLevel t = tread t >>= ensure (\n -> 0 <= n && n <= 20)
 
 data MoveTree m = MoveTree
 	{ mainSequence :: Seq m
@@ -276,6 +279,15 @@ uiVariationDepth = variationDepth . moveSelection
 uiMainSequenceIndex :: UIModel -> Int
 uiMainSequenceIndex = mainSequenceIndex . moveSelection
 
+uiCurrentPSM :: UIModel -> PlayerStateModel
+uiCurrentPSM ui = PSM
+	{ psmBoard = board gs
+	, psmLookahead = lookahead
+	, psmOverlay = []
+	} where
+	gs = uiCurrentState ui
+	lookahead = (pillSequence gs V.!?) (pillIndex gs)
+
 -- | doesn't check if the move selection is valid for the current active variations and nodes
 setSelection :: UIModel -> MoveSelection -> UIModel
 setSelection ui sel = ui { moveSelection = sel }
@@ -310,6 +322,19 @@ uiExtendVariation i ui = uiModifyVariation (extendVariationAtDepth (uiVariationD
 
 uiSplitVariation :: UIModel -> UIModel
 uiSplitVariation ui = uiModifyVariation (splitVariationAtDepth (uiVariationDepth ui)) ui
+
+uiFocusedTree :: HasCallStack => UIModel -> MoveTree (GameStateEdit, GameState)
+uiFocusedTree ui = indexVariations_ (nodes ui) (uiActivePath ui)
+
+uiCurrentState :: UIModel -> GameState
+uiCurrentState ui = defOr . fmap snd $ mainSequence (uiFocusedTree ui) Seq.!? uiMainSequenceIndex ui
+
+uiIsLegalEdit :: UIModel -> GameStateEdit -> Bool
+uiIsLegalEdit ui = isLegalEdit (uiCurrentState ui)
+
+isLegalEdit :: GameState -> GameStateEdit -> Bool
+isLegalEdit _ GenerateLevel{} = True
+isLegalEdit gs (Lock pill) = isJust (place (board gs) pill)
 
 normalizeLarge :: HasCallStack => UIModel -> MoveSelection -> Maybe MoveSelection
 normalizeLarge ui sel0 = go (drop (variationDepth sel0) (defaultTrees ui)) sel0 where
@@ -350,6 +375,61 @@ uiForward = uiModifySequenceIndex 1
 
 uiBackward :: UIModel -> Maybe UIModel
 uiBackward = uiModifySequenceIndex (-1)
+
+normalizeActiveVariations :: MoveTree m -> Maybe ActiveVariations -> Maybe ActiveVariations
+normalizeActiveVariations mt (Just av)
+	| varCount <= 0 = Nothing
+	| otherwise = Just ActiveVariations
+		{ activeHere = i
+		, activeChildren = IM.fromList do
+			ix <- [0..varCount-1]
+			let child_ = normalizeActiveVariations (Seq.index vars ix) (activeChildren av IM.!? ix)
+			maybe [] (\child -> [(ix, child)]) child_
+		}
+	where
+	vars = variations mt
+	varCount = length vars
+	i = min (varCount-1) (max 0 (activeHere av))
+normalizeActiveVariations _ Nothing = Nothing
+
+uiNormalizeActiveVariations :: UIModel -> UIModel
+uiNormalizeActiveVariations ui = ui
+	{ activeVariations = normalizeActiveVariations (nodes ui) (activeVariations ui)
+	}
+
+data MoveTreeAddress = MoveTreeAddress
+	{ mtaVariations :: Seq Int
+	, mtaMainSequenceIndex :: Int
+	} deriving (Eq, Ord, Read, Show)
+
+uiVisitAddress :: UIModel -> MoveTreeAddress -> Maybe UIModel
+uiVisitAddress ui addr = do
+	_ <- indexVariations (nodes ui) (mtaVariations addr)
+	let sel = MoveSelection
+	    	{ variationDepth = length (mtaVariations addr)
+	    	, mainSequenceIndex = mtaMainSequenceIndex addr
+	    	}
+	sel' <- normalizeSmall ui =<< normalizeLarge ui sel
+	pure . uiNormalizeActiveVariations . uiActivateVariation (mtaVariations addr) $ setSelection ui sel'
+
+uiDeleteCurrent :: HasCallStack => UIModel -> Maybe UIModel
+uiDeleteCurrent ui = do
+	let i = uiMainSequenceIndex ui
+	guard (i >= 0)
+	(focusedTree, rebuildTree) <- indexVariationsL (nodes ui) (uiActivePath ui)
+	guard (i < length (mainSequence focusedTree))
+	let (b, _ Seq.:<| e) = Seq.splitAt i (mainSequence focusedTree)
+	    focusedTree' = focusedTree { mainSequence = b <> e }
+	    ui' = uiNormalizeActiveVariations ui
+	    	{ nodes = rebuildTree focusedTree'
+	    	, moveSelection = (moveSelection ui)
+	    		{ mainSequenceIndex = i - 1
+	    		}
+	    	}
+	normalizeSmall ui' (moveSelection ui') <&> setSelection ui'
+
+uiTryAdvance :: HasCallStack => GameStateEdit -> UIModel -> Maybe UIModel
+uiTryAdvance e ui = uiAdvance e ui <$ guard (uiIsLegalEdit ui e)
 
 -- TODO: Check that extendVariation and splitVariation do what you think they
 -- do. In particular, are they adding an extra leaf variation of 0 in some/all
