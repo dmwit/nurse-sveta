@@ -11,7 +11,7 @@ module Nurse.Sveta.Widget (
 	PlayerStateModel(..),
 	psmBoardL, psmLookaheadL, psmOverlayL,
 	PlayerStateView, newPlayerStateView, psvWidget,
-	psvGet, psvSet,
+	psvGet, psvSet, psvPointToBoardCell,
 	psvModifyM, psvModifyM_, psvModify, psvModify_,
 
 	-- * Hyperparameters
@@ -215,6 +215,33 @@ psvSet psv psm = do
 	psvUpdateHeightRequest (psvCanvas psv) psm
 	psvSetCanvasSize psv (bottleSizeRecommendation (psmBoard psm))
 	#queueDraw psv
+
+psvPointToBoardCell :: PlayerStateView -> Double -> Double -> IO (Maybe Position)
+psvPointToBoardCell psv px py = do
+	psm <- psvGet psv
+	w <- psvWidget psv
+	ww <- fromIntegral <$> #getWidth w
+	wh <- fromIntegral <$> #getHeight w
+	let b = psmBoard psm
+	    (bw, bh) = bottleSizeRecommendation b
+	    aspect = fromIntegral bw / fromIntegral bh
+	    (drawW, drawH, offX, offY)
+	    	| ww / wh > aspect = (wh * aspect, wh, (ww - wh * aspect) / 2, 0)
+	    	| otherwise = (ww, ww / aspect, 0, (wh - ww / aspect) / 2)
+	    px' = px - offX
+	    py' = py - offY
+	    xRender = fromIntegral bw * px' / drawW
+	    yRender = fromIntegral bh * (1 - py' / drawH)
+	    x = floor xRender - 1
+	    y = floor yRender - 1
+	pure do
+		guard (ww > 0 && wh > 0)
+		guard (drawW > 0 && drawH > 0)
+		guard (0 <= px' && px' < drawW)
+		guard (0 <= py' && py' < drawH)
+		guard (0 <= x && x < DM.width b)
+		guard (0 <= y && y < DM.height b)
+		pure (Position x y)
 
 psvModifyM :: MonadIO m => PlayerStateView -> (PlayerStateModel -> m (PlayerStateModel, a)) -> m a
 psvModifyM psv f = do
