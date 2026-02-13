@@ -39,7 +39,7 @@ splitMainSequence n mt = case compare n (length ms) of
 		{ mainSequence = b
 		, variations = Seq.singleton MoveTree
 			{ mainSequence = e
-			, variations = def
+			, variations = variations mt
 			}
 		}
 	EQ -> Just mt
@@ -354,8 +354,9 @@ uiVisitAddress ui addr = do
 	    	{ variationDepth = length (mtaVariations addr)
 	    	, mainSequenceIndex = mtaMainSequenceIndex addr
 	    	}
-	sel' <- normalizeSmall ui =<< normalizeLarge ui sel
-	pure . uiNormalizeActiveVariations . uiActivateVariation (mtaVariations addr) $ setSelection ui sel'
+	let ui' = uiEnsureDepth (uiActivateVariation (mtaVariations addr) ui)
+	sel' <- normalizeSmall ui' =<< normalizeLarge ui' sel
+	pure . uiNormalizeActiveVariations $ setSelection ui' sel'
 
 uiDeleteCurrent :: HasCallStack => UIModel -> Maybe UIModel
 uiDeleteCurrent ui = do

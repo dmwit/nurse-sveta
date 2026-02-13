@@ -51,6 +51,8 @@ main = do
 		, qc "uiTryAdvance legal equals uiAdvance" unitUiTryAdvanceMatchesAdvanceOnLegal
 		, qc "uiAdvance appends novel variation at end" unitUiAdvanceAppendsVariationAtEnd
 		, qc "uiAdvance edge-case activeVariations" unitUiAdvanceEdgeCaseActiveVariations
+		, qc "uiAdvance split preserves sibling variations" unitUiAdvanceSplitPreservesSiblingVariations
+		, qc "uiVisitAddress can jump to sibling child" unitUiVisitAddressSiblingChild
 		, smallQC 5 "Population Disk <-> Browsing" (repurposeuuRoundtrips @Disk @Population @Browsing)
 		, smallQC 5 "Population Browsing <-> Disk" (repurposeuuRoundtrips @Browsing @Population @Disk)
 		, smallQC 5 "Shared Disk <-> Browsing" (repurposeuuRoundtrips @Disk @Shared @Browsing)
@@ -143,6 +145,57 @@ unitUiAdvanceEdgeCaseActiveVariations =
 		, Just (GB.ActiveVariations 2 mempty)
 		, Just (GB.ActiveVariations 1 (IM.singleton 0 (GB.ActiveVariations 0 mempty)))
 		]
+
+unitUiAdvanceSplitPreservesSiblingVariations :: Property
+unitUiAdvanceSplitPreservesSiblingVariations =
+	counterexample (show (GB.nodes ui')) $
+		rootHeads === [b, z] .&&. splitNeighborHeads === [x, y]
+	where
+	a = GenerateLevel 0x2222 0
+	b = GenerateLevel 0x3333 0
+	x = GenerateLevel 0x4444 0
+	y = GenerateLevel 0x5555 0
+	z = GenerateLevel 0x6666 0
+	leaf e = GB.MoveTree (Seq.singleton e) Seq.empty
+	root = GB.MoveTree (Seq.fromList [a, b]) (Seq.fromList [leaf x, leaf y])
+	ui = (def :: GB.UIModel)
+		{ GB.nodes = GB.applyEdits root
+		, GB.moveSelection = def { GB.mainSequenceIndex = 0, GB.variationDepth = 0 }
+		}
+	ui' = GB.uiAdvance z ui
+	rootHeads = branchHeads (GB.nodes ui')
+	splitNeighborHeads = case toList (GB.variations (GB.nodes ui')) of
+		v0:_ -> branchHeads v0
+		[] -> []
+
+	branchHeads mt = catMaybes do
+		v <- toList (GB.variations mt)
+		pure do
+			(e, _gs) <- GB.mainSequence v Seq.!? 0
+			pure e
+
+unitUiVisitAddressSiblingChild :: Property
+unitUiVisitAddressSiblingChild =
+	counterexample (show mres) $
+		fmap GB.uiActivePath mres === Just (Seq.fromList [1,0])
+		.&&.
+		fmap GB.uiMainSequenceIndex mres === Just 0
+	where
+	a = GenerateLevel 0x2222 0
+	b = GenerateLevel 0x3333 0
+	x = GenerateLevel 0x4444 0
+	y = GenerateLevel 0x5555 0
+	leaf e = GB.MoveTree (Seq.singleton e) Seq.empty
+	root = GB.MoveTree (Seq.fromList [a]) (Seq.fromList
+		[ GB.MoveTree (Seq.singleton b) (Seq.fromList [leaf x])
+		, GB.MoveTree (Seq.singleton b) (Seq.fromList [leaf y])
+		])
+	ui = (def :: GB.UIModel)
+		{ GB.nodes = GB.applyEdits root
+		, GB.activeVariations = Just (GB.ActiveVariations 0 (IM.singleton 0 (GB.ActiveVariations 0 mempty)))
+		, GB.moveSelection = def
+		}
+	mres = GB.uiVisitAddress ui (GB.MoveTreeAddress (Seq.fromList [1,0]) 0)
 
 repurposeeeRoundtrips :: forall b f a envAB envBA. (Repurpose b a f, Repurpose a b f, Eq (f a), envAB ~ RepurposingEnvironment b a f, envBA ~ RepurposingEnvironment a b f) => (envAB -> envBA -> QC.Gen (f a)) -> envAB -> envBA -> QC.Gen Bool
 repurposeeeRoundtrips mkA envAB envBA = mkA envAB envBA <&> \fa -> repurpose envBA (repurpose @b envAB fa) == fa
