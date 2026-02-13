@@ -16,6 +16,7 @@ module Nurse.Sveta.Util
 	, module Data.Default
 	, module Data.Foldable
 	, module Data.Functor
+	, module Data.Functor.Compose
 	, module Data.Hashable
 	, module Data.Int
 	, module Data.IORef
@@ -28,6 +29,7 @@ module Nurse.Sveta.Util
 	, module Data.String
 	, module Data.Time
 	, module Data.Traversable
+	, module Data.Tree
 	, module Data.Word
 	, module Dr.Mario.Model
 	, module Dr.Mario.Pathfinding
@@ -70,6 +72,7 @@ import Data.Coerce
 import Data.Default
 import Data.Foldable
 import Data.Functor
+import Data.Functor.Compose
 import Data.Hashable
 import Data.HashMap.Strict (HashMap)
 import Data.HashSet (HashSet)
@@ -90,6 +93,7 @@ import Data.String
 import Data.Text (Text)
 import Data.Time
 import Data.Traversable
+import Data.Tree
 import Data.Vector (Vector)
 import Data.Vector.Instances
 import Data.Word
@@ -175,3 +179,6 @@ fforever = flip (fix . (>=>))
 
 reflectError :: Show e => IO (Either e a) -> IO a
 reflectError = (>>= either (fail . show) pure)
+
+defOr :: Default a => Maybe a -> a
+defOr = fromMaybe def

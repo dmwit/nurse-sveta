@@ -9,10 +9,14 @@ import qualified Data.HashMap.Strict as HM
 import qualified Data.Text as T
 import qualified Data.Vector as V
 
--- ╭╴w╶──────╮
--- │╭╴top╶──╮│
--- │╰───────╯│
--- ╰─────────╯
+-- ╭╴w╶─────────────────╮
+-- │╭╴top╶─────────────╮│
+-- ││╭╴namesView╶─────╮││
+-- ││╰────────────────╯││
+-- ││╭╴renderingsView╶╮││
+-- ││╰────────────────╯││
+-- │╰──────────────────╯│
+-- ╰────────────────────╯
 main :: IO ()
 main = do
 	torchPlusGtkFix

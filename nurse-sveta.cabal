@@ -199,3 +199,7 @@ test-suite ms-mendel-quickcheck
     main-is:            quickcheck.hs
     build-depends:      QuickCheck ^>=2.15
     type:               exitcode-stdio-1.0
+
+executable ms-mendel-game-browser
+    import:             executable
+    main-is:            game-browser.hs
