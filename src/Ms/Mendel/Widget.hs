@@ -57,7 +57,7 @@ variationRows (TreeLayout _ vars) = 1 + sum (map variationRows vars)
 buildGridFromMoveTree :: MoveTree a -> (Map.Map GridPos GridCell, Map.Map GridPos MoveTreeAddress, Int, Int, Int, Int)
 buildGridFromMoveTree mt = (Map.fromList cellList, Map.fromList nodeAddrList, minCol, minRow, colCount, rowCount)
 	where
-	(cellList, nodeAddrList) = go 0 0 Seq.empty mt
+	(cellList, nodeAddrList) = go True 0 0 Seq.empty mt
 	positions = map fst cellList
 	(minCol, minRow, maxCol, maxRow) = case positions of
 		[] -> (0, 0, 0, 0)
@@ -65,25 +65,25 @@ buildGridFromMoveTree mt = (Map.fromList cellList, Map.fromList nodeAddrList, mi
 		     , maximum (map fst positions), maximum (map snd positions))
 	colCount = max 1 (maxCol - minCol + 1)
 	rowCount = max 1 (maxRow - minRow + 1)
-	go col row path (MoveTree ms vars) = (mainCells ++ mainEdges ++ varCells, mainAddrs ++ varAddrs)
+	go isRoot col row path (MoveTree ms vars) = (mainCells ++ mainEdges ++ varCells, mainAddrs ++ varAddrs)
 		where
 		n = length ms
 		varsList = toList vars
-		mainCells = [ ((col + 2*i, row), CellNode (i == 0)) | i <- [0..n] ]
+		mainCells = [ ((col + 2*i, row), CellNode (isRoot && i == 0)) | i <- [0..n] ]
 		mainAddrs = [ ((col + 2*i, row), MoveTreeAddress path (i - 1)) | i <- [0..n] ]
 		mainEdges = case varsList of
 			[] -> [ ((col + 2*i + 1, row), CellEdge EdgeStraight) | i <- [0..n-1] ]
 			_ -> let
-				straightEdges = [ ((col + 2*i + 1, row), CellEdge EdgeStraight) | i <- [0..n-2] ]
-				junctionEdgeCol = col + max 1 (2*n - 1)
+				straightEdges = [ ((col + 2*i + 1, row), CellEdge EdgeStraight) | i <- [0..n-1] ]
+				junctionEdgeCol = col + 2*n + 1
 				junctionEdge = ((junctionEdgeCol, row), CellEdge EdgeMainToFirst)
 				in straightEdges ++ [junctionEdge]
-		junctionCol = col + 2 * max 0 (n - 1)
-		stemCol = col + max 1 (2*n - 1)
+		varStartCol = col + 2*n + 2
 		(varCells, varAddrs) = case varsList of
 			[] -> ([], [])
 			_ -> let
-				rowStarts = scanl (+) 1 (map (variationRows . treeLayoutFromMoveTree) varsList)
+				rowStarts = scanl (+) 0 (map (variationRows . treeLayoutFromMoveTree) varsList)
+				stemCol = col + 2*n + 1
 				stemRows = [1 .. last rowStarts - 1]
 				stemCells = [ ((stemCol, r), CellEdge (kindFor r)) | r <- stemRows ]
 				kindFor r
@@ -91,8 +91,38 @@ buildGridFromMoveTree mt = (Map.fromList cellList, Map.fromList nodeAddrList, mi
 					| r == last rowStarts - 1 = EdgeFinalVariation
 					| otherwise = EdgeConnectingVariation
 				(varCellLists, varAddrLists) = unzip $
-					[ go junctionCol r0 (path Seq.|> j) v | (r0, (j, v)) <- zip rowStarts (zip [0..] varsList) ]
+					[ goVariation varStartCol r0 (path Seq.|> j) v | (r0, (j, v)) <- zip rowStarts (zip [0..] varsList) ]
 				in (stemCells ++ concat varCellLists, concat varAddrLists)
+		-- Variations: place moves only (no root); junction is shared with main.
+		goVariation col row path (MoveTree ms vars) = (mainCells ++ mainEdges ++ varCells, mainAddrs ++ varAddrs)
+			where
+			n = length ms
+			varsList = toList vars
+			mainCells = [ ((col + 2*i, row), CellNode False) | i <- [0..n-1] ]
+			mainAddrs = [ ((col + 2*i, row), MoveTreeAddress path i) | i <- [0..n-1] ]
+			mainEdges = case (n, varsList) of
+				(0, _) -> []
+				(_, []) -> [ ((col + 2*i + 1, row), CellEdge EdgeStraight) | i <- [0..n-2] ]
+				(_, _) -> let
+					straightEdges = [ ((col + 2*i + 1, row), CellEdge EdgeStraight) | i <- [0..n-2] ]
+					junctionEdgeCol = col + 2*n - 1
+					junctionEdge = ((junctionEdgeCol, row), CellEdge EdgeMainToFirst)
+					in straightEdges ++ [junctionEdge]
+			varStartCol = col + 2*n
+			(varCells, varAddrs) = case varsList of
+				[] -> ([], [])
+				_ -> let
+					rowStarts = scanl (+) 0 (map (variationRows . treeLayoutFromMoveTree) varsList)
+					stemCol = col + 2*n - 1
+					stemRows = [row+1 .. row + last rowStarts - 1]
+					stemCells = [ ((stemCol, r), CellEdge (kindFor r)) | r <- stemRows ]
+					kindFor r
+						| r == row + 1 = EdgeMiddleVariation
+						| r == row + last rowStarts - 1 = EdgeFinalVariation
+						| otherwise = EdgeConnectingVariation
+					(varCellLists, varAddrLists) = unzip $
+						[ goVariation varStartCol (row + r0) (path Seq.|> j) v | (r0, (j, v)) <- zip rowStarts (zip [0..] varsList) ]
+					in (stemCells ++ concat varCellLists, concat varAddrLists)
 
 cellSizePx :: Int
 cellSizePx = 30

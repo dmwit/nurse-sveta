@@ -228,7 +228,7 @@ unitTreeLayout = conjoin $ zipWith3 mkProp trees layoutConstraints addressConstr
 	layoutConstraints = layout <$> tail [ignored
 		, [(2, 0), (4, 0)]
 		, [(2, 0), (4, 0), (6, 0), (8, 0), (6, 1), (8, 1), (10, 1)]
-		, [(2, 0), (4, 0), (2, 1), (4, 1)]
+		, [(2, 0), (4, 0), (2, 1), (4, 1), (6, 1)]
 		]
 	addressConstraints = tail [ignored
 		, tail [ignored
