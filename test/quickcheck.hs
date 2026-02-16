@@ -53,6 +53,7 @@ main = do
 		, qc "uiAdvance edge-case activeVariations" unitUiAdvanceEdgeCaseActiveVariations
 		, qc "uiAdvance split preserves sibling variations" unitUiAdvanceSplitPreservesSiblingVariations
 		, qc "uiVisitAddress can jump to sibling child" unitUiVisitAddressSiblingChild
+		, qc "tree layout" unitTreeLayout
 		, smallQC 5 "Population Disk <-> Browsing" (repurposeuuRoundtrips @Disk @Population @Browsing)
 		, smallQC 5 "Population Browsing <-> Disk" (repurposeuuRoundtrips @Browsing @Population @Disk)
 		, smallQC 5 "Shared Disk <-> Browsing" (repurposeuuRoundtrips @Disk @Shared @Browsing)
@@ -196,6 +197,64 @@ unitUiVisitAddressSiblingChild =
 		, GB.moveSelection = def
 		}
 	mres = GB.uiVisitAddress ui (GB.MoveTreeAddress (Seq.fromList [1,0]) 0)
+
+unitTreeLayout :: Property
+unitTreeLayout = conjoin $ zipWith3 mkProp trees layoutConstraints addressConstraints where
+	mkProp tree layoutConstraint addressConstraint =
+		counterexample (show (tree, layoutConstraint, addressConstraint)) $
+		let (actualLayout, actualAddresses, _, _, _, _) = buildGridFromMoveTree tree
+		in layoutConstraint `hasNodes` actualLayout && addressConstraint `hasAddrs` actualAddresses
+
+	hasAddrs l t = M.fromList l == t
+	hasNodes l t = M.fromList l == M.mapMaybe fromCellNode t
+	fromCellNode = \case
+		CellNode x -> Just x
+		_ -> Nothing
+
+	moveTree mainSeq vars = GB.MoveTree (Seq.fromList mainSeq) (Seq.fromList vars)
+	address = GB.MoveTreeAddress . Seq.fromList
+	layout poss = ((0, 0), True) : map (flip (,) False) poss
+	trees = tail $ [ignored
+		, moveTree "ab" []
+		, moveTree "ab" $ tail [ignored
+			, moveTree "cd" []
+			, moveTree "efg" []
+			]
+		, moveTree "" $ tail [ignored
+			, moveTree "cd" []
+			, moveTree "efg" []
+			]
+		]
+	layoutConstraints = layout <$> tail [ignored
+		, [(2, 0), (4, 0)]
+		, [(2, 0), (4, 0), (6, 0), (8, 0), (6, 1), (8, 1), (10, 1)]
+		, [(2, 0), (4, 0), (2, 1), (4, 1)]
+		]
+	addressConstraints = tail [ignored
+		, tail [ignored
+			, ((0, 0), address [] (-1)) -- epsilon
+			, ((2, 0), address [] 0) -- a
+			, ((4, 0), address [] 1) -- b
+			]
+		, tail [ignored
+			, ((0, 0), address [] (-1)) -- epsilon
+			, ((2, 0), address [] 0) -- a
+			, ((4, 0), address [] 1) -- b
+			, ((6, 0), address [0] 0) -- c
+			, ((8, 0), address [0] 1) -- d
+			, ((6, 1), address [1] 0) -- e
+			, ((8, 1), address [1] 1) -- f
+			, ((10, 1), address [1] 2) -- g
+			]
+		, tail [ignored
+			, ((0, 0), address [] (-1)) -- epsilon
+			, ((2, 0), address [0] 0) -- c
+			, ((4, 0), address [0] 1) -- d
+			, ((2, 1), address [1] 0) -- e
+			, ((4, 1), address [1] 1) -- f
+			, ((6, 1), address [1] 2) -- g
+			]
+		]
 
 repurposeeeRoundtrips :: forall b f a envAB envBA. (Repurpose b a f, Repurpose a b f, Eq (f a), envAB ~ RepurposingEnvironment b a f, envBA ~ RepurposingEnvironment a b f) => (envAB -> envBA -> QC.Gen (f a)) -> envAB -> envBA -> QC.Gen Bool
 repurposeeeRoundtrips mkA envAB envBA = mkA envAB envBA <&> \fa -> repurpose envBA (repurpose @b envAB fa) == fa
