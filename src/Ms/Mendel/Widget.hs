@@ -5,13 +5,14 @@ module Ms.Mendel.Widget
 
 import Data.Foldable (toList)
 import qualified Data.Map.Strict as Map
+import qualified Data.Sequence as Seq
 import GI.Cairo.Render.Connector (renderWithContext)
 import qualified GI.Cairo.Render as C
 import GI.Gtk
 import Ms.Mendel.Cairo
 import Ms.Mendel.Population
 import Nurse.Sveta.Cairo (fitText)
-import Nurse.Sveta.GameBrowser (MoveTree(..))
+import Nurse.Sveta.GameBrowser (MoveTree(..), MoveTreeAddress(..))
 import Nurse.Sveta.Util
 import Nurse.Sveta.Widget
 
@@ -50,24 +51,27 @@ type GridPos = (Int, Int)
 variationRows :: TreeLayout -> Int
 variationRows (TreeLayout _ vars) = 1 + sum (map variationRows vars)
 
--- | Build the grid from a tree layout. Returns (cell map, minCol, minRow, colCount, rowCount).
--- Row 0 = main line. Variations stacked in rows 1+.
-buildGrid :: TreeLayout -> (Map.Map GridPos GridCell, Int, Int, Int, Int)
-buildGrid tl = (cells, minCol, minRow, colCount, rowCount)
+
+-- | Build grid and node addresses from MoveTree.
+-- Returns (cells, nodeAddresses, minCol, minRow, colCount, rowCount).
+buildGridFromMoveTree :: MoveTree a -> (Map.Map GridPos GridCell, Map.Map GridPos MoveTreeAddress, Int, Int, Int, Int)
+buildGridFromMoveTree mt = (Map.fromList cellList, Map.fromList nodeAddrList, minCol, minRow, colCount, rowCount)
 	where
-	assocList = go 0 0 tl
-	cells = Map.fromList assocList
-	positions = map fst assocList
+	(cellList, nodeAddrList) = go 0 0 Seq.empty mt
+	positions = map fst cellList
 	(minCol, minRow, maxCol, maxRow) = case positions of
 		[] -> (0, 0, 0, 0)
 		_ -> (minimum (map fst positions), minimum (map snd positions)
 		     , maximum (map fst positions), maximum (map snd positions))
 	colCount = max 1 (maxCol - minCol + 1)
 	rowCount = max 1 (maxRow - minRow + 1)
-	go col row (TreeLayout n vars) = mainNodes ++ mainEdges ++ variationCells
+	go col row path (MoveTree ms vars) = (mainCells ++ mainEdges ++ varCells, mainAddrs ++ varAddrs)
 		where
-		mainNodes = [ ((col + 2*i, row), CellNode (i == 0)) | i <- [0..n] ]
-		mainEdges = case vars of
+		n = length ms
+		varsList = toList vars
+		mainCells = [ ((col + 2*i, row), CellNode (i == 0)) | i <- [0..n] ]
+		mainAddrs = [ ((col + 2*i, row), MoveTreeAddress path (i - 1)) | i <- [0..n] ]
+		mainEdges = case varsList of
 			[] -> [ ((col + 2*i + 1, row), CellEdge EdgeStraight) | i <- [0..n-1] ]
 			_ -> let
 				straightEdges = [ ((col + 2*i + 1, row), CellEdge EdgeStraight) | i <- [0..n-2] ]
@@ -76,20 +80,19 @@ buildGrid tl = (cells, minCol, minRow, colCount, rowCount)
 				in straightEdges ++ [junctionEdge]
 		junctionCol = col + 2 * max 0 (n - 1)
 		stemCol = col + max 1 (2*n - 1)
-		variationCells = case vars of
-			[] -> []
+		(varCells, varAddrs) = case varsList of
+			[] -> ([], [])
 			_ -> let
-				rowStarts = scanl (+) 1 (map variationRows vars)
+				rowStarts = scanl (+) 1 (map (variationRows . treeLayoutFromMoveTree) varsList)
 				stemRows = [1 .. last rowStarts - 1]
-				stemCells = [ ((stemCol, r), kindFor r) | r <- stemRows ]
+				stemCells = [ ((stemCol, r), CellEdge (kindFor r)) | r <- stemRows ]
 				kindFor r
 					| r == 1 = EdgeMiddleVariation
 					| r == last rowStarts - 1 = EdgeFinalVariation
 					| otherwise = EdgeConnectingVariation
-				stemCellList = map (\(pos, k) -> (pos, CellEdge k)) stemCells
-				varCells = concatMap (\(r0, v) -> go junctionCol r0 v) $
-					zip rowStarts vars
-				in stemCellList ++ varCells
+				(varCellLists, varAddrLists) = unzip $
+					[ go junctionCol r0 (path Seq.|> j) v | (r0, (j, v)) <- zip rowStarts (zip [0..] varsList) ]
+				in (stemCells ++ concat varCellLists, concat varAddrLists)
 
 cellSizePx :: Int
 cellSizePx = 30
@@ -98,17 +101,17 @@ cellSizePx = 30
 -- Fixed 30-pixel cells, scrollable. Structured for future interactivity.
 data VariationTreeView = VTV
 	{ vtvCanvas :: DrawingArea
-	, vtvModel :: IORef (Map.Map GridPos GridCell, Int, Int, Int, Int)
-	-- ^ (cells, minCol, minRow, colCount, rowCount)
+	, vtvModel :: IORef (Map.Map GridPos GridCell, Map.Map GridPos MoveTreeAddress, Int, Int, Int, Int)
+	-- ^ (cells, nodeAddresses, minCol, minRow, colCount, rowCount)
 	}
 
-newVariationTreeView :: MonadIO m => TreeLayout -> m VariationTreeView
-newVariationTreeView tl = do
-	let (cells, minC, minR, colCount, rowCount) = buildGrid tl
+newVariationTreeView :: MonadIO m => MoveTree a -> m VariationTreeView
+newVariationTreeView mt = do
+	let (cells, nodeAddrs, minC, minR, colCount, rowCount) = buildGridFromMoveTree mt
 	    w = colCount * cellSizePx
 	    h = rowCount * cellSizePx
 	da <- new DrawingArea []
-	ref <- liftIO $ newIORef (cells, minC, minR, colCount, rowCount)
+	ref <- liftIO $ newIORef (cells, nodeAddrs, minC, minR, colCount, rowCount)
 	drawingAreaSetDrawFunc da . Just $ \_ ctx _ _ ->
 		flip renderWithContext ctx =<< (vtvRender <$> liftIO (readIORef ref))
 	#setSizeRequest da (fromIntegral w :: Int32) (fromIntegral h :: Int32)
@@ -117,15 +120,27 @@ newVariationTreeView tl = do
 vtvWidget :: MonadIO m => VariationTreeView -> m Widget
 vtvWidget = toWidget . vtvCanvas
 
-vtvSet :: MonadIO m => VariationTreeView -> TreeLayout -> m ()
-vtvSet vtv tl = do
-	let (cells, minC, minR, colCount, rowCount) = buildGrid tl
-	liftIO $ writeIORef (vtvModel vtv) (cells, minC, minR, colCount, rowCount)
+vtvSet :: MonadIO m => VariationTreeView -> MoveTree a -> m ()
+vtvSet vtv mt = do
+	let (cells, nodeAddrs, minC, minR, colCount, rowCount) = buildGridFromMoveTree mt
+	liftIO $ writeIORef (vtvModel vtv) (cells, nodeAddrs, minC, minR, colCount, rowCount)
 	#setSizeRequest (vtvCanvas vtv) (fromIntegral (colCount * cellSizePx) :: Int32) (fromIntegral (rowCount * cellSizePx) :: Int32)
 	#queueDraw (vtvCanvas vtv)
 
-vtvRender :: (Map.Map GridPos GridCell, Int, Int, Int, Int) -> C.Render ()
-vtvRender (cells, minC, minR, _colCount, _rowCount) = do
+-- | Install a callback for node clicks. Called with the MoveTreeAddress of the clicked node.
+vtvOnNodeClick :: MonadIO m => VariationTreeView -> (MoveTreeAddress -> IO ()) -> m ()
+vtvOnNodeClick vtv callback = do
+	click <- new GestureClick []
+	on click #pressed \_ nX nY -> do
+		let col = floor (nX / fromIntegral cellSizePx)
+		    row = floor (nY / fromIntegral cellSizePx)
+		(_, nodeAddrs, minC, minR, _, _) <- liftIO $ readIORef (vtvModel vtv)
+		let gridPos = (col + minC, row + minR)
+		for_ (Map.lookup gridPos nodeAddrs) callback
+	#addController (vtvCanvas vtv) click
+
+vtvRender :: (Map.Map GridPos GridCell, Map.Map GridPos MoveTreeAddress, Int, Int, Int, Int) -> C.Render ()
+vtvRender (cells, _nodeAddrs, minC, minR, _colCount, _rowCount) = do
 	for_ (Map.toList cells) \((col, row), cell) -> do
 		C.save
 		C.translate (fromIntegral (col - minC) * fromIntegral cellSizePx) (fromIntegral (row - minR) * fromIntegral cellSizePx)

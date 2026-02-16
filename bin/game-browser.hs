@@ -22,7 +22,7 @@ main = do
 		boardOverlay <- new Overlay [#child := boardWidget]
 		hoverLayer <- new DrawingArea [#hexpand := True, #vexpand := True, #canTarget := False]
 		#addOverlay boardOverlay hoverLayer
-		treeView <- newVariationTreeView (treeLayoutFromMoveTree (nodes def))
+		treeView <- newVariationTreeView (nodes def)
 		treeWidget <- vtvWidget treeView
 		treeScroll <- new ScrolledWindow [#child := treeWidget, #hexpand := True]
 		tools <- new Box [#orientation := OrientationVertical]
@@ -52,8 +52,10 @@ main = do
 		let refresh = do
 		    	ui <- readIORef uiRef
 		    	psvSet boardView (uiCurrentPSM ui)
-		    	vtvSet treeView (treeLayoutFromMoveTree (nodes ui))
+		    	vtvSet treeView (nodes ui)
 		    	#queueDraw hoverLayer
+		vtvOnNodeClick treeView \addr ->
+			modifyIORef uiRef (\u -> fromMaybe u (uiVisitAddress u addr)) >> refresh
 
 		drawingAreaSetDrawFunc hoverLayer . Just $ \_ ctx ww wh -> do
 			ui <- readIORef uiRef
