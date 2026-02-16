@@ -13,7 +13,7 @@ import Ms.Mendel.Cairo
 import Ms.Mendel.Population
 import Nurse.Sveta.Cairo (fitText)
 import Nurse.Sveta.GameBrowser (MoveTree(..), MoveTreeAddress(..))
-import Nurse.Sveta.Util
+import Nurse.Sveta.Util hiding (get)
 import Nurse.Sveta.Widget
 
 -- * Variation tree
@@ -131,6 +131,7 @@ cellSizePx = 30
 -- Fixed 30-pixel cells, scrollable. Structured for future interactivity.
 data VariationTreeView = VTV
 	{ vtvCanvas :: DrawingArea
+	, vtvAIButton :: CheckButton
 	, vtvModel :: IORef (Map.Map GridPos GridCell, Map.Map GridPos MoveTreeAddress, Int, Int, Int, Int)
 	-- ^ (cells, nodeAddresses, minCol, minRow, colCount, rowCount)
 	}
@@ -141,11 +142,15 @@ newVariationTreeView mt = do
 	    w = colCount * cellSizePx
 	    h = rowCount * cellSizePx
 	da <- new DrawingArea []
+	ai <- new CheckButton []
 	ref <- liftIO $ newIORef (cells, nodeAddrs, minC, minR, colCount, rowCount)
-	drawingAreaSetDrawFunc da . Just $ \_ ctx _ _ ->
-		flip renderWithContext ctx =<< (vtvRender <$> liftIO (readIORef ref))
+	drawingAreaSetDrawFunc da . Just $ \_ ctx _ _ -> do
+		aiLol <- liftIO $ get ai #active
+		model <- liftIO $ readIORef ref
+		renderWithContext (vtvRender aiLol model) ctx
+	on ai #toggled (#queueDraw da)
 	#setSizeRequest da (fromIntegral w :: Int32) (fromIntegral h :: Int32)
-	pure (VTV da ref)
+	pure (VTV da ai ref)
 
 vtvWidget :: MonadIO m => VariationTreeView -> m Widget
 vtvWidget = toWidget . vtvCanvas
@@ -169,50 +174,46 @@ vtvOnNodeClick vtv callback = do
 		for_ (Map.lookup gridPos nodeAddrs) callback
 	#addController (vtvCanvas vtv) click
 
-vtvRender :: (Map.Map GridPos GridCell, Map.Map GridPos MoveTreeAddress, Int, Int, Int, Int) -> C.Render ()
-vtvRender (cells, _nodeAddrs, minC, minR, _colCount, _rowCount) = do
+vtvRender :: Bool -> (Map.Map GridPos GridCell, Map.Map GridPos MoveTreeAddress, Int, Int, Int, Int) -> C.Render ()
+vtvRender aiLol (cells, _nodeAddrs, minC, minR, _colCount, _rowCount) = do
 	for_ (Map.toList cells) \((col, row), cell) -> do
 		C.save
 		C.translate (fromIntegral (col - minC) * fromIntegral cellSizePx) (fromIntegral (row - minR) * fromIntegral cellSizePx)
 		C.scale (fromIntegral cellSizePx) (fromIntegral cellSizePx)
-		renderCell cell
+		renderCell aiLol cell
 		C.restore
 
-renderCell :: GridCell -> C.Render ()
-renderCell CellBlank = pure ()
-renderCell (CellNode isRoot) = do
+renderCell :: Bool -> GridCell -> C.Render ()
+renderCell _ CellBlank = pure ()
+renderCell _ (CellNode isRoot) = do
 	C.setSourceRGB 0 0 0
 	C.setLineWidth 0.05
 	-- fitText expects math coords (y up); flip cell to match
 	C.translate 0 1
 	C.scale 1 (-1)
 	fitText 0.1 0.1 0.8 0.8 (if isRoot then "ε" else "x")
-renderCell (CellEdge k) = do
+renderCell aiLol (CellEdge k) = do
 	C.setSourceRGB 0 0 0
 	C.setLineWidth 0.08
 	C.setLineCap C.LineCapRound
 	C.setLineJoin C.LineJoinRound
-	drawEdge k
+	drawEdge aiLol k
 	C.stroke
 
 -- | Draw edge in 1x1 cell. Screen coords (y down): left (0, 0.5), right (1, 0.5), top (0.5, 0), bottom (0.5, 1).
-drawEdge :: EdgeKind -> C.Render ()
-drawEdge EdgeStraight = do
-	C.moveTo 0 0.5
-	C.lineTo 1 0.5
-drawEdge EdgeMainToFirst = do
-	C.moveTo 0 0.5
-	C.lineTo 1 0.5
-	C.arcNegative 0.5 0.5 0.5 pi (pi/2)  -- left to bottom (clockwise)
-drawEdge EdgeMiddleVariation = do
-	C.moveTo 0.5 0
-	C.lineTo 0.5 1
-	C.arcNegative 0.5 0.5 0.5 (3*pi/2) 0  -- top to right (clockwise)
-drawEdge EdgeConnectingVariation = do
-	C.moveTo 0.5 0
-	C.lineTo 0.5 1
-drawEdge EdgeFinalVariation = do
-	C.arcNegative 0.5 0.5 0.5 (3*pi/2) 0  -- top to right
+drawEdge :: Bool -> EdgeKind -> C.Render ()
+drawEdge aiLol = \case
+	EdgeStraight -> C.moveTo 0 0.5 >> C.lineTo 1 0.5
+	EdgeMainToFirst -> if aiLol
+		then C.moveTo 0 0.5 >> C.lineTo 1 0.5 >> C.arcNegative 0.5 0.5 0.5 pi (pi/2)  -- left to bottom (clockwise)
+		else C.moveTo 1 0.5 >> C.arc 0 1 0.5 (3*pi/2) 0
+	EdgeMiddleVariation -> if aiLol
+		then C.moveTo 0.5 0 >> C.lineTo 0.5 1 >> C.arcNegative 0.5 0.5 0.5 (3*pi/2) 0  -- top to right (clockwise)
+		else C.moveTo 0.5 1 >> C.arcNegative 1 0 0.5 pi (pi/2)
+	EdgeConnectingVariation -> C.moveTo 0.5 0 >> C.lineTo 0.5 1
+	EdgeFinalVariation -> if aiLol
+		then C.arcNegative 0.5 0.5 0.5 (3*pi/2) 0  -- top to right
+		else C.moveTo 1 0.5 >> C.arc 1 0 0.5 (pi/2) pi
 
 data instance Pattern Gtk = PatternGtk
 	{ pgCanvas :: DrawingGrid

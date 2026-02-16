@@ -63,6 +63,8 @@ main = do
 			mpreview <- readIORef previewPillRef
 			drawOverlay ui ww wh ctx mhover mpreview
 
+		set (vtvAIButton treeView) [#label := "ai 👍"]
+
 		motion <- new EventControllerMotion []
 		on motion #motion \x y -> do
 			cell <- psvPointToBoardCell boardView x y
@@ -120,6 +122,7 @@ main = do
 				modifyIORef uiRef \ui -> fromMaybe ui (uiTryAdvance (GenerateLevel seed level) ui)
 				refresh
 
+		#append tools (vtvAIButton treeView)
 		for_ toolButtons \(btn, _c1, _c2) -> #append tools btn
 		#append tools seedEntry
 		#append tools levelEntry
