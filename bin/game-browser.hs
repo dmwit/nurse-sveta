@@ -15,7 +15,7 @@ main = do
 	torchPlusGtkFix
 	app <- new Application []
 	on app #activate do
-		top <- new Box [#orientation := OrientationVertical]
+		paned <- new Paned [#orientation := OrientationVertical]
 		topRow <- new Box [#orientation := OrientationHorizontal]
 		boardView <- newPlayerStateView (uiCurrentPSM def)
 		boardWidget <- psvWidget boardView
@@ -127,13 +127,12 @@ main = do
 
 		#append topRow boardOverlay
 		#append topRow tools
-		#append top topRow
-		#append top treeScroll
+		set paned [#startChild := topRow, #endChild := treeScroll]
 
 		w <- new Window $ tail [ignored
 			, #title := "Ms. Mendel Game Browser"
 			, #application := app
-			, #child := top
+			, #child := paned
 			]
 		refresh
 		#show w
