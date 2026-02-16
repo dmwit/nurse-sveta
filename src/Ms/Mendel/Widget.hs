@@ -63,7 +63,7 @@ hcat l r = Rendering
 
 vcat :: Rendering a -> Rendering a -> Rendering a
 vcat u d = Rendering
-	{ renderingWidth = max (renderingWidth u) (renderingHeight d)
+	{ renderingWidth = max (renderingWidth u) (renderingWidth d)
 	, renderingHeight = renderingHeight u + renderingHeight d
 	, renderingTree = \(x, y) -> M.union
 		(renderingTree u (x, y))
