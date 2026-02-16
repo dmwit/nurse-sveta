@@ -30,7 +30,7 @@ indexVariationsL = go id where
 		Seq.Empty -> Just (mt, rebuild)
 		i Seq.:<| is -> do
 			(b, h Seq.:<| e) <- Just $ Seq.splitAt i (variations mt)
-			go (\h' -> mt { variations = b <> Seq.singleton h' <> e }) h is
+			go (rebuild . \h' -> mt { variations = b <> Seq.singleton h' <> e }) h is
 
 -- | Cut the main sequence at the given point, and make the rest of the
 -- sequence into a variation. 'Nothing' indicates an attempt to cut past the
@@ -275,7 +275,7 @@ activeTrees :: UIModel -> [MoveTree (GameStateEdit, GameState)]
 activeTrees ui = go (nodes ui) (activePath (activeVariations ui)) where
 	go mt is = mt : case is of
 		[] -> []
-		h:t -> go (variations mt `Seq.index` h) t
+		h:t -> go (variations mt `seqIndex` h) t
 
 -- | like 'activeTrees', but also returns 0-variations past the end of the activity
 defaultTrees :: UIModel -> [MoveTree (GameStateEdit, GameState)]
@@ -283,7 +283,7 @@ defaultTrees ui = go (nodes ui) (activePath (activeVariations ui)) where
 	go mt is = mt : case (is, variations mt) of
 		([], Seq.Empty) -> []
 		([], mt' Seq.:<| _) -> go mt' []
-		(i:is, _) -> go (variations mt `Seq.index` i) is
+		(i:is, _) -> go (variations mt `seqIndex` i) is
 
 uiModifyVariation :: (Maybe ActiveVariations -> Maybe ActiveVariations) -> UIModel -> UIModel
 uiModifyVariation f ui = ui { activeVariations = f (activeVariations ui) }
@@ -363,7 +363,7 @@ normalizeActiveVariations mt (Just av)
 		{ activeHere = i
 		, activeChildren = IM.fromList do
 			ix <- [0..varCount-1]
-			let child_ = normalizeActiveVariations (Seq.index vars ix) (activeChildren av IM.!? ix)
+			let child_ = normalizeActiveVariations (seqIndex vars ix) (activeChildren av IM.!? ix)
 			maybe [] (\child -> [(ix, child)]) child_
 		}
 	where

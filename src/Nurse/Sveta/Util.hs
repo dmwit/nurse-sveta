@@ -117,6 +117,8 @@ import System.Random.Stateful (uniformFloat01M, uniformDouble01M)
 import Text.Printf
 import Text.Read (readMaybe)
 
+import qualified Data.Sequence as Seq
+
 infixr 1 ?
 (?) :: Bool -> a -> Maybe a
 True  ? a = Just a
@@ -189,3 +191,8 @@ reflectError = (>>= either (fail . show) pure)
 
 defOr :: Default a => Maybe a -> a
 defOr = fromMaybe def
+
+-- Data.Sequence.index doesn't have a HasCallstack constraint, making it a bit
+-- hard to track down issues with its use
+seqIndex :: HasCallStack => Seq a -> Int -> a
+seqIndex s i = fromJust (s Seq.!? i)
