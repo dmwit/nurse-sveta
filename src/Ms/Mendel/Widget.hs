@@ -51,6 +51,11 @@ data Rendering a = Rendering
 	}
 
 instance Default (Rendering a) where def = rempty 0 0
+instance Show a => Show (Rendering a) where
+	show r = printf "Rendering { renderingWidth = %d, renderingHeight = %d, renderingTree = %s }"
+		(renderingWidth r)
+		(renderingHeight r)
+		(show (renderingTree r def))
 
 hcat :: Rendering a -> Rendering a -> Rendering a
 hcat l r = Rendering
