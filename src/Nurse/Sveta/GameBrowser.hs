@@ -380,9 +380,6 @@ uiDeleteCurrent ui = do
 uiTryAdvance :: HasCallStack => GameStateEdit -> UIModel -> Maybe UIModel
 uiTryAdvance e ui = uiAdvance e ui <$ guard (uiIsLegalEdit ui e)
 
--- TODO: Check that extendVariation and splitVariation do what you think they
--- do. In particular, are they adding an extra leaf variation of 0 in some/all
--- cases?
 uiAdvance :: HasCallStack => GameStateEdit -> UIModel -> UIModel
 uiAdvance e ui = fromMaybe uiError do
 	(focusedTree, rebuildTree) <- indexVariationsL (nodes ui) (uiActivePath ui)
