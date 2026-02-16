@@ -55,7 +55,7 @@ main = do
 		    	vtvSet treeView (nodes ui)
 		    	#queueDraw hoverLayer
 		vtvOnNodeClick treeView \addr ->
-			modifyIORef uiRef (\u -> fromMaybe u (uiVisitAddress u addr)) >> refresh
+			modifyIORef uiRef (flip uiVisitAddress addr) >> refresh
 
 		drawingAreaSetDrawFunc hoverLayer . Just $ \_ ctx ww wh -> do
 			ui <- readIORef uiRef

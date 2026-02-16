@@ -384,16 +384,16 @@ data MoveTreeAddress = MoveTreeAddress
 
 instance Default MoveTreeAddress where def = MoveTreeAddress def (-1)
 
-uiVisitAddress :: UIModel -> MoveTreeAddress -> Maybe UIModel
-uiVisitAddress ui addr = do
-	_ <- indexVariations (nodes ui) (mtaVariations addr)
-	let sel = MoveSelection
-	    	{ variationDepth = length (mtaVariations addr)
-	    	, mainSequenceIndex = mtaMainSequenceIndex addr
-	    	}
-	let ui' = uiEnsureDepth (uiActivateVariation (mtaVariations addr) ui)
-	sel' <- normalizeSmall ui' =<< normalizeLarge ui' sel
-	pure . uiNormalizeActiveVariations $ setSelection ui' sel'
+toSelection :: MoveTreeAddress -> MoveSelection
+toSelection mta = MoveSelection
+	{ variationDepth = length (mtaVariations mta)
+	, mainSequenceIndex = mtaMainSequenceIndex mta
+	}
+
+uiVisitAddress :: UIModel -> MoveTreeAddress -> UIModel
+uiVisitAddress ui addr = setSelection
+	(uiActivateVariation (mtaVariations addr) ui)
+	(toSelection addr)
 
 uiDeleteCurrent :: HasCallStack => UIModel -> Maybe UIModel
 uiDeleteCurrent ui = do
