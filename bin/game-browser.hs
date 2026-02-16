@@ -7,7 +7,6 @@ import Ms.Mendel hiding (get)
 import qualified Nurse.Sveta.Cairo as NSC
 import Nurse.Sveta.GameBrowser
 
-import Data.Foldable (toList)
 import qualified Data.Map as M
 import qualified Data.Text as T
 
@@ -16,16 +15,16 @@ main = do
 	torchPlusGtkFix
 	app <- new Application []
 	on app #activate do
-		top <- new Box [#orientation := OrientationHorizontal]
+		top <- new Box [#orientation := OrientationVertical]
+		topRow <- new Box [#orientation := OrientationHorizontal]
 		boardView <- newPlayerStateView (uiCurrentPSM def)
 		boardWidget <- psvWidget boardView
 		boardOverlay <- new Overlay [#child := boardWidget]
 		hoverLayer <- new DrawingArea [#hexpand := True, #vexpand := True, #canTarget := False]
 		#addOverlay boardOverlay hoverLayer
-		let treeLayoutFrom mt = treeLayoutFromMoveTree (mainSequence mt) (map treeLayoutFrom (toList (variations mt)))
-		treeView <- newVariationTreeView (treeLayoutFrom (nodes def))
+		treeView <- newVariationTreeView (treeLayoutFromMoveTree (nodes def))
 		treeWidget <- vtvWidget treeView
-		treeScroll <- new ScrolledWindow [#child := treeWidget, #minContentWidth := 300]
+		treeScroll <- new ScrolledWindow [#child := treeWidget, #hexpand := True]
 		tools <- new Box [#orientation := OrientationVertical]
 		uiRef <- newIORef (def :: UIModel)
 		toolRef <- newIORef (Blue, Blue)
@@ -53,7 +52,7 @@ main = do
 		let refresh = do
 		    	ui <- readIORef uiRef
 		    	psvSet boardView (uiCurrentPSM ui)
-		    	vtvSet treeView (treeLayoutFrom (nodes ui))
+		    	vtvSet treeView (treeLayoutFromMoveTree (nodes ui))
 		    	#queueDraw hoverLayer
 
 		drawingAreaSetDrawFunc hoverLayer . Just $ \_ ctx ww wh -> do
@@ -124,9 +123,10 @@ main = do
 		#append tools levelEntry
 		#append tools generateButton
 
-		#append top boardOverlay
+		#append topRow boardOverlay
+		#append topRow tools
+		#append top topRow
 		#append top treeScroll
-		#append top tools
 
 		w <- new Window $ tail [ignored
 			, #title := "Ms. Mendel Game Browser"
