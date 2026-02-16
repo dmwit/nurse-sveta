@@ -79,7 +79,7 @@ hrep n r = hcats (replicate n r)
 vrep n r = vcats (replicate n r)
 
 rleaf :: a -> Rendering a
-rleaf = Rendering 1 1
+rleaf = Rendering 1 1 . flip M.singleton
 
 rempty :: Int -> Int -> Rendering a
 rempty w h = Rendering w h def

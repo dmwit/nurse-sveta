@@ -10,7 +10,7 @@ import qualified Data.Vector as V
 data MoveTree m = MoveTree
 	{ mainSequence :: Seq m
 	, variations :: Seq (MoveTree m)
-	} deriving (Eq, Ord, Read, Show)
+	} deriving (Eq, Ord, Read, Show, Functor)
 
 instance Default (MoveTree m) where def = MoveTree def def
 
