@@ -239,8 +239,9 @@ setSelection ui sel = ui { moveSelection = sel }
 
 activeTrees :: UIModel -> [MoveTree (GameStateEdit, GameState)]
 activeTrees ui = go (nodes ui) (activePath (activeVariations ui)) where
-	go mt [] = [mt]
-	go mt (i:is) = mt : go (variations mt `Seq.index` i) is
+	go mt is = mt : case is of
+		[] -> []
+		h:t -> go (variations mt `Seq.index` h) t
 
 -- | like 'activeTrees', but also returns 0-variations past the end of the activity
 defaultTrees :: UIModel -> [MoveTree (GameStateEdit, GameState)]
