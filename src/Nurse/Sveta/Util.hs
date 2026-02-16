@@ -150,6 +150,13 @@ minOn f a a' = if f a > f a' then a' else a
 hay :: Foldable f => f a -> Bool
 hay = not . null
 
+foldb :: (a -> a -> a) -> a -> [a] -> a
+foldb plus = go where
+	pairwise (a:a':rest) = plus a a' : pairwise rest
+	pairwise shortList = shortList
+	go a [] = a
+	go a (a':as) = go (plus a a') (pairwise as)
+
 -- | On my machine, torch and gtk fight over the GPU. This environment variable
 -- setting instructs gtk not to do hardware acceleration -- letting torch win
 -- the fight.

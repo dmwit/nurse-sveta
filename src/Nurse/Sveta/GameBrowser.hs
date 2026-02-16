@@ -347,6 +347,8 @@ data MoveTreeAddress = MoveTreeAddress
 	, mtaMainSequenceIndex :: Int
 	} deriving (Eq, Ord, Read, Show)
 
+instance Default MoveTreeAddress where def = MoveTreeAddress def (-1)
+
 uiVisitAddress :: UIModel -> MoveTreeAddress -> Maybe UIModel
 uiVisitAddress ui addr = do
 	_ <- indexVariations (nodes ui) (mtaVariations addr)

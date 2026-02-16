@@ -22,7 +22,7 @@ main = do
 		boardOverlay <- new Overlay [#child := boardWidget]
 		hoverLayer <- new DrawingArea [#hexpand := True, #vexpand := True, #canTarget := False]
 		#addOverlay boardOverlay hoverLayer
-		treeView <- newVariationTreeView (nodes def)
+		treeView <- newVariationTreeView
 		treeWidget <- vtvWidget treeView
 		treeScroll <- new ScrolledWindow [#child := treeWidget, #hexpand := True]
 		tools <- new Box [#orientation := OrientationVertical]

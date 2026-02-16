@@ -4,7 +4,7 @@ module Ms.Mendel.Widget
 	) where
 
 import Data.Foldable (toList)
-import qualified Data.Map.Strict as Map
+import qualified Data.Map.Strict as M
 import qualified Data.Sequence as Seq
 import GI.Cairo.Render.Connector (renderWithContext)
 import qualified GI.Cairo.Render as C
@@ -45,84 +45,73 @@ data EdgeKind
 	| EdgeFinalVariation     -- ^ Final variation: arc top to right only
 	deriving (Eq, Ord, Read, Show)
 
+data Rendering a = Rendering
+	{ renderingWidth, renderingHeight :: Int
+	, renderingTree :: GridPos -> Map GridPos a
+	}
+
+instance Default (Rendering a) where def = rempty 0 0
+
+hcat :: Rendering a -> Rendering a -> Rendering a
+hcat l r = Rendering
+	{ renderingWidth = renderingWidth l + renderingWidth r
+	, renderingHeight = max (renderingHeight l) (renderingHeight r)
+	, renderingTree = \(x, y) -> M.union
+		(renderingTree l (x, y))
+		(renderingTree r (x + renderingWidth l, y))
+	}
+
+vcat :: Rendering a -> Rendering a -> Rendering a
+vcat u d = Rendering
+	{ renderingWidth = max (renderingWidth u) (renderingHeight d)
+	, renderingHeight = renderingHeight u + renderingHeight d
+	, renderingTree = \(x, y) -> M.union
+		(renderingTree u (x, y))
+		(renderingTree d (x, y + renderingHeight u))
+	}
+
+hcats, vcats :: [Rendering a] -> Rendering a
+hcats = foldb hcat def
+vcats = foldb vcat def
+
+hrep, vrep :: Int -> Rendering a -> Rendering a
+hrep n r = hcats (replicate n r)
+vrep n r = vcats (replicate n r)
+
+rleaf :: a -> Rendering a
+rleaf = Rendering 1 1
+
+rempty :: Int -> Int -> Rendering a
+rempty w h = Rendering w h def
+
 -- | Grid position (col, row). Even cols = nodes, odd = edges.
 type GridPos = (Int, Int)
 
-variationRows :: TreeLayout -> Int
-variationRows (TreeLayout _ vars) = 1 + sum (map variationRows vars)
-
-
--- | Build grid and node addresses from MoveTree.
--- Returns (cells, nodeAddresses, minCol, minRow, colCount, rowCount).
-buildGridFromMoveTree :: MoveTree a -> (Map.Map GridPos GridCell, Map.Map GridPos MoveTreeAddress, Int, Int, Int, Int)
-buildGridFromMoveTree mt = (Map.fromList cellList, Map.fromList nodeAddrList, minCol, minRow, colCount, rowCount)
+-- the top row is hard to click because you often hit the Paned hitbox instead
+-- of the DrawingArea hitbox, so we leave a little space with the rempty 0 1 at
+-- the start
+buildGridFromMoveTree :: MoveTree a -> Rendering (GridCell, MoveTreeAddress)
+buildGridFromMoveTree t0 = vcat (rempty 0 1) $ rleaf (CellNode True, def) `hcat` case length (mainSequence t0) of
+	0 -> goVariations def (variations t0)
+	_ -> rleaf (CellEdge EdgeStraight, MoveTreeAddress def 0) `hcat` goTree def t0
 	where
-	(cellList, nodeAddrList) = go True 0 0 Seq.empty mt
-	positions = map fst cellList
-	(minCol, minRow, maxCol, maxRow) = case positions of
-		[] -> (0, 0, 0, 0)
-		_ -> (minimum (map fst positions), minimum (map snd positions)
-		     , maximum (map fst positions), maximum (map snd positions))
-	colCount = max 1 (maxCol - minCol + 1)
-	rowCount = max 1 (maxRow - minRow + 1)
-	go isRoot col row path (MoveTree ms vars) = (mainCells ++ mainEdges ++ varCells, mainAddrs ++ varAddrs)
+	goVariations varPath vs = vcats . toList $ Seq.mapWithIndex (goVariation varPath (length vs)) vs
+	goVariation varPath n i v
+		| i == 0 = (edge EdgeMainToFirst `vcat` verticalBar) `hcat` child
+		| i == n - 1 = edge EdgeFinalVariation `hcat` child
+		| otherwise = (edge EdgeMiddleVariation `vcat` verticalBar) `hcat` child
 		where
-		n = length ms
-		varsList = toList vars
-		mainCells = [ ((col + 2*i, row), CellNode (isRoot && i == 0)) | i <- [0..n] ]
-		mainAddrs = [ ((col + 2*i, row), MoveTreeAddress path (i - 1)) | i <- [0..n] ]
-		mainEdges = case varsList of
-			[] -> [ ((col + 2*i + 1, row), CellEdge EdgeStraight) | i <- [0..n-1] ]
-			_ -> let
-				straightEdges = [ ((col + 2*i + 1, row), CellEdge EdgeStraight) | i <- [0..n-1] ]
-				junctionEdgeCol = col + 2*n + 1
-				junctionEdge = ((junctionEdgeCol, row), CellEdge EdgeMainToFirst)
-				in straightEdges ++ [junctionEdge]
-		varStartCol = col + 2*n + 2
-		(varCells, varAddrs) = case varsList of
-			[] -> ([], [])
-			_ -> let
-				rowStarts = scanl (+) 0 (map (variationRows . treeLayoutFromMoveTree) varsList)
-				stemCol = col + 2*n + 1
-				stemRows = [1 .. last rowStarts - 1]
-				stemCells = [ ((stemCol, r), CellEdge (kindFor r)) | r <- stemRows ]
-				kindFor r
-					| r == 1 = EdgeMiddleVariation
-					| r == last rowStarts - 1 = EdgeFinalVariation
-					| otherwise = EdgeConnectingVariation
-				(varCellLists, varAddrLists) = unzip $
-					[ goVariation varStartCol r0 (path Seq.|> j) v | (r0, (j, v)) <- zip rowStarts (zip [0..] varsList) ]
-				in (stemCells ++ concat varCellLists, concat varAddrLists)
-		-- Variations: place moves only (no root); junction is shared with main.
-		goVariation col row path (MoveTree ms vars) = (mainCells ++ mainEdges ++ varCells, mainAddrs ++ varAddrs)
-			where
-			n = length ms
-			varsList = toList vars
-			mainCells = [ ((col + 2*i, row), CellNode False) | i <- [0..n-1] ]
-			mainAddrs = [ ((col + 2*i, row), MoveTreeAddress path i) | i <- [0..n-1] ]
-			mainEdges = case (n, varsList) of
-				(0, _) -> []
-				(_, []) -> [ ((col + 2*i + 1, row), CellEdge EdgeStraight) | i <- [0..n-2] ]
-				(_, _) -> let
-					straightEdges = [ ((col + 2*i + 1, row), CellEdge EdgeStraight) | i <- [0..n-2] ]
-					junctionEdgeCol = col + 2*n - 1
-					junctionEdge = ((junctionEdgeCol, row), CellEdge EdgeMainToFirst)
-					in straightEdges ++ [junctionEdge]
-			varStartCol = col + 2*n
-			(varCells, varAddrs) = case varsList of
-				[] -> ([], [])
-				_ -> let
-					rowStarts = scanl (+) 0 (map (variationRows . treeLayoutFromMoveTree) varsList)
-					stemCol = col + 2*n - 1
-					stemRows = [row+1 .. row + last rowStarts - 1]
-					stemCells = [ ((stemCol, r), CellEdge (kindFor r)) | r <- stemRows ]
-					kindFor r
-						| r == row + 1 = EdgeMiddleVariation
-						| r == row + last rowStarts - 1 = EdgeFinalVariation
-						| otherwise = EdgeConnectingVariation
-					(varCellLists, varAddrLists) = unzip $
-						[ goVariation varStartCol (row + r0) (path Seq.|> j) v | (r0, (j, v)) <- zip rowStarts (zip [0..] varsList) ]
-					in (stemCells ++ concat varCellLists, concat varAddrLists)
+		varPath' = varPath Seq.:|> i
+		child = goTree varPath' v
+		edge e = rleaf (CellEdge e, MoveTreeAddress varPath' 0)
+		verticalBar = vrep (renderingHeight child - 1) (edge EdgeConnectingVariation)
+	goTree varPath t = mainSeq `hcat` goVariations varPath (variations t) where
+		ns = mainSequence t
+		mainSeq = hcats . toList $ Seq.mapWithIndex (goNode varPath (length ns)) ns
+	goNode varPath n i node
+		| i == 0 = cell (CellNode False)
+		| otherwise = cell (CellEdge EdgeStraight) `hcat` cell (CellNode False)
+		where cell c = rleaf (c, MoveTreeAddress varPath i)
 
 cellSizePx :: Int
 cellSizePx = 30
@@ -132,24 +121,20 @@ cellSizePx = 30
 data VariationTreeView = VTV
 	{ vtvCanvas :: DrawingArea
 	, vtvAIButton :: CheckButton
-	, vtvModel :: IORef (Map.Map GridPos GridCell, Map.Map GridPos MoveTreeAddress, Int, Int, Int, Int)
+	, vtvModel :: IORef (Map GridPos (GridCell, MoveTreeAddress))
 	-- ^ (cells, nodeAddresses, minCol, minRow, colCount, rowCount)
 	}
 
-newVariationTreeView :: MonadIO m => MoveTree a -> m VariationTreeView
-newVariationTreeView mt = do
-	let (cells, nodeAddrs, minC, minR, colCount, rowCount) = buildGridFromMoveTree mt
-	    w = colCount * cellSizePx
-	    h = rowCount * cellSizePx
+newVariationTreeView :: MonadIO m => m VariationTreeView
+newVariationTreeView = do
 	da <- new DrawingArea []
 	ai <- new CheckButton []
-	ref <- liftIO $ newIORef (cells, nodeAddrs, minC, minR, colCount, rowCount)
+	ref <- liftIO $ newIORef def
 	drawingAreaSetDrawFunc da . Just $ \_ ctx _ _ -> do
 		aiLol <- liftIO $ get ai #active
 		model <- liftIO $ readIORef ref
 		renderWithContext (vtvRender aiLol model) ctx
 	on ai #toggled (#queueDraw da)
-	#setSizeRequest da (fromIntegral w :: Int32) (fromIntegral h :: Int32)
 	pure (VTV da ai ref)
 
 vtvWidget :: MonadIO m => VariationTreeView -> m Widget
@@ -157,9 +142,11 @@ vtvWidget = toWidget . vtvCanvas
 
 vtvSet :: MonadIO m => VariationTreeView -> MoveTree a -> m ()
 vtvSet vtv mt = do
-	let (cells, nodeAddrs, minC, minR, colCount, rowCount) = buildGridFromMoveTree mt
-	liftIO $ writeIORef (vtvModel vtv) (cells, nodeAddrs, minC, minR, colCount, rowCount)
-	#setSizeRequest (vtvCanvas vtv) (fromIntegral (colCount * cellSizePx) :: Int32) (fromIntegral (rowCount * cellSizePx) :: Int32)
+	let grid = buildGridFromMoveTree mt
+	    w = renderingWidth grid * cellSizePx
+	    h = renderingHeight grid * cellSizePx
+	liftIO $ writeIORef (vtvModel vtv) (renderingTree grid (0, 0))
+	#setSizeRequest (vtvCanvas vtv) (fromIntegral w) (fromIntegral h)
 	#queueDraw (vtvCanvas vtv)
 
 -- | Install a callback for node clicks. Called with the MoveTreeAddress of the clicked node.
@@ -169,19 +156,17 @@ vtvOnNodeClick vtv callback = do
 	on click #pressed \_ nX nY -> do
 		let col = floor (nX / fromIntegral cellSizePx)
 		    row = floor (nY / fromIntegral cellSizePx)
-		(_, nodeAddrs, minC, minR, _, _) <- liftIO $ readIORef (vtvModel vtv)
-		let gridPos = (col + minC, row + minR)
-		for_ (Map.lookup gridPos nodeAddrs) callback
+		nodeAddrs <- liftIO $ readIORef (vtvModel vtv)
+		for_ (M.lookup (col, row) nodeAddrs) (callback . snd)
 	#addController (vtvCanvas vtv) click
 
-vtvRender :: Bool -> (Map.Map GridPos GridCell, Map.Map GridPos MoveTreeAddress, Int, Int, Int, Int) -> C.Render ()
-vtvRender aiLol (cells, _nodeAddrs, minC, minR, _colCount, _rowCount) = do
-	for_ (Map.toList cells) \((col, row), cell) -> do
-		C.save
-		C.translate (fromIntegral (col - minC) * fromIntegral cellSizePx) (fromIntegral (row - minR) * fromIntegral cellSizePx)
-		C.scale (fromIntegral cellSizePx) (fromIntegral cellSizePx)
-		renderCell aiLol cell
-		C.restore
+vtvRender :: Bool -> Map GridPos (GridCell, MoveTreeAddress) -> C.Render ()
+vtvRender aiLol cells = for_ (M.toList cells) \((col, row), (cell, _)) -> do
+	C.save
+	C.translate (fromIntegral col * fromIntegral cellSizePx) (fromIntegral row * fromIntegral cellSizePx)
+	C.scale (fromIntegral cellSizePx) (fromIntegral cellSizePx)
+	renderCell aiLol cell
+	C.restore
 
 renderCell :: Bool -> GridCell -> C.Render ()
 renderCell _ CellBlank = pure ()
@@ -199,6 +184,21 @@ renderCell aiLol (CellEdge k) = do
 	C.setLineJoin C.LineJoinRound
 	drawEdge aiLol k
 	C.stroke
+
+-- aiLol: The first version of drawEdge was vibe coded. Below is an excerpt
+-- from the prompt I wrote describing how I wanted things drawn. The AI I was
+-- using sort of did what I said... but definitely didn't do what I meant. I
+-- mean I would bet it basically understood what I meant and just got the
+-- arguments to the arc functions a bit wrong, and I don't blame it, there's
+-- like eight coordinate transforms going on and I would struggle to get it
+-- right the first time, too. But it does look just hilarious, and I decided I
+-- liked it enough to keep it around.
+--
+-- * No variations: line left to right
+-- * Connecting the end of a main sequence to the first variation: line left to right and arc left to bottom
+-- * Middle variations: line top to bottom and arc top to right
+-- * Connecting variations: line top to bottom
+-- * Final variation: arc top to right
 
 -- | Draw edge in 1x1 cell. Screen coords (y down): left (0, 0.5), right (1, 0.5), top (0.5, 0), bottom (0.5, 1).
 drawEdge :: Bool -> EdgeKind -> C.Render ()
