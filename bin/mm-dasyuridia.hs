@@ -245,7 +245,7 @@ ppLookaheadResultTree :: String -> LookaheadResultTree -> String
 ppLookaheadResultTree indent lrt = printf
 	"%s%s => %f (%s)%s"
 	indent
-	(ppLookahead (lrtIncomingLookahead lrt))
+	(pp (lrtIncomingLookahead lrt))
 	(lrtEvaluation lrt)
 	(drop 2 . ppPath 0 $ lrtBestChild lrt)
 	case lrtShallowChildren lrt ++ lrtDeepChildren lrt of

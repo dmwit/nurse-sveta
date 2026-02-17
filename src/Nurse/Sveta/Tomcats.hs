@@ -20,8 +20,6 @@ module Nurse.Sveta.Tomcats (
 	ppRNGTree, ppRNGTreeDebug, ppMoveTree, ppMoveTreeDebug,
 	ppMoveTrees, ppPlacements, ppEndpointMap, ppUnexploredMove,
 	ppAeson,
-	ppPill, ppContent, ppLookahead, ppOrientation, ppColor,
-	ppPosition,
 	ppPercent, ppPrecision,
 	) where
 
@@ -360,7 +358,7 @@ descendMoveTree ctx t pill = case HM.lookup pill (pathsMove t) of
 	die verbose played msg = do
 		b <- mfreeze (board (ctxState ctx))
 		fail $ msg
-			++ "; attempted pill placement was " ++ ppPill pill
+			++ "; attempted pill placement was " ++ pp pill
 			++ " leading " ++ (if played then "to" else "from") ++ " this board:\n" ++ pp b
 			++ "current search tree:\n" ++ (if verbose then ppMoveTreeDebug else ppMoveTree) "  " t
 
@@ -629,7 +627,7 @@ ppMoveTree indent t = ppVisitCount (visitCountMove t) ++ case (children, unexplo
 	(_ , "") -> newlinedChildren
 	(_ , _ ) -> labeledUnexplored ++ newlinedChildren
 	where
-	children = ppHashMapInline' indent ppPill ppRNGTree (childrenMove t)
+	children = ppHashMapInline' indent pp ppRNGTree (childrenMove t)
 	unexplored = ppUnexploredMove (unexploredMove t)
 	labeledUnexplored = "\n" ++ indent ++ "unexplored: " ++ elideTo 60 unexplored
 	newlinedChildren = "\n" ++ children
@@ -639,17 +637,12 @@ ppMoveTreeDebug indent t = ""
 	++ indent ++ "visits: " ++ ppVisitCount (visitCountMove t) ++ "\n"
 	++ (if null unexplored then "" else labeledUnexplored)
 	++ (if null children then "" else labeledChildren)
-	++ indent ++ "paths:\n" ++ ppHashMapInline ("  " ++ indent) ppPill ppAeson (pathsMove t)
+	++ indent ++ "paths:\n" ++ ppHashMapInline ("  " ++ indent) pp ppAeson (pathsMove t)
 	where
-	children = ppHashMapInline' ("  " ++ indent) ppPill ppRNGTreeDebug (childrenMove t)
+	children = ppHashMapInline' ("  " ++ indent) pp ppRNGTreeDebug (childrenMove t)
 	unexplored = ppUnexploredMove (unexploredMove t)
 	labeledChildren = indent ++ "children:\n" ++ children ++ "\n"
 	labeledUnexplored = indent ++ "unexplored: " ++ unexplored ++ "\n"
-
-elideTo :: Int -> String -> String
-elideTo n s = case drop n s of
-	[] -> s
-	_ -> take (n-3) s ++ "..."
 
 ppVisitCount :: Float -> String
 ppVisitCount = show . round
@@ -668,11 +661,11 @@ ppMoveTreesDebug :: String -> HashMap Lookahead MoveTree -> String
 ppMoveTreesDebug indent = ppHashMap indent ppAeson ppMoveTreeDebug
 
 ppPlacements :: String -> HashMap MidPlacement MidPath -> String
-ppPlacements indent = ppHashMapInline indent ppMidPlacement ppAeson
+ppPlacements indent = ppHashMapInline indent pp ppAeson
 
 ppEndpointMap :: String -> EndpointMap Pill CFloat -> String
 ppEndpointMap indent m = intercalate "\n"
-	[ indent ++ ppContent pc ++ ":\n" ++ ppRows ("  " ++ indent) pc
+	[ indent ++ pp pc ++ ":\n" ++ ppRows ("  " ++ indent) pc
 	| or <- [minBound .. maxBound]
 	, bl <- [minBound .. maxBound]
 	, oc <- [minBound .. maxBound]
@@ -694,19 +687,8 @@ ppHashMap indent ppk ppv m = intercalate "\n"
 	| (k, v) <- HM.toList m
 	]
 
-ppMidPlacement :: MidPlacement -> String
-ppMidPlacement (MidPlacement pos rot) = ppClockwiseRotations rot ++ " " ++ padr 7 (ppPosition pos)
-
-ppClockwiseRotations :: Int -> String
-ppClockwiseRotations = \case
-	0 -> "  "
-	1 -> " ↻"
-	2 -> "↻↻"
-	3 -> " ↺"
-	_ -> "!!"
-
 ppUnexploredMove :: Vector (Pill, Float) -> String
-ppUnexploredMove ms = unwords [ppPill pill ++ "@" ++ ppPercent prior | (pill, prior) <- V.toList ms]
+ppUnexploredMove ms = unwords [pp pill ++ "@" ++ ppPercent prior | (pill, prior) <- V.toList ms]
 
 ppHashMapInline :: String -> (k -> String) -> (v -> String) -> HashMap k v -> String
 ppHashMapInline indent ppk ppv m = intercalate "\n"
@@ -719,40 +701,3 @@ ppHashMapInline' indent ppk ppv m = intercalate "\n"
 	[ indent ++ ppk k ++ ": " ++ ppv deeper v
 	| (k, v) <- HM.toList m
 	] where deeper = "  " ++ indent
-
-ppAeson :: ToJSON a => a -> String
-ppAeson a = case toJSON a of
-	String t -> T.unpack t
-	other -> LBS8.unpack (encode other)
-
--- all the rest of this stuff is just for debugging
-ppPill :: Pill -> String
-ppPill p = ppContent (content p) ++ "@" ++ ppPosition (bottomLeftPosition p)
-
-ppContent :: PillContent -> String
-ppContent pc = [ppOrientation (orientation pc), ppColor (bottomLeftColor pc), ppColor (otherColor pc)]
-
-ppLookahead :: Lookahead -> String
-ppLookahead lk = [ppColor (leftColor lk), ppColor (rightColor lk)]
-
-ppOrientation :: Orientation -> Char
-ppOrientation Horizontal = '↔'
-ppOrientation Vertical = '↕'
-
-ppColor :: Color -> Char
-ppColor Blue = 'b'
-ppColor Red = 'r'
-ppColor Yellow = 'y'
-
-ppPosition :: Position -> String
-ppPosition pos = printf "(%d, %2d)" (x pos) (y pos)
-
-ppPercent :: Float -> String
-ppPercent p = (if isNaN p then "nan" else show (round (100*p))) ++ "%"
-
-ppPrecision :: Int -> Float -> String
-ppPrecision p n = if isNaN n then "nan" else showFFloat Nothing (fromInteger (round (pow*n))/pow) ""
-	where pow = 10^p
-
-padr :: Int -> String -> String
-padr n s = s ++ replicate (n - length s) ' '

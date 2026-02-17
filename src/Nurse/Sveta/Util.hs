@@ -33,6 +33,7 @@ module Nurse.Sveta.Util
 	, module Data.Word
 	, module Dr.Mario.Model
 	, module Dr.Mario.Pathfinding
+	, module Dr.Mario.PP
 	, module Dr.Mario.Util
 	, module GHC.Stack
 	, module Numeric
@@ -99,6 +100,7 @@ import Data.Vector.Instances
 import Data.Word
 import Dr.Mario.Model
 import Dr.Mario.Pathfinding hiding (MidStep(..), rotate) -- MidStep(Down) conflicts with Data.Ord; rotate conflicts with Data.Bits
+import Dr.Mario.PP
 import Dr.Mario.Util
 import GHC.Stack
 import Numeric

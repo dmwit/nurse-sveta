@@ -7,8 +7,6 @@ import qualified Data.IntMap as IM
 import qualified Data.Sequence as Seq
 import qualified Data.Vector as V
 
-import Nurse.Sveta.Tomcats (ppPill)
-
 data MoveTree m = MoveTree
 	{ mainSequence :: Seq m
 	, variations :: Seq (MoveTree m)
@@ -90,12 +88,10 @@ splitAndInsertVariation n m mt = splitMainSequence n mt <&> \mt' -> case insertV
 			then AlreadyInVariation i
 			else AlreadyInMainSequence
 
-ppMoveTree :: (a -> String) -> MoveTree a -> String
-ppMoveTree ppElem mt = printf "moveTree [%s] [%s]"
-	(ppSeqContents ppElem (mainSequence mt))
-	(ppSeqContents (ppMoveTree ppElem) (variations mt))
-	where
-	ppSeqContents f = intercalate ", " . map f . toList
+instance PP1 MoveTree where
+	liftPP1 ppElem mt = printf "moveTree %s %s"
+		(liftPP1 ppElem (mainSequence mt))
+		(liftPP1 (liftPP1 ppElem) (variations mt))
 
 moveTree :: [a] -> [MoveTree a] -> MoveTree a
 moveTree as children = MoveTree (Seq.fromList as) (Seq.fromList children)
@@ -105,10 +101,10 @@ data GameStateEdit
 	| Lock Pill
 	deriving (Eq, Ord, Read, Show)
 
-ppGameStateEdit :: GameStateEdit -> String
-ppGameStateEdit = \case
-	GenerateLevel seed level -> printf "%d:%d" level seed
-	Lock p -> ppPill p
+instance PP GameStateEdit where
+	pp = \case
+		GenerateLevel seed level -> printf "%d:%d" level seed
+		Lock p -> pp p
 
 data GameState = GameState
 	{ board :: Board
@@ -118,6 +114,18 @@ data GameState = GameState
 
 instance Default GameState where
 	def = GameState (emptyBoard 8 16) V.empty 0
+
+instance PP GameState where
+	pp gs = case length (pillSequence gs) of
+		0 -> "\n" ++ pp (board gs)
+		_ -> printf "\n%s%s >%s< %s\n"
+			(pp (board gs))
+			(ppLookaheads . V.take n . pillSequence $ gs)
+			(pp (pillSequence gs V.! n))
+			(ppLookaheads . V.drop (n+1) . pillSequence $ gs)
+			where
+			ppLookaheads = unwords . map pp . toList
+			n = pillIndex gs `mod` length (pillSequence gs)
 
 applyEdit :: GameState -> GameStateEdit -> GameState
 applyEdit s = \case
@@ -151,15 +159,15 @@ data ActiveVariations = ActiveVariations
 instance Semigroup ActiveVariations where
 	ActiveVariations i itree <> ActiveVariations _i' itree' = ActiveVariations i (IM.unionWith (<>) itree itree')
 
-ppActiveVariations :: ActiveVariations -> String
-ppActiveVariations av = printf "[%s]@%d"
-	((intercalate ", " . map ppChild . IM.toList . activeChildren) av)
-	(activeHere av)
-	where
-	ppChild (i, av') = printf "%d->%s" i (ppActiveVariations av')
+instance PP ActiveVariations where
+	pp av = printf "%s@%d"
+		(liftPP1 ppChild . IM.toList . activeChildren $ av)
+		(activeHere av)
+		where
+		ppChild (i, av') = printf "%d↦%s" i (pp av')
 
-ppActiveVariationsM :: Maybe ActiveVariations -> String
-ppActiveVariationsM = maybe "ε" ppActiveVariations
+ppActiveVariations :: Maybe ActiveVariations -> String
+ppActiveVariations = maybe "ε" pp
 
 singletonVariations :: Int -> ActiveVariations
 singletonVariations i = ActiveVariations
@@ -244,11 +252,12 @@ data UIModel = UIModel
 	} deriving (Eq, Ord, Read, Show)
 
 instance Default UIModel where def = UIModel def def def
+instance PP UIModel where pp = ppUIModel pp
 
 ppUIModel :: ((GameStateEdit, GameState) -> String) -> UIModel -> String
 ppUIModel ppElement ui = printf "ui { nodes = %s, active = %s, depth = %d, move = %d }"
-	(ppMoveTree ppElement (nodes ui))
-	(ppActiveVariationsM (activeVariations ui))
+	(liftPP1 ppElement (nodes ui))
+	(ppActiveVariations (activeVariations ui))
 	(variationDepth (moveSelection ui))
 	(mainSequenceIndex (moveSelection ui))
 

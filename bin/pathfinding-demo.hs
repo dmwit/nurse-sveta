@@ -17,7 +17,7 @@ main = do
 		places <- new ListBox [#activateOnSingleClick := True]
 		for_ (sort . HM.toList . unsafeApproxReachable board $ launchPill (Lookahead Blue Red)) $ \(pill, move) -> do
 			btn <- new Button $ tail [ignored
-				, #label := T.pack (ppPill pill)
+				, #label := T.pack (pp pill)
 				, On #clicked (setOverlay psv move)
 				]
 			#append places btn
@@ -33,10 +33,6 @@ main = do
 		#show w
 	args <- getArgs
 	() <$ #run app (Just args)
-
-ppPill :: Pill -> String
-ppPill Pill { content = PillContent { orientation = o, bottomLeftColor = blc, otherColor = oc }, bottomLeftPosition = Position { x = blx, y = bly } }
-	= "(" ++ show blx ++ ", " ++ show bly ++ ") " ++ take 1 (show blc) ++ case o of {Horizontal -> ">"; Vertical -> "^"} ++ take 1 (show oc)
 
 board :: Board
 board = randomBoard 48 6

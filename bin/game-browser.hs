@@ -168,7 +168,7 @@ lookaheadTools =
 	]
 
 ppTool :: Color -> Color -> Text
-ppTool c1 c2 = T.pack (take 1 (show c1) ++ take 1 (show c2))
+ppTool c1 c2 = T.pack (foldMap pp [c1, c2])
 
 dragToPill :: Color -> Color -> (Int, Int) -> (Int, Int) -> Maybe Pill
 dragToPill c1 c2 (sx, sy) (ex, ey) = case (ex - sx, ey - sy) of
