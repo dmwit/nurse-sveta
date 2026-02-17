@@ -27,7 +27,7 @@ main = do
 		treeScroll <- new ScrolledWindow [#child := treeWidget, #hexpand := True]
 		tools <- new Box [#orientation := OrientationVertical]
 		uiRef <- newIORef (def :: UIModel)
-		toolRef <- newIORef (Blue, Blue)
+		toolRef <- newIORef initialTool
 		dragStartRef <- newIORef (Nothing :: Maybe (Double, Double, Position))
 		hoverCellRef <- newIORef (Nothing :: Maybe Position)
 		previewPillRef <- newIORef (Nothing :: Maybe Pill)
@@ -36,18 +36,12 @@ main = do
 		levelEntry <- new Entry [#placeholderText := "level", #maxLength := 2, #inputPurpose := InputPurposeDigits]
 		generateButton <- new Button [#label := "generate"]
 
-		toolButtons <- for lookaheadTools \(c1, c2) -> do
-			btn <- new ToggleButton [#label := ppTool c1 c2]
-			pure (btn, c1, c2)
-		for_ toolButtons \(btn, c1, c2) -> on btn #toggled do
+		toolGroup <- new CheckButton []
+		toolButtons <- for allTools \tool -> do
+			btn <- new CheckButton [#label := T.pack (pp tool), #group := toolGroup, #active := tool == initialTool]
+			btn <$ on btn #toggled do
 				active <- get btn #active
-				when active do
-					writeIORef toolRef (c1, c2)
-					for_ toolButtons \(btn', c1', c2') -> when ((c1, c2) /= (c1', c2')) do
-						set btn' [#active := False]
-		case toolButtons of
-			((btn, _, _):_) -> set btn [#active := True]
-			[] -> pure ()
+				when active (writeIORef toolRef tool)
 
 		let refresh = do
 		    	ui <- readIORef uiRef
@@ -87,8 +81,8 @@ main = do
 				Nothing -> pure ()
 				Just (sx0, sy0, Position sx sy) -> do
 					mend <- psvPointToBoardCell boardView (sx0 + dx) (sy0 + dy)
-					(c1, c2) <- readIORef toolRef
-					writeIORef previewPillRef (mend >>= \(Position ex ey) -> dragToPill c1 c2 (sx, sy) (ex, ey))
+					tool <- readIORef toolRef
+					writeIORef previewPillRef (mend >>= \(Position ex ey) -> dragToPill tool (sx, sy) (ex, ey))
 					#queueDraw hoverLayer
 		on drag #dragEnd \dx dy -> do
 			ms <- readIORef dragStartRef
@@ -97,8 +91,8 @@ main = do
 				Just (sx0, sy0, Position sx sy) -> do
 					mend <- psvPointToBoardCell boardView (sx0 + dx) (sy0 + dy)
 					for_ mend \(Position ex ey) -> do
-						(c1, c2) <- readIORef toolRef
-						let mpill = dragToPill c1 c2 (sx, sy) (ex, ey)
+						tool <- readIORef toolRef
+						let mpill = dragToPill tool (sx, sy) (ex, ey)
 						for_ mpill \pill -> do
 							modifyIORef uiRef \u -> fromMaybe u (uiTryAdvance (Lock pill) u)
 							refresh
@@ -123,7 +117,7 @@ main = do
 				refresh
 
 		#append tools (vtvAIButton treeView)
-		for_ toolButtons \(btn, _c1, _c2) -> #append tools btn
+		mapM_ (#append tools) toolButtons
 		#append tools seedEntry
 		#append tools levelEntry
 		#append tools generateButton
@@ -157,21 +151,14 @@ parseSeed = \t -> do
 parseLevel :: Text -> Maybe Int
 parseLevel t = tread t >>= ensure (\n -> 0 <= n && n <= 20)
 
-lookaheadTools :: [(Color, Color)]
-lookaheadTools =
-	[ (Blue, Blue)
-	, (Blue, Red)
-	, (Blue, Yellow)
-	, (Red, Red)
-	, (Red, Yellow)
-	, (Yellow, Yellow)
-	]
+initialTool :: Lookahead
+initialTool = head allTools
 
-ppTool :: Color -> Color -> Text
-ppTool c1 c2 = T.pack (foldMap pp [c1, c2])
+allTools :: [Lookahead]
+allTools = [Lookahead l r | l <- [minBound..maxBound], r <- [l..maxBound]]
 
-dragToPill :: Color -> Color -> (Int, Int) -> (Int, Int) -> Maybe Pill
-dragToPill c1 c2 (sx, sy) (ex, ey) = case (ex - sx, ey - sy) of
+dragToPill :: Lookahead -> (Int, Int) -> (Int, Int) -> Maybe Pill
+dragToPill (Lookahead c1 c2) (sx, sy) (ex, ey) = case (ex - sx, ey - sy) of
 	(1, 0) -> pure (mk Horizontal (sx, sy) c1 c2)
 	(-1, 0) -> pure (mk Horizontal (ex, ey) c2 c1)
 	(0, 1) -> pure (mk Vertical (sx, sy) c1 c2)
