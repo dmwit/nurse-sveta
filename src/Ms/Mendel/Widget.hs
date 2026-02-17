@@ -3,18 +3,18 @@ module Ms.Mendel.Widget
 	, module Nurse.Sveta.Widget
 	) where
 
-import Data.Foldable (toList)
-import qualified Data.Map.Strict as M
-import qualified Data.Sequence as Seq
-import GI.Cairo.Render.Connector (renderWithContext)
-import qualified GI.Cairo.Render as C
+import GI.Cairo.Render.Connector
 import GI.Gtk
 import Ms.Mendel.Cairo
 import Ms.Mendel.Population
-import Nurse.Sveta.Cairo (fitText)
-import Nurse.Sveta.GameBrowser (MoveTree(..), MoveTreeAddress(..))
+import Nurse.Sveta.Cairo
+import Nurse.Sveta.GameBrowser
 import Nurse.Sveta.Util hiding (get)
 import Nurse.Sveta.Widget
+
+import qualified Data.Map.Strict as M
+import qualified Data.Sequence as Seq
+import qualified GI.Cairo.Render as C
 
 -- * Variation tree
 
