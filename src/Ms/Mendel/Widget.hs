@@ -160,28 +160,24 @@ vtvOnNodeClick vtv callback = do
 	#addController (vtvCanvas vtv) click
 
 vtvRender :: Bool -> Map GridPos (GridCell, MoveTreeAddress) -> C.Render ()
-vtvRender aiLol cells = for_ (M.toList cells) \((col, row), (cell, _)) -> do
-	C.save
-	C.translate (fromIntegral col * fromIntegral cellSizePx) (fromIntegral row * fromIntegral cellSizePx)
-	C.scale (fromIntegral cellSizePx) (fromIntegral cellSizePx)
-	renderCell aiLol cell
-	C.restore
-
-renderCell :: Bool -> GridCell -> C.Render ()
-renderCell _ (CellNode isRoot) = do
-	C.setSourceRGB 0 0 0
-	C.setLineWidth 0.05
-	-- fitText expects math coords (y up); flip cell to match
-	C.translate 0 1
-	C.scale 1 (-1)
-	fitText 0.1 0.1 0.8 0.8 (if isRoot then "ε" else "x")
-renderCell aiLol (CellEdge k) = do
+vtvRender aiLol cells = do
 	C.setSourceRGB 0 0 0
 	C.setLineWidth 0.08
 	C.setLineCap C.LineCapRound
 	C.setLineJoin C.LineJoinRound
-	mapM_ (drawEdge aiLol) k
+	join C.scale (fromIntegral cellSizePx)
+	-- we want to make the entire edge path before stroking so that we don't
+	-- double-paint on the grid boundaries
+	sequence_ $ flip M.mapWithKey edges \(x_, y_) components -> do
+		let [x, y] = fromIntegral <$> [x_, y_]
+		C.translate x y
+		mapM_ (drawEdge aiLol) components
+		C.translate (-x) (-y)
 	C.stroke
+	sequence_ $ flip M.mapWithKey nodes \(x, y) isRoot -> do
+		fitText (fromIntegral x + 0.1) (fromIntegral y + 0.9) 0.8 (-0.8) (if isRoot then "ε" else "x")
+	where
+	(nodes, edges) = M.mapEither (\case (CellNode b, _) -> Left b; (CellEdge cs, _) -> Right cs) cells
 
 -- aiLol: The first version of drawEdge was vibe coded. Below is an excerpt
 -- from the prompt I wrote describing how I wanted things drawn. The AI I was
