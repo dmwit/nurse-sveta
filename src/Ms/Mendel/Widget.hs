@@ -32,17 +32,11 @@ treeLayoutFromMoveTree mt = TreeLayout
 
 -- | Grid cell contents. Even columns: nodes or blank. Odd columns: edges or blank.
 data GridCell
-	= CellBlank
-	| CellNode Bool  -- ^ True = root (ε), False = other (x)
-	| CellEdge EdgeKind
+	= CellNode Bool  -- ^ True = root (ε), False = other (x)
+	| CellEdge [EdgeComponent]
 	deriving (Eq, Ord, Read, Show)
 
-data EdgeKind
-	= EdgeStraight           -- ^ No variations: line left to right
-	| EdgeMainToFirst        -- ^ Main line to first variation: line left-right + arc left-bottom
-	| EdgeMiddleVariation    -- ^ Middle variation: line top-bottom + arc top-right
-	| EdgeConnectingVariation -- ^ Connecting variations: line top to bottom
-	| EdgeFinalVariation     -- ^ Final variation: arc top to right only
+data EdgeComponent = LR | UD | LD | UR
 	deriving (Eq, Ord, Read, Show)
 
 data Rendering a = Rendering
@@ -98,24 +92,24 @@ type GridPos = (Int, Int)
 buildGridFromMoveTree :: MoveTree a -> Rendering (GridCell, MoveTreeAddress)
 buildGridFromMoveTree t0 = vcat (rempty 0 1) $ rleaf (CellNode True, def) `hcat` case length (mainSequence t0) of
 	0 -> goVariations def (variations t0)
-	_ -> rleaf (CellEdge EdgeStraight, MoveTreeAddress def 0) `hcat` goTree def t0
+	_ -> rleaf (CellEdge [LR], MoveTreeAddress def 0) `hcat` goTree def t0
 	where
 	goVariations varPath vs = vcats . toList $ Seq.mapWithIndex (goVariation varPath (length vs)) vs
 	goVariation varPath n i v
-		| i == 0 = (edge EdgeMainToFirst `vcat` verticalBar) `hcat` child
-		| i == n - 1 = edge EdgeFinalVariation `hcat` child
-		| otherwise = (edge EdgeMiddleVariation `vcat` verticalBar) `hcat` child
+		| i == 0 = (edge [LR, LD] `vcat` verticalBar) `hcat` child
+		| i == n - 1 = edge [UR] `hcat` child
+		| otherwise = (edge [UD, UR] `vcat` verticalBar) `hcat` child
 		where
 		varPath' = varPath Seq.:|> i
 		child = goTree varPath' v
 		edge e = rleaf (CellEdge e, MoveTreeAddress varPath' 0)
-		verticalBar = vrep (renderingHeight child - 1) (edge EdgeConnectingVariation)
+		verticalBar = vrep (renderingHeight child - 1) (edge [UD])
 	goTree varPath t = mainSeq `hcat` goVariations varPath (variations t) where
 		ns = mainSequence t
 		mainSeq = hcats . toList $ Seq.mapWithIndex (goNode varPath (length ns)) ns
 	goNode varPath n i node
 		| i == 0 = cell (CellNode False)
-		| otherwise = cell (CellEdge EdgeStraight) `hcat` cell (CellNode False)
+		| otherwise = cell (CellEdge [LR]) `hcat` cell (CellNode False)
 		where cell c = rleaf (c, MoveTreeAddress varPath i)
 
 cellSizePx :: Int
@@ -174,7 +168,6 @@ vtvRender aiLol cells = for_ (M.toList cells) \((col, row), (cell, _)) -> do
 	C.restore
 
 renderCell :: Bool -> GridCell -> C.Render ()
-renderCell _ CellBlank = pure ()
 renderCell _ (CellNode isRoot) = do
 	C.setSourceRGB 0 0 0
 	C.setLineWidth 0.05
@@ -187,7 +180,7 @@ renderCell aiLol (CellEdge k) = do
 	C.setLineWidth 0.08
 	C.setLineCap C.LineCapRound
 	C.setLineJoin C.LineJoinRound
-	drawEdge aiLol k
+	mapM_ (drawEdge aiLol) k
 	C.stroke
 
 -- aiLol: The first version of drawEdge was vibe coded. Below is an excerpt
@@ -206,18 +199,15 @@ renderCell aiLol (CellEdge k) = do
 -- * Final variation: arc top to right
 
 -- | Draw edge in 1x1 cell. Screen coords (y down): left (0, 0.5), right (1, 0.5), top (0.5, 0), bottom (0.5, 1).
-drawEdge :: Bool -> EdgeKind -> C.Render ()
+drawEdge :: Bool -> EdgeComponent -> C.Render ()
 drawEdge aiLol = \case
-	EdgeStraight -> C.moveTo 0 0.5 >> C.lineTo 1 0.5
-	EdgeMainToFirst -> if aiLol
-		then C.moveTo 0 0.5 >> C.lineTo 1 0.5 >> C.arcNegative 0.5 0.5 0.5 pi (pi/2)  -- left to bottom (clockwise)
-		else C.moveTo 1 0.5 >> C.arc 0 1 0.5 (3*pi/2) 0
-	EdgeMiddleVariation -> if aiLol
-		then C.moveTo 0.5 0 >> C.lineTo 0.5 1 >> C.arcNegative 0.5 0.5 0.5 (3*pi/2) 0  -- top to right (clockwise)
-		else C.moveTo 0.5 1 >> C.arcNegative 1 0 0.5 pi (pi/2)
-	EdgeConnectingVariation -> C.moveTo 0.5 0 >> C.lineTo 0.5 1
-	EdgeFinalVariation -> if aiLol
-		then C.arcNegative 0.5 0.5 0.5 (3*pi/2) 0  -- top to right
+	LR -> C.moveTo 0 0.5 >> C.lineTo 1 0.5
+	UD -> C.moveTo 0.5 0 >> C.lineTo 0.5 1
+	LD -> if aiLol
+		then C.moveTo 1 0.5 >> C.arcNegative 0.5 0.5 0.5 pi (pi/2)
+		else C.moveTo 0 0.5 >> C.arc 0 1 0.5 (3*pi/2) 0
+	UR -> if aiLol
+		then C.moveTo 0.5 0 >> C.arcNegative 0.5 0.5 0.5 (3*pi/2) 0
 		else C.moveTo 1 0.5 >> C.arc 1 0 0.5 (pi/2) pi
 
 data instance Pattern Gtk = PatternGtk
