@@ -132,6 +132,7 @@ library
                         , process ^>=1.6
                         , random ^>=1.2
                         , stm ^>=2.5.1
+                        , these ^>=1.2
                         , time >=1.9 && <1.12
                         , vector-instances ^>=3.4
     cxx-sources:          cxxbits/adapter.cpp

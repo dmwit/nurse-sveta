@@ -27,6 +27,7 @@ module Nurse.Sveta.Util
 	, module Data.Ord
 	, module Data.Semigroup
 	, module Data.String
+	, module Data.These
 	, module Data.Time
 	, module Data.Traversable
 	, module Data.Tree
@@ -92,6 +93,7 @@ import Data.Sequence (Seq)
 import Data.Set (Set)
 import Data.String
 import Data.Text (Text)
+import Data.These
 import Data.Time
 import Data.Traversable
 import Data.Tree

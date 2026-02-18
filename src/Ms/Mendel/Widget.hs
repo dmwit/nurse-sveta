@@ -42,7 +42,7 @@ data EdgeComponent = LR | UD | LD | UR
 data Rendering a = Rendering
 	{ renderingWidth, renderingHeight :: Int
 	, renderingTree :: GridPos -> Map GridPos a
-	}
+	} deriving Functor
 
 instance Default (Rendering a) where def = rempty 0 0
 instance Show a => Show (Rendering a) where
@@ -51,23 +51,27 @@ instance Show a => Show (Rendering a) where
 		(renderingHeight r)
 		(show (renderingTree r def))
 
-hcat :: Rendering a -> Rendering a -> Rendering a
-hcat l r = Rendering
-	{ renderingWidth = renderingWidth l + renderingWidth r
-	, renderingHeight = max (renderingHeight l) (renderingHeight r)
-	, renderingTree = \(x, y) -> M.union
-		(renderingTree l (x, y))
-		(renderingTree r (x + renderingWidth l, y))
+combineRenderings :: Bool -> Bool -> Rendering a -> Rendering b -> Rendering (These a b)
+combineRenderings overlapW overlapH as bs = Rendering
+	{ renderingWidth = combineMetric overlapW (renderingWidth as) (renderingWidth bs)
+	, renderingHeight = combineMetric overlapH (renderingHeight as) (renderingHeight bs)
+	, renderingTree = \(xa, ya) -> let
+		xb = offset overlapW xa (renderingWidth as)
+		yb = offset overlapH ya (renderingHeight as)
+		ta = renderingTree as (xa, ya)
+		tb = renderingTree bs (xb, yb)
+		in M.unions [M.intersectionWith These ta tb, This <$> ta, That <$> tb]
 	}
+	where
+	combineMetric = \case False -> (+); True -> max
+	offset = \case False -> (+); True -> const
 
-vcat :: Rendering a -> Rendering a -> Rendering a
-vcat u d = Rendering
-	{ renderingWidth = max (renderingWidth u) (renderingWidth d)
-	, renderingHeight = renderingHeight u + renderingHeight d
-	, renderingTree = \(x, y) -> M.union
-		(renderingTree u (x, y))
-		(renderingTree d (x, y + renderingHeight u))
-	}
+noOverlap :: These a a -> a
+noOverlap = these id id const
+
+hcat, vcat :: Rendering a -> Rendering a -> Rendering a
+hcat l r = noOverlap <$> combineRenderings False True l r
+vcat u d = noOverlap <$> combineRenderings True False u d
 
 hcats, vcats :: [Rendering a] -> Rendering a
 hcats = foldb hcat def
@@ -76,6 +80,13 @@ vcats = foldb vcat def
 hrep, vrep :: Int -> Rendering a -> Rendering a
 hrep n r = hcats (replicate n r)
 vrep n r = vcats (replicate n r)
+
+overlap :: Semigroup a => Rendering a -> Rendering a -> Rendering a
+overlap a b = these id id (<>) <$> combineRenderings True True a b
+
+-- can't imagine this ever being useful, but the completionist in me needs to complete the set
+kittyCorner :: Rendering a -> Rendering a -> Rendering a
+kittyCorner ul br = noOverlap <$> combineRenderings False False ul br
 
 rleaf :: a -> Rendering a
 rleaf = Rendering 1 1 . flip M.singleton
