@@ -33,7 +33,7 @@ treeLayoutFromMoveTree mt = TreeLayout
 -- | Grid cell contents. Even columns: nodes or blank. Odd columns: edges or blank.
 data GridCell
 	= CellNode Bool  -- ^ True = root (ε), False = other (x)
-	| CellEdge [EdgeComponent]
+	| CellEdge [EdgeComponent] (Maybe EdgeComponent) -- ^ edges always shown in [], active path in Maybe
 	deriving (Eq, Ord, Read, Show)
 
 data EdgeComponent = LR | UD | LD | UR
@@ -84,7 +84,7 @@ vrep n r = vcats (replicate n r)
 overlap :: Semigroup a => Rendering a -> Rendering a -> Rendering a
 overlap a b = these id id (<>) <$> combineRenderings True True a b
 
--- can't imagine this ever being useful, but the completionist in me needs to complete the set
+-- can't imagine this ever being useful, but the completionist in me has to include it
 kittyCorner :: Rendering a -> Rendering a -> Rendering a
 kittyCorner ul br = noOverlap <$> combineRenderings False False ul br
 
@@ -100,27 +100,36 @@ type GridPos = (Int, Int)
 -- the top row is hard to click because you often hit the Paned hitbox instead
 -- of the DrawingArea hitbox, so we leave a little space with the rempty 0 1 at
 -- the start
-buildGridFromMoveTree :: MoveTree a -> Rendering (GridCell, MoveTreeAddress)
-buildGridFromMoveTree t0 = vcat (rempty 0 1) $ rleaf (CellNode True, def) `hcat` case length (mainSequence t0) of
-	0 -> goVariations def (variations t0)
-	_ -> rleaf (CellEdge [LR], MoveTreeAddress def 0) `hcat` goTree def t0
+buildGridFromMoveTree :: MoveSelection -> [Int] -> MoveTree a -> Rendering (GridCell, MoveTreeAddress)
+buildGridFromMoveTree sel active0 t0 = vcat (rempty 0 1) $ rleaf (CellNode True, def) `hcat` case length (mainSequence t0) of
+	0 -> goVariations def (Just active0) (variations t0)
+	_ -> rleaf (CellEdge [LR] (Just LR), MoveTreeAddress def 0) `hcat` goTree def (Just active0) t0
 	where
-	goVariations varPath vs = vcats . toList $ Seq.mapWithIndex (goVariation varPath (length vs)) vs
-	goVariation varPath n i v
-		| i == 0 = (edge [LR, LD] `vcat` verticalBar) `hcat` child
-		| i == n - 1 = edge [UR] `hcat` child
-		| otherwise = (edge [UD, UR] `vcat` verticalBar) `hcat` child
+	goVariations varPath active vs = vcats . toList $ Seq.mapWithIndex (goVariation varPath active (length vs)) vs
+	goVariation varPath active n i v
+		| i == 0 = (edge [LR, LD] firstVariationHi `vcat` verticalBar) `hcat` child
+		| i == n - 1 = edge [UR] laterVariationHi `hcat` child
+		| otherwise = (edge [UD, UR] laterVariationHi `vcat` verticalBar) `hcat` child
 		where
 		varPath' = varPath Seq.:|> i
-		child = goTree varPath' v
-		edge e = rleaf (CellEdge e, MoveTreeAddress varPath' 0)
-		verticalBar = vrep (renderingHeight child - 1) (edge [UD])
-	goTree varPath t = mainSeq `hcat` goVariations varPath (variations t) where
+		active' = case active of
+			Just (firstActive : restActive) | firstActive == i -> Just restActive
+			_ -> Nothing
+		(verticalBarHi, firstVariationHi, laterVariationHi) = case active of
+			Just (a:_) -> case compare a i of
+				LT -> (Nothing, Nothing, Nothing)
+				EQ -> (Nothing, Just LR, Just UR)
+				GT -> (Just UD, Just LD, Just UD)
+			_ -> (Nothing, Nothing, Nothing)
+		child = goTree varPath' active' v
+		edge e hi = rleaf (CellEdge e hi, MoveTreeAddress varPath' 0)
+		verticalBar = vrep (renderingHeight child - 1) (edge [UD] verticalBarHi)
+	goTree varPath active t = mainSeq `hcat` goVariations varPath active (variations t) where
 		ns = mainSequence t
-		mainSeq = hcats . toList $ Seq.mapWithIndex (goNode varPath (length ns)) ns
-	goNode varPath n i node
+		mainSeq = hcats . toList $ Seq.mapWithIndex (goNode varPath active (length ns)) ns
+	goNode varPath active n i node
 		| i == 0 = cell (CellNode False)
-		| otherwise = cell (CellEdge [LR]) `hcat` cell (CellNode False)
+		| otherwise = cell (CellEdge [LR] (LR <$ active)) `hcat` cell (CellNode False)
 		where cell c = rleaf (c, MoveTreeAddress varPath i)
 
 cellSizePx :: Int
@@ -150,9 +159,9 @@ newVariationTreeView = do
 vtvWidget :: MonadIO m => VariationTreeView -> m Widget
 vtvWidget = toWidget . vtvCanvas
 
-vtvSet :: MonadIO m => VariationTreeView -> MoveTree a -> m ()
-vtvSet vtv mt = do
-	let grid = buildGridFromMoveTree mt
+vtvSet :: MonadIO m => VariationTreeView -> MoveSelection -> [Int] -> MoveTree a -> m ()
+vtvSet vtv sel active mt = do
+	let grid = buildGridFromMoveTree sel active mt
 	    w = renderingWidth grid * cellSizePx
 	    h = renderingHeight grid * cellSizePx
 	liftIO $ writeIORef (vtvModel vtv) (renderingTree grid (0, 0))
@@ -172,25 +181,45 @@ vtvOnNodeClick vtv callback = do
 
 vtvRender :: Bool -> Map GridPos (GridCell, MoveTreeAddress) -> C.Render ()
 vtvRender aiLol cells = do
-	C.setSourceRGB 0 0 0
-	C.setLineWidth 0.08
 	C.setLineCap C.LineCapRound
 	C.setLineJoin C.LineJoinRound
 	join C.scale (fromIntegral cellSizePx)
+
+	treePath aiLol highlights
+	C.setSourceRGBA 0.5 0.75 1 0.4
+	for_ [1..4] \i -> do
+		C.setLineWidth (lerp (i/5) 0.32 0.08)
+		C.strokePreserve
+	-- there has to be a better way to clear the path... right?
+	C.setSourceRGBA 0 0 0 0
+	C.stroke
+
 	-- we want to make the entire edge path before stroking so that we don't
 	-- double-paint on the grid boundaries
-	sequence_ $ flip M.mapWithKey edges \(x_, y_) components -> do
-		let [x, y] = fromIntegral <$> [x_, y_]
-		C.translate x y
-		mapM_ (drawEdge aiLol) components
-		C.translate (-x) (-y)
+	treePath aiLol edges
+	C.setSourceRGB 0 0 0
+	C.setLineWidth 0.08
 	C.stroke
-	sequence_ $ flip M.mapWithKey nodes \(x, y) isRoot -> do
+
+	for_ nodes \((x, y), isRoot) -> do
 		fitText (fromIntegral x + 0.1) (fromIntegral y + 0.9) 0.8 (-0.8) (if isRoot then "ε" else "x")
 	where
-	(nodes, edges) = M.mapEither (\case (CellNode b, _) -> Left b; (CellEdge cs, _) -> Right cs) cells
+	(nodes, edges, highlights) = go (M.toList cells) where
+		go [] = ([], [], [])
+		go ((pos, (c, _)):cs) = case c of
+			CellNode n -> ((pos, n) : ns, es, hs)
+			CellEdge es' hs' -> (ns, sequence (pos, es') ++ es, toList (sequence (pos, hs')) ++ hs)
+			where
+			(ns, es, hs) = go cs
 
--- aiLol: The first version of drawEdge was vibe coded. Below is an excerpt
+treePath :: Bool -> [(GridPos, EdgeComponent)] -> C.Render ()
+treePath aiLol = traverse_ \((x_, y_), component) -> do
+	let [x, y] = fromIntegral <$> [x_, y_]
+	C.translate x y
+	edgePath aiLol component
+	C.translate (-x) (-y)
+
+-- aiLol: The first version of edgePath was vibe coded. Below is an excerpt
 -- from the prompt I wrote describing how I wanted things drawn. The AI I was
 -- using sort of did what I said... but definitely didn't do what I meant. I
 -- mean I would bet it basically understood what I meant and just got the
@@ -206,8 +235,8 @@ vtvRender aiLol cells = do
 -- * Final variation: arc top to right
 
 -- | Draw edge in 1x1 cell. Screen coords (y down): left (0, 0.5), right (1, 0.5), top (0.5, 0), bottom (0.5, 1).
-drawEdge :: Bool -> EdgeComponent -> C.Render ()
-drawEdge aiLol = \case
+edgePath :: Bool -> EdgeComponent -> C.Render ()
+edgePath aiLol = \case
 	LR -> C.moveTo 0 0.5 >> C.lineTo 1 0.5
 	UD -> C.moveTo 0.5 0 >> C.lineTo 0.5 1
 	LD -> if aiLol

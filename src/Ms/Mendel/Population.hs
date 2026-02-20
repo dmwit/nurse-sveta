@@ -872,3 +872,4 @@ class Lerp a where
 
 instance Lerp Tensor where lerp fraction t0 t1 = tScale fraction t1 `tAdd` tScale (1 - fraction) t0
 instance Lerp Float  where lerp fraction f0 f1 = fraction * f1 + (1 - fraction) * f0
+instance Lerp Double where lerp fraction d0 d1 = draction * d1 + (1 - draction) * d0 where draction = realToFrac fraction

@@ -300,8 +300,11 @@ uiModifyVariation f ui = ui { activeVariations = f (activeVariations ui) }
 uiEnsureDepth :: UIModel -> UIModel
 uiEnsureDepth ui = uiModifyVariation (ensureDepth (uiVariationDepth ui)) ui
 
-uiActivePath :: UIModel -> Seq Int
-uiActivePath ui = activePathOfDepth (activeVariations ui) (uiVariationDepth ui)
+uiFocusedPath :: UIModel -> Seq Int
+uiFocusedPath ui = activePathOfDepth (activeVariations ui) (uiVariationDepth ui)
+
+uiActivePath :: UIModel -> [Int]
+uiActivePath = activePath . activeVariations
 
 uiActivateVariation :: Seq Int -> UIModel -> UIModel
 uiActivateVariation = uiModifyVariation . activateVariation
@@ -313,7 +316,7 @@ uiSplitVariation :: UIModel -> UIModel
 uiSplitVariation ui = uiModifyVariation (splitVariationAtDepth (uiVariationDepth ui)) ui
 
 uiFocusedTree :: HasCallStack => UIModel -> MoveTree (GameStateEdit, GameState)
-uiFocusedTree ui = indexVariations_ (nodes ui) (uiActivePath ui)
+uiFocusedTree ui = indexVariations_ (nodes ui) (uiFocusedPath ui)
 
 uiCurrentState :: UIModel -> GameState
 uiCurrentState ui = defOr . fmap snd $ mainSequence (uiFocusedTree ui) Seq.!? uiMainSequenceIndex ui
@@ -408,7 +411,7 @@ uiDeleteCurrent :: HasCallStack => UIModel -> Maybe UIModel
 uiDeleteCurrent ui = do
 	let i = uiMainSequenceIndex ui
 	guard (i >= 0)
-	(focusedTree, rebuildTree) <- indexVariationsL (nodes ui) (uiActivePath ui)
+	(focusedTree, rebuildTree) <- indexVariationsL (nodes ui) (uiFocusedPath ui)
 	guard (i < length (mainSequence focusedTree))
 	let (b, _ Seq.:<| e) = Seq.splitAt i (mainSequence focusedTree)
 	    focusedTree' = focusedTree { mainSequence = b <> e }
@@ -425,7 +428,7 @@ uiTryAdvance e ui = uiAdvance e ui <$ guard (uiIsLegalEdit ui e)
 
 uiAdvance :: HasCallStack => GameStateEdit -> UIModel -> UIModel
 uiAdvance e ui = fromMaybe uiError do
-	(focusedTree, rebuildTree) <- indexVariationsL (nodes ui) (uiActivePath ui)
+	(focusedTree, rebuildTree) <- indexVariationsL (nodes ui) (uiFocusedPath ui)
 	let focusedState = defOr . fmap snd $ mainSequence focusedTree Seq.!? uiMainSequenceIndex ui
 	(focusedTree', action) <- splitAndInsertVariation (uiMainSequenceIndex ui + 1) (e, applyEdit focusedState e) focusedTree
 	let ui' = ui { nodes = rebuildTree focusedTree' }

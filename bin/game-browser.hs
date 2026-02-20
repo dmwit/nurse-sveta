@@ -46,7 +46,7 @@ main = do
 		let refresh = do
 		    	ui <- readIORef uiRef
 		    	psvSet boardView (uiCurrentPSM ui)
-		    	vtvSet treeView (nodes ui)
+		    	vtvSet treeView (moveSelection ui) (uiActivePath ui) (nodes ui)
 		    	#queueDraw hoverLayer
 		vtvOnNodeClick treeView \addr ->
 			modifyIORef uiRef (flip uiVisitAddress addr) >> refresh
