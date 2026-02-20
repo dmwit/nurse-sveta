@@ -135,6 +135,9 @@ buildGridFromMoveTree sel active0 t0 = vcat (rempty 0 1) $ rleaf (CellNode Nothi
 		cellNode = cell (CellNode (Just node) isSelected)
 		isSelected = i == mainSequenceIndex sel && isJust active && length varPath == variationDepth sel
 
+cellRowsDefault :: Int
+cellRowsDefault = 5
+
 cellSizePx :: Int
 cellSizePx = 30
 

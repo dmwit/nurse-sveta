@@ -19,12 +19,12 @@ main = do
 		topRow <- new Box [#orientation := OrientationHorizontal]
 		boardView <- newPlayerStateView (uiCurrentPSM def)
 		boardWidget <- psvWidget boardView
-		boardOverlay <- new Overlay [#child := boardWidget]
+		boardOverlay <- new Overlay [#child := boardWidget, #heightRequest := 500, #widthRequest := 250]
 		hoverLayer <- new DrawingArea [#hexpand := True, #vexpand := True, #canTarget := False]
 		#addOverlay boardOverlay hoverLayer
 		treeView <- newVariationTreeView
 		treeWidget <- vtvWidget treeView
-		treeScroll <- new ScrolledWindow [#child := treeWidget, #hexpand := True]
+		treeScroll <- new ScrolledWindow [#child := treeWidget, #hexpand := True, #heightRequest := fromIntegral (cellSizePx * cellRowsDefault)]
 		tools <- new Box [#orientation := OrientationVertical]
 		uiRef <- newIORef (def :: UIModel)
 		toolRef <- newIORef initialTool
