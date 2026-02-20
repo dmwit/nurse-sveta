@@ -31,8 +31,8 @@ treeLayoutFromMoveTree mt = TreeLayout
 	}
 
 -- | Grid cell contents. Even columns: nodes or blank. Odd columns: edges or blank.
-data GridCell
-	= CellNode Bool  -- ^ True = root (ε), False = other (x)
+data GridCell a
+	= CellNode (Maybe a) Bool -- ^ the Bool is whether this is the selected node
 	| CellEdge [EdgeComponent] (Maybe EdgeComponent) -- ^ edges always shown in [], active path in Maybe
 	deriving (Eq, Ord, Read, Show)
 
@@ -100,8 +100,8 @@ type GridPos = (Int, Int)
 -- the top row is hard to click because you often hit the Paned hitbox instead
 -- of the DrawingArea hitbox, so we leave a little space with the rempty 0 1 at
 -- the start
-buildGridFromMoveTree :: MoveSelection -> [Int] -> MoveTree a -> Rendering (GridCell, MoveTreeAddress)
-buildGridFromMoveTree sel active0 t0 = vcat (rempty 0 1) $ rleaf (CellNode True, def) `hcat` case length (mainSequence t0) of
+buildGridFromMoveTree :: MoveSelection -> [Int] -> MoveTree a -> Rendering (GridCell a, MoveTreeAddress)
+buildGridFromMoveTree sel active0 t0 = vcat (rempty 0 1) $ rleaf (CellNode Nothing (sel == def), def) `hcat` case length (mainSequence t0) of
 	0 -> goVariations def (Just active0) (variations t0)
 	_ -> rleaf (CellEdge [LR] (Just LR), MoveTreeAddress def 0) `hcat` goTree def (Just active0) t0
 	where
@@ -128,9 +128,12 @@ buildGridFromMoveTree sel active0 t0 = vcat (rempty 0 1) $ rleaf (CellNode True,
 		ns = mainSequence t
 		mainSeq = hcats . toList $ Seq.mapWithIndex (goNode varPath active (length ns)) ns
 	goNode varPath active n i node
-		| i == 0 = cell (CellNode False)
-		| otherwise = cell (CellEdge [LR] (LR <$ active)) `hcat` cell (CellNode False)
-		where cell c = rleaf (c, MoveTreeAddress varPath i)
+		| i == 0 = cellNode
+		| otherwise = cell (CellEdge [LR] (LR <$ active)) `hcat` cellNode
+		where
+		cell c = rleaf (c, MoveTreeAddress varPath i)
+		cellNode = cell (CellNode (Just node) isSelected)
+		isSelected = i == mainSequenceIndex sel && isJust active && length varPath == variationDepth sel
 
 cellSizePx :: Int
 cellSizePx = 30
@@ -140,7 +143,7 @@ cellSizePx = 30
 data VariationTreeView = VTV
 	{ vtvCanvas :: DrawingArea
 	, vtvAIButton :: CheckButton
-	, vtvModel :: IORef (Map GridPos (GridCell, MoveTreeAddress))
+	, vtvModel :: IORef (Map GridPos (GridCell (GameStateEdit, GameState), MoveTreeAddress))
 	-- ^ (cells, nodeAddresses, minCol, minRow, colCount, rowCount)
 	}
 
@@ -159,7 +162,7 @@ newVariationTreeView = do
 vtvWidget :: MonadIO m => VariationTreeView -> m Widget
 vtvWidget = toWidget . vtvCanvas
 
-vtvSet :: MonadIO m => VariationTreeView -> MoveSelection -> [Int] -> MoveTree a -> m ()
+vtvSet :: MonadIO m => VariationTreeView -> MoveSelection -> [Int] -> MoveTree (GameStateEdit, GameState) -> m ()
 vtvSet vtv sel active mt = do
 	let grid = buildGridFromMoveTree sel active mt
 	    w = renderingWidth grid * cellSizePx
@@ -179,13 +182,13 @@ vtvOnNodeClick vtv callback = do
 		for_ (M.lookup (col, row) nodeAddrs) (callback . snd)
 	#addController (vtvCanvas vtv) click
 
-vtvRender :: Bool -> Map GridPos (GridCell, MoveTreeAddress) -> C.Render ()
+vtvRender :: Bool -> Map GridPos (GridCell (GameStateEdit, GameState), MoveTreeAddress) -> C.Render ()
 vtvRender aiLol cells = do
 	C.setLineCap C.LineCapRound
 	C.setLineJoin C.LineJoinRound
 	join C.scale (fromIntegral cellSizePx)
 
-	treePath aiLol highlights
+	treePath aiLol edgeHighlights
 	C.setSourceRGBA 0.5 0.75 1 0.4
 	for_ [1..4] \i -> do
 		C.setLineWidth (lerp (i/5) 0.32 0.08)
@@ -194,6 +197,12 @@ vtvRender aiLol cells = do
 	C.setSourceRGBA 0 0 0 0
 	C.stroke
 
+	for_ nodeHighlights \(x_, y_) ->
+		let [x, y] = [fromIntegral coord + 0.5 | coord <- [x_, y_]]
+		in C.arc x y 0.5 0 (2*pi)
+	C.setSourceRGBA 0.5 0.75 1 0.4
+	C.fill
+
 	-- we want to make the entire edge path before stroking so that we don't
 	-- double-paint on the grid boundaries
 	treePath aiLol edges
@@ -201,16 +210,13 @@ vtvRender aiLol cells = do
 	C.setLineWidth 0.08
 	C.stroke
 
-	for_ nodes \((x, y), isRoot) -> do
-		fitText (fromIntegral x + 0.1) (fromIntegral y + 0.9) 0.8 (-0.8) (if isRoot then "ε" else "x")
+	for_ nodes \((x, y), mNodeContent) -> do
+		fitText (fromIntegral x + 0.1) (fromIntegral y + 0.9) 0.8 (-0.8) (if isNothing mNodeContent then "ε" else "x")
 	where
-	(nodes, edges, highlights) = go (M.toList cells) where
-		go [] = ([], [], [])
-		go ((pos, (c, _)):cs) = case c of
-			CellNode n -> ((pos, n) : ns, es, hs)
-			CellEdge es' hs' -> (ns, sequence (pos, es') ++ es, toList (sequence (pos, hs')) ++ hs)
-			where
-			(ns, es, hs) = go cs
+	(nodes, nodeHighlights, edges, edgeHighlights) = M.foldMapWithKey inject cells where
+		inject pos (c, _) = case c of
+			CellNode medit highlighted -> ([(pos, medit)], [pos | highlighted], [], [])
+			CellEdge es ehs -> ([], [], sequence (pos, es), sequence (pos, toList ehs))
 
 treePath :: Bool -> [(GridPos, EdgeComponent)] -> C.Render ()
 treePath aiLol = traverse_ \((x_, y_), component) -> do
