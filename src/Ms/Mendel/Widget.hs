@@ -159,7 +159,6 @@ newVariationTreeView = do
 		aiLol <- liftIO $ get ai #active
 		model <- liftIO $ readIORef ref
 		renderWithContext (vtvRender aiLol model) ctx
-	on ai #toggled (#queueDraw da)
 	pure (VTV da ai ref)
 
 vtvWidget :: MonadIO m => VariationTreeView -> m Widget
@@ -192,26 +191,17 @@ vtvRender aiLol cells = do
 	join C.scale (fromIntegral cellSizePx)
 
 	treePath aiLol edgeHighlights
-	C.setSourceRGBA 0.5 0.75 1 0.4
-	for_ [1..4] \i -> do
-		C.setLineWidth (lerp (i/5) 0.32 0.08)
-		C.strokePreserve
-	-- there has to be a better way to clear the path... right?
-	C.setSourceRGBA 0 0 0 0
-	C.stroke
+	strokeHighlight
 
 	for_ nodeHighlights \(x_, y_) ->
 		let [x, y] = [fromIntegral coord + 0.5 | coord <- [x_, y_]]
 		in C.arc x y 0.5 0 (2*pi)
-	C.setSourceRGBA 0.5 0.75 1 0.4
-	C.fill
+	fillHighlight
 
 	-- we want to make the entire edge path before stroking so that we don't
 	-- double-paint on the grid boundaries
 	treePath aiLol edges
-	C.setSourceRGB 0 0 0
-	C.setLineWidth 0.08
-	C.stroke
+	strokeTree
 
 	for_ nodes \((x, y), mNodeContent) -> do
 		fitText (fromIntegral x + 0.1) (fromIntegral y + 0.9) 0.8 (-0.8) (if isNothing mNodeContent then "ε" else "x")
@@ -220,6 +210,25 @@ vtvRender aiLol cells = do
 		inject pos (c, _) = case c of
 			CellNode medit highlighted -> ([(pos, medit)], [pos | highlighted], [], [])
 			CellEdge es ehs -> ([], [], sequence (pos, es), sequence (pos, toList ehs))
+
+strokeHighlight :: Render ()
+strokeHighlight = do
+	C.setSourceRGBA 0.5 0.75 1 0.4
+	for_ [1..4] \i -> do
+		C.setLineWidth (lerp (i/5) 0.32 0.08)
+		C.strokePreserve
+	C.newPath
+
+strokeTree :: Render ()
+strokeTree = do
+	C.setSourceRGB 0 0 0
+	C.setLineWidth 0.08
+	C.stroke
+
+fillHighlight :: Render ()
+fillHighlight = do
+	C.setSourceRGBA 0.5 0.75 1 0.4
+	C.fill
 
 treePath :: Bool -> [(GridPos, EdgeComponent)] -> C.Render ()
 treePath aiLol = traverse_ \((x_, y_), component) -> do

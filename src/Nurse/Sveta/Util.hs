@@ -38,6 +38,7 @@ module Nurse.Sveta.Util
 	, module Dr.Mario.Util
 	, module GHC.Stack
 	, module Numeric
+	, module Paths_nurse_sveta
 	, module System.Directory
 	, module System.Environment
 	, module System.Exit
@@ -106,6 +107,7 @@ import Dr.Mario.PP
 import Dr.Mario.Util
 import GHC.Stack
 import Numeric
+import Paths_nurse_sveta
 import System.Directory
 import System.Environment
 import System.Exit

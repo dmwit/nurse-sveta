@@ -1,8 +1,8 @@
 module Nurse.Sveta.Cairo (
 	initMath, bottleSizeRecommendation,
 	bottleWithLookahead, bottle, bottleMaybeLookahead,
-	bottleOutline, bottleContent, lookahead, lookaheadContent,
-	pill, shape, cell, setColor, neutral,
+	bottleOutline, bottleContent, lookahead, lookahead_, westEast,
+	pill, shape, cell, cairoColor, setColor, neutral, noBottle,
 	fitText, fitTexts, TextRequest(..),
 	-- * Heatmaps
 	-- | Heatmaps display a grid of colors to convey numerical information.
@@ -60,7 +60,7 @@ bottleWithLookahead :: Board -> Lookahead -> Render ()
 bottleWithLookahead b lk = do
 	bottleOutline_ w h xMid
 	bottleContent b
-	lookahead_ w h xMid lk
+	lookahead (width b) (height b) lk
 	where
 	w = fromIntegral (width b)
 	h = fromIntegral (height b)
@@ -102,25 +102,19 @@ bottleContent :: Board -> Render ()
 bottleContent = getAp . ofoldMapWithKey
 	(\(Position x y) -> Ap . cell (fromIntegral x) (fromIntegral y))
 
--- | width, height, left, right
+-- | bottle width, bottle height, lookahead
 lookahead :: Int -> Int -> Lookahead -> Render ()
-lookahead w h = lookahead_ (fromIntegral w) (fromIntegral h) (xMidFromWidth w)
+lookahead w h = lookahead_ (xMidFromWidth w + 1) (fromIntegral h + 2.5)
 
-lookahead_ :: Double -> Double -> Double -> Lookahead -> Render ()
-lookahead_ w h xMid lk = lookaheadContent_ w h xMid (pillContentFromLookahead Horizontal lk)
+-- | x, y, lookahead (canvas coords, not bottle coords)
+lookahead_ :: Double -> Double -> Lookahead -> Render ()
+lookahead_ x y lk = westEast x y (setColor (leftColor lk)) (setColor (rightColor lk))
 
--- | width, height, content
-lookaheadContent :: Int -> Int -> PillContent -> Render ()
-lookaheadContent w h = lookaheadContent_ (fromIntegral w) (fromIntegral h) (xMidFromWidth w)
-
-lookaheadContent_ :: Double -> Double -> Double -> PillContent -> Render ()
-lookaheadContent_ w h xMid pc = case orientation pc of
-	Horizontal -> do
-		cell  xMid      (h+1.5) (Occupied (bottomLeftColor pc) West )
-		cell (xMid+1  ) (h+1.5) (Occupied (     otherColor pc) East )
-	Vertical -> do
-		cell (xMid+0.5) (h+1  ) (Occupied (bottomLeftColor pc) South)
-		cell (xMid+0.5) (h+2  ) (Occupied (     otherColor pc) North)
+-- | bottom left canvas coords, left color, right color
+westEast :: Double -> Double -> Render () -> Render () -> Render ()
+westEast x y westColor eastColor = noBottle do
+	shape x y westColor West
+	shape (x+1) y eastColor East
 
 pill :: Pill -> Render ()
 pill Pill
@@ -136,9 +130,13 @@ pill Pill
 		Vertical   -> cell  x     y    (Occupied bl South)
 		           >> cell  x    (y+1) (Occupied o  North)
 
--- | Arguments are x, y, fill color, and the shape to draw.
+-- | Arguments are x, y, fill color, and the shape to draw. Position is on a rendered bottle.
 shape :: Double -> Double -> Render () -> Shape -> Render ()
-shape x_ y_ setFillColor s = do
+shape x y = shapeRaw (x+1) (y+1)
+
+-- | Arguments are x, y, fill color, and the shape to draw. Position is on the canvas.
+shapeRaw :: Double -> Double -> Render () -> Shape -> Render ()
+shapeRaw x y setFillColor s = do
 	case s of
 		Virus -> do
 			centered moveTo pos
@@ -192,24 +190,40 @@ shape x_ y_ setFillColor s = do
 		stroke
 
 	where
-	x = x_ + 1
-	y = y_ + 1
 	pos = (x, y)
 
 cell :: Double -> Double -> Cell -> Render ()
 cell _ _ Empty = pure ()
 cell x y (Occupied c s) = shape x y (setColor c) s
 
+blueR, blueG, blueB, redR, redG, redB, yellowR, yellowG, yellowB :: Double
+[blueR, blueG, blueB, redR, redG, redB, yellowR, yellowG, yellowB] = tail [ignored
+	, 0.13, 0.49, 0.72
+	, 0.99, 0.39, 0.41
+	, 0.82, 0.79, 0.26
+	]
+
+cairoColor :: Color -> (Double, Double, Double)
+cairoColor = \case
+	Blue -> (blueR, blueG, blueB)
+	Red -> (redR, redG, redB)
+	Yellow -> (yellowR, yellowG, yellowB)
+
 setColor :: Color -> Render ()
 setColor = \case
-	Blue -> setSourceRGB 0.13 0.49 0.72
-	Red -> setSourceRGB 0.99 0.39 0.41
-	Yellow -> setSourceRGB 0.82 0.79 0.26
+	Blue -> setSourceRGB blueR blueG blueB
+	Red -> setSourceRGB redR redG redB
+	Yellow -> setSourceRGB yellowR yellowG yellowB
 
 -- | Convert an operation that normally operates on grid boundaries to operate
 -- on grid centers instead.
 centered :: (Double -> Double -> a) -> (Double, Double) -> a
 centered f (x,y) = f (x+0.5) (y+0.5)
+
+-- | Convert an operation that uses bottle-relative coordinates into an
+-- operation that uses canvas-relative coordinates.
+noBottle :: Render () -> Render ()
+noBottle act = save >> translate (-1) (-1) >> act >> restore
 
 xMidFromWidth :: Int -> Double
 xMidFromWidth w = fromIntegral $ (w-1) `quot` 2
@@ -270,43 +284,43 @@ boardHeatmapSizeRecommendation = uncurry labeledHeatmapSizeRecommendation . bott
 -- | Good for when all your numbers are in the range [0,1]. The gradient used
 -- for this makes it especially easy to spot values that are exactly 0 or
 -- exactly 1.
-boardHeatmap01 :: Board -> PillContent -> [(Position, Float)] -> Render ()
+boardHeatmap01 :: Board -> Lookahead -> [(Position, Float)] -> Render ()
 boardHeatmap01 = boardHeatmapWith heatmapOptions01
 
 -- | Good for distributions. The gradient used makes it easy to spot values
 -- that are exactly 0 and scales the upper bound to be near the highest
 -- probability given.
-boardHeatmap0Dyn :: Board -> PillContent -> [(Position, Float)] -> Render ()
-boardHeatmap0Dyn b pc heat = boardHeatmap0Max (maximum (0:map snd heat)) b pc heat
+boardHeatmap0Dyn :: Board -> Lookahead -> [(Position, Float)] -> Render ()
+boardHeatmap0Dyn b lk heat = boardHeatmap0Max (maximum (0:map snd heat)) b lk heat
 
 -- | Good for distributions where you expect a probability to be at most a
 -- certain maximum. The gradient used makes it easy to spot values that are
 -- exactly 0, but doesn't treat values equal to the upper bound specially.
-boardHeatmap0Max :: Float -> Board -> PillContent -> [(Position, Float)] -> Render ()
+boardHeatmap0Max :: Float -> Board -> Lookahead -> [(Position, Float)] -> Render ()
 boardHeatmap0Max = boardHeatmapWith . heatmapOptions0Max
 
 -- | Good when you don't really know ahead of time how big your numbers will
 -- be. Prints rounded versions of the min and max in the legend.
-boardHeatmapDyn :: Board -> PillContent -> [(Position, Float)] -> Render ()
-boardHeatmapDyn b pc heat = boardHeatmapWith (heatmapOptionsDyn heat) b pc heat
+boardHeatmapDyn :: Board -> Lookahead -> [(Position, Float)] -> Render ()
+boardHeatmapDyn b lk heat = boardHeatmapWith (heatmapOptionsDyn heat) b lk heat
 
 -- | Good for when you know what you want the smallest and largest values in
 -- your legend to be. The bounds are rounded before being printed in the
 -- legend.
-boardHeatmapRange :: Float -> Float -> Board -> PillContent -> [(Position, Float)] -> Render ()
+boardHeatmapRange :: Float -> Float -> Board -> Lookahead -> [(Position, Float)] -> Render ()
 boardHeatmapRange lo hi = boardHeatmapWith (heatmapOptionsRange lo hi)
 
 -- | See 'HeatmapOptions' below for more on exactly what knobs you can tweak
 -- here.
-boardHeatmapWith :: HeatmapOptions -> Board -> PillContent -> [(Position, Float)] -> Render ()
-boardHeatmapWith ho b pc heat = do
+boardHeatmapWith :: HeatmapOptions -> Board -> Lookahead -> [(Position, Float)] -> Render ()
+boardHeatmapWith ho b lk heat = do
 	save
 	translate 1 1
 	heatmapGrid ho heat
 	restore
 	heatmapLabels ho w h
 	bottle b
-	lookaheadContent (width b) (height b) pc
+	lookahead (width b) (height b) lk
 	where
 	(fromIntegral -> w, fromIntegral -> h) = boardHeatmapSizeRecommendation b
 

@@ -4,7 +4,7 @@ import GI.Cairo.Render.Connector (renderWithContext)
 import qualified GI.Cairo.Render as C
 import GI.Gtk hiding (Text)
 import Ms.Mendel hiding (get)
-import qualified Nurse.Sveta.Cairo as NSC
+import qualified Nurse.Sveta.Cairo as NC
 import Nurse.Sveta.GameBrowser
 
 import qualified Data.Map as M
@@ -38,15 +38,18 @@ main = do
 
 		toolGroup <- new CheckButton []
 		toolButtons <- for allTools \tool -> do
-			btn <- new CheckButton [#label := T.pack (pp tool), #group := toolGroup, #active := tool == initialTool]
+			tw <- toolWidget tool (get (vtvAIButton treeView) #active)
+			btn <- new CheckButton [#child := twTop tw, #group := toolGroup, #active := tool == initialTool]
 			btn <$ on btn #toggled do
 				active <- get btn #active
 				when active (writeIORef toolRef tool)
+			toWidget btn <&> \top' -> tw { twTop = top' }
 
 		let refresh = do
 		    	ui <- readIORef uiRef
 		    	psvSet boardView (uiCurrentPSM ui)
 		    	vtvSet treeView (moveSelection ui) (uiActivePath ui) (nodes ui)
+		    	forM_ toolButtons \tw -> twRefresh tw ui
 		    	#queueDraw hoverLayer
 		vtvOnNodeClick treeView \addr ->
 			modifyIORef uiRef (flip uiVisitAddress addr) >> refresh
@@ -58,6 +61,7 @@ main = do
 			drawOverlay ui ww wh ctx mhover mpreview
 
 		set (vtvAIButton treeView) [#label := "ai 👍"]
+		on (vtvAIButton treeView) #toggled refresh
 
 		motion <- new EventControllerMotion []
 		on motion #motion \x y -> do
@@ -82,7 +86,8 @@ main = do
 				Just (sx0, sy0, Position sx sy) -> do
 					mend <- psvPointToBoardCell boardView (sx0 + dx) (sy0 + dy)
 					tool <- readIORef toolRef
-					writeIORef previewPillRef (mend >>= \(Position ex ey) -> dragToPill tool (sx, sy) (ex, ey))
+					lk <- toolLookahead tool <$> readIORef uiRef
+					writeIORef previewPillRef (mend >>= \(Position ex ey) -> dragToPill lk (sx, sy) (ex, ey))
 					#queueDraw hoverLayer
 		on drag #dragEnd \dx dy -> do
 			ms <- readIORef dragStartRef
@@ -92,7 +97,8 @@ main = do
 					mend <- psvPointToBoardCell boardView (sx0 + dx) (sy0 + dy)
 					for_ mend \(Position ex ey) -> do
 						tool <- readIORef toolRef
-						let mpill = dragToPill tool (sx, sy) (ex, ey)
+						lk <- toolLookahead tool <$> readIORef uiRef
+						let mpill = dragToPill lk (sx, sy) (ex, ey)
 						for_ mpill \pill -> do
 							modifyIORef uiRef \u -> fromMaybe u (uiTryAdvance (Lock pill) u)
 							refresh
@@ -117,7 +123,7 @@ main = do
 				refresh
 
 		#append tools (vtvAIButton treeView)
-		mapM_ (#append tools) toolButtons
+		mapM_ (#append tools . twTop) toolButtons
 		#append tools seedEntry
 		#append tools levelEntry
 		#append tools generateButton
@@ -151,11 +157,81 @@ parseSeed = \t -> do
 parseLevel :: Text -> Maybe Int
 parseLevel t = tread t >>= ensure (\n -> 0 <= n && n <= 20)
 
-initialTool :: Lookahead
+data Tool
+	= Exact Lookahead
+	| SeedLookahead
+	| ActiveLookahead
+	deriving (Eq, Ord, Read, Show)
+
+initialTool :: Tool
 initialTool = head allTools
 
-allTools :: [Lookahead]
-allTools = [Lookahead l r | l <- [minBound..maxBound], r <- [l..maxBound]]
+allTools :: [Tool]
+allTools = ActiveLookahead : SeedLookahead : map Exact [Lookahead l r | l <- [minBound..maxBound], r <- [l..maxBound]]
+
+toolDensity :: Num a => a
+toolDensity = 20
+
+data ToolWidget = ToolWidget
+	{ twTop :: Widget
+	, twRefresh :: UIModel -> IO ()
+	}
+
+toolWidget :: Tool -> IO Bool -> IO ToolWidget
+toolWidget tool aiLolAct = do
+	container <- new Box [#orientation := OrientationHorizontal]
+	dg <- newDrawingGrid 2 1
+	dgSetDensity dg (Just toolDensity)
+	#append container =<< dgWidget dg
+	top <- toWidget container
+
+	ToolWidget top <$> case tool of
+		Exact{} -> pure (dgSetRenderer dg . renderTool tool)
+		SeedLookahead -> do
+			seedSvg <- getDataFileName "img/seed.svg"
+			wseed <- imageNewFromFile seedSvg
+			set wseed [#pixelSize := toolDensity]
+			#append container wseed
+			pure \ui -> dgSetRenderer dg (renderTool tool ui) >> #queueDraw dg
+		ActiveLookahead -> do
+			dg' <- newDrawingGrid 1 1
+			dgSetDensity dg' (Just toolDensity)
+			dgSetRenderer dg' do
+				-- sigh
+				C.translate 0 1
+				C.scale 1 (-1)
+
+				aiLol <- liftIO aiLolAct
+				C.translate 0.1 0.1
+				C.scale 0.8 0.8
+				edgePath aiLol UR
+				strokeHighlight
+				edgePath aiLol UD
+				edgePath aiLol UR
+				strokeTree
+			#append container =<< dgWidget dg'
+			pure \ui -> dgSetRenderer dg (renderTool tool ui) >> #queueDraw dg >> #queueDraw dg'
+
+toolLookahead :: Tool -> UIModel -> Lookahead
+toolLookahead tool ui = fromMaybe (Lookahead Blue Blue) case tool of
+	Exact lk -> Just lk
+	SeedLookahead -> uiSeedLookahead ui
+	ActiveLookahead -> uiActiveLookahead ui <|> uiSeedLookahead ui
+
+toolIntensity :: Tool -> Float
+toolIntensity = \case
+	Exact{} -> 1
+	_ -> 0.2
+
+renderTool :: Tool -> UIModel -> C.Render ()
+renderTool tool ui = NC.westEast 0 0
+	(C.setSourceRGB (mix lr) (mix lg) (mix lb))
+	(C.setSourceRGB (mix rr) (mix rg) (mix rb))
+	where
+	lk = toolLookahead tool ui
+	(lr, lg, lb) = NC.cairoColor (leftColor lk)
+	(rr, rg, rb) = NC.cairoColor (rightColor lk)
+	mix = lerp (toolIntensity tool) 0.8
 
 dragToPill :: Lookahead -> (Int, Int) -> (Int, Int) -> Maybe Pill
 dragToPill (Lookahead c1 c2) (sx, sy) (ex, ey) = case (ex - sx, ey - sy) of
@@ -180,9 +256,9 @@ drawOverlay ui ww wh ctx mhover mpill = flip renderWithContext ctx do
 			let (gx, gy, gw, gh) = gridGeometry
 			C.save
 			C.translate gx gy
-			NSC.initMath (round gw) (round gh) (fromIntegral bw) (fromIntegral bh)
+			NC.initMath (round gw) (round gh) (fromIntegral bw) (fromIntegral bh)
 			C.pushGroup
-			NSC.pill preview
+			NC.pill preview
 			C.popGroupToSource
 			C.paintWithAlpha 0.6
 			C.restore

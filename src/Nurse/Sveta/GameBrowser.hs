@@ -318,8 +318,24 @@ uiSplitVariation ui = uiModifyVariation (splitVariationAtDepth (uiVariationDepth
 uiFocusedTree :: HasCallStack => UIModel -> MoveTree (GameStateEdit, GameState)
 uiFocusedTree ui = indexVariations_ (nodes ui) (uiFocusedPath ui)
 
+uiCurrentNode :: UIModel -> Maybe (GameStateEdit, GameState)
+uiCurrentNode ui = mainSequence (uiFocusedTree ui) Seq.!? uiMainSequenceIndex ui
+
 uiCurrentState :: UIModel -> GameState
-uiCurrentState ui = defOr . fmap snd $ mainSequence (uiFocusedTree ui) Seq.!? uiMainSequenceIndex ui
+uiCurrentState = defOr . fmap snd . uiCurrentNode
+
+uiSeedLookahead :: UIModel -> Maybe Lookahead
+uiSeedLookahead ui = case length pills of
+	0 -> Nothing
+	n -> pills V.!? ((i + 1) `mod` n)
+	where
+	GameState { pillSequence = pills, pillIndex = i } = uiCurrentState ui
+
+uiActiveLookahead :: UIModel -> Maybe Lookahead
+uiActiveLookahead ui = do
+	ui' <- uiForward ui
+	(Lock pill, _) <- uiCurrentNode ui'
+	pure $ lookaheadFromPill pill
 
 uiIsLegalEdit :: UIModel -> GameStateEdit -> Bool
 uiIsLegalEdit ui = isLegalEdit (uiCurrentState ui)

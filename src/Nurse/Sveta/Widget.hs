@@ -4,8 +4,8 @@
 module Nurse.Sveta.Widget (
 	-- * Raw drawing grid
 	DrawingGrid, newDrawingGrid, dgSetRenderer, dgWidget,
-	dgSetSize, dgSetWidth, dgSetHeight,
-	dgGetSize, dgGetWidth, dgGetHeight,
+	dgSetSize, dgSetWidth, dgSetHeight, dgSetDensity,
+	dgGetSize, dgGetWidth, dgGetHeight, dgGetDensity,
 
 	-- * Player state
 	PlayerStateModel(..),
@@ -88,6 +88,7 @@ data DrawingGrid = DG
 	{ dgCanvas :: DrawingArea
 	, dgFrame :: AspectFrame
 	, dgSize :: IORef (Double, Double)
+	, dgDensity :: IORef (Maybe Double)
 	}
 
 -- | Takes a width and height. You get a 'DrawingArea'-alike thing where, when
@@ -111,8 +112,9 @@ newDrawingGrid w h = do
 		, #hexpand := True
 		, #vexpand := True
 		]
-	ref <- liftIO $ newIORef (w, h)
-	pure (DG da af ref)
+	sizeRef <- liftIO $ newIORef (w, h)
+	densityRef <- liftIO $ newIORef Nothing
+	pure (DG da af sizeRef densityRef)
 
 -- TODO: would be nice to plug into gi's attribute mechanism instead of having
 -- explicit getters and setters like this... especially if this means we could
@@ -121,7 +123,7 @@ dgSetSize :: MonadIO m => DrawingGrid -> Double -> Double -> m ()
 dgSetSize dg w h = do
 	set (dgFrame dg) [#ratio := realToFrac (w / h)]
 	liftIO $ writeIORef (dgSize dg) (w, h)
-	#queueDraw dg
+	dgSetPixelRequest dg
 
 dgSetWidth :: MonadIO m => DrawingGrid -> Double -> m ()
 dgSetWidth dg w = do
@@ -133,6 +135,20 @@ dgSetHeight dg h = do
 	(w, _) <- liftIO $ readIORef (dgSize dg)
 	dgSetSize dg w h
 
+dgSetDensity :: MonadIO m => DrawingGrid -> Maybe Double -> m ()
+dgSetDensity dg density = do
+	liftIO $ writeIORef (dgDensity dg) density
+	dgSetPixelRequest dg
+
+dgSetPixelRequest :: MonadIO m => DrawingGrid -> m ()
+dgSetPixelRequest dg = liftIO do
+	(w, h) <- readIORef (dgSize dg)
+	mdensity <- readIORef (dgDensity dg)
+	case mdensity of
+		Nothing -> set (dgFrame dg) [#hexpand := True, #vexpand := True, #widthRequest := -1, #heightRequest := -1]
+		Just density -> set (dgFrame dg) [#hexpand := False, #vexpand := False, #widthRequest := ceiling (density * w), #heightRequest := ceiling (density * h)]
+	#queueDraw dg
+
 dgGetSize :: MonadIO m => DrawingGrid -> m (Double, Double)
 dgGetSize = liftIO . readIORef . dgSize
 
@@ -141,6 +157,9 @@ dgGetWidth = fmap fst . dgGetSize
 
 dgGetHeight :: MonadIO m => DrawingGrid -> m Double
 dgGetHeight = fmap snd . dgGetSize
+
+dgGetDensity :: MonadIO m => DrawingGrid -> IO (Maybe Double)
+dgGetDensity = liftIO . readIORef . dgDensity
 
 dgSetRenderer :: MonadIO m => DrawingGrid -> Render () -> m ()
 dgSetRenderer dg draw = drawingAreaSetDrawFunc (dgCanvas dg) . Just $ \_ ctx _ _ -> flip renderWithContext ctx $ do

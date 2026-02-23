@@ -11,6 +11,7 @@ category:           AI
 extra-source-files: CHANGELOG.md
                     cxxbits/*.hpp
 data-files:         pybits/wandb-cat.py
+                    img/seed.svg
 
 flag debug
     description: Build with debugging symbols and no optimizations.
