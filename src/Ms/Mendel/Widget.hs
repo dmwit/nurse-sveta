@@ -97,11 +97,8 @@ rempty w h = Rendering w h def
 -- | Grid position (col, row). Even cols = nodes, odd = edges.
 type GridPos = (Int, Int)
 
--- the top row is hard to click because you often hit the Paned hitbox instead
--- of the DrawingArea hitbox, so we leave a little space with the rempty 0 1 at
--- the start
 buildGridFromMoveTree :: MoveSelection -> [Int] -> MoveTree a -> Rendering (GridCell a, MoveTreeAddress)
-buildGridFromMoveTree sel active0 t0 = vcat (rempty 0 1) $ rleaf (CellNode Nothing (sel == def), def) `hcat` case length (mainSequence t0) of
+buildGridFromMoveTree sel active0 t0 = rleaf (CellNode Nothing (sel == def), def) `hcat` case length (mainSequence t0) of
 	0 -> goVariations def (Just active0) (variations t0)
 	_ -> rleaf (CellEdge [LR] (Just LR), MoveTreeAddress def 0) `hcat` goTree def (Just active0) t0
 	where
@@ -141,6 +138,11 @@ cellRowsDefault = 5
 cellSizePx :: Int
 cellSizePx = 30
 
+-- the top row is hard to click because you often hit the Paned hitbox instead
+-- of the DrawingArea hitbox, so we leave a little space empty at the top
+panedOffset :: Double
+panedOffset = 0.4
+
 -- | Variation tree view: Cairo-based widget for rendering move trees.
 -- Fixed 30-pixel cells, scrollable. Structured for future interactivity.
 data VariationTreeView = VTV
@@ -179,7 +181,7 @@ vtvOnNodeClick vtv callback = do
 	click <- new GestureClick []
 	on click #pressed \_ nX nY -> do
 		let col = floor (nX / fromIntegral cellSizePx)
-		    row = floor (nY / fromIntegral cellSizePx)
+		    row = floor (nY / fromIntegral cellSizePx - panedOffset)
 		nodeAddrs <- liftIO $ readIORef (vtvModel vtv)
 		for_ (M.lookup (col, row) nodeAddrs) (callback . snd)
 	#addController (vtvCanvas vtv) click
@@ -189,6 +191,7 @@ vtvRender aiLol cells = do
 	C.setLineCap C.LineCapRound
 	C.setLineJoin C.LineJoinRound
 	join C.scale (fromIntegral cellSizePx)
+	C.translate 0 panedOffset
 
 	treePath aiLol edgeHighlights
 	strokeHighlight
