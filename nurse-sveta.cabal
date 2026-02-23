@@ -207,3 +207,4 @@ test-suite ms-mendel-quickcheck
 executable ms-mendel-game-browser
     import:             executable
     main-is:            game-browser.hs
+    build-depends:      gi-gdk ^>=4.0.8

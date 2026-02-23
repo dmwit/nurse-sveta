@@ -1,6 +1,7 @@
 module Main where
 
 import GI.Cairo.Render.Connector (renderWithContext)
+import GI.Gdk.Flags
 import GI.Gtk hiding (Text)
 import Ms.Mendel hiding (get)
 import Nurse.Sveta.GameBrowser
@@ -25,6 +26,7 @@ main = do
 		treeView <- newVariationTreeView
 		treeWidget <- vtvWidget treeView
 		treeScroll <- new ScrolledWindow [#child := treeWidget, #hexpand := True, #heightRequest := fromIntegral (cellSizePx * cellRowsDefault)]
+		scrollAxisSwap <- new EventControllerScroll [#flags := [EventControllerScrollFlagsBothAxes]]
 		tools <- new Box [#orientation := OrientationVertical]
 		uiRef <- newIORef (def :: UIModel)
 		toolRef <- newIORef initialTool
@@ -53,6 +55,23 @@ main = do
 		    	#queueDraw hoverLayer
 		vtvOnNodeClick treeView \addr ->
 			modifyIORef uiRef (flip uiVisitAddress addr) >> refresh
+		on scrollAxisSwap #scroll \dx dy -> do
+			-- You would think that dx contains the horizontal scroll distance,
+			-- and dy contains the vertical scroll distance. But no, dx
+			-- contains 0 and dy contains the scroll distance regardless of
+			-- direction.
+			mevent <- #getCurrentEvent scrollAxisSwap
+			case mevent of
+				Just ev -> do
+					modifiers <- #getModifierState ev
+					adjustment <- if ModifierTypeShiftMask `elem` modifiers
+						then get treeScroll #vadjustment
+						else get treeScroll #hadjustment
+					increment <- get adjustment #stepIncrement
+					value <- get adjustment #value
+					True <$ set adjustment [#value := value + dy * increment]
+				Nothing -> pure False
+		#addController treeScroll . fromJust =<< castTo EventController =<< #ref scrollAxisSwap
 
 		drawingAreaSetDrawFunc hoverLayer . Just $ \_ ctx ww wh -> do
 			ui <- readIORef uiRef
