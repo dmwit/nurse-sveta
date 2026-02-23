@@ -170,7 +170,7 @@ vtvSet :: MonadIO m => VariationTreeView -> MoveSelection -> [Int] -> MoveTree (
 vtvSet vtv sel active mt = do
 	let grid = buildGridFromMoveTree sel active mt
 	    w = renderingWidth grid * cellSizePx
-	    h = renderingHeight grid * cellSizePx
+	    h = renderingHeight grid * cellSizePx + ceiling (panedOffset * fromIntegral cellSizePx)
 	liftIO $ writeIORef (vtvModel vtv) (renderingTree grid (0, 0))
 	#setSizeRequest (vtvCanvas vtv) (fromIntegral w) (fromIntegral h)
 	#queueDraw (vtvCanvas vtv)
