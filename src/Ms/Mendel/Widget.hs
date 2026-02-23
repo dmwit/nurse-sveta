@@ -257,9 +257,9 @@ edgePath :: Bool -> EdgeComponent -> C.Render ()
 edgePath aiLol = \case
 	LR -> C.moveTo 0 0.5 >> C.lineTo 1 0.5
 	UD -> C.moveTo 0.5 0 >> C.lineTo 0.5 1
-	LD -> if aiLol
-		then C.moveTo 1 0.5 >> C.arcNegative 0.5 0.5 0.5 pi (pi/2)
-		else C.moveTo 0 0.5 >> C.arc 0 1 0.5 (3*pi/2) 0
+	LD -> C.moveTo 0 0.5 >> if aiLol
+		then C.arcNegative 0.5 0.5 0.5 pi (pi/2)
+		else C.arc 0 1 0.5 (3*pi/2) 0
 	UR -> if aiLol
 		then C.moveTo 0.5 0 >> C.arcNegative 0.5 0.5 0.5 (3*pi/2) 0
 		else C.moveTo 1 0.5 >> C.arc 1 0 0.5 (pi/2) pi
