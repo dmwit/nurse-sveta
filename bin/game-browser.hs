@@ -109,18 +109,21 @@ main = do
 
 		seedBuffer <- get seedEntry #buffer
 		levelBuffer <- get levelEntry #buffer
-		on generateButton #clicked do
-			seedMaybe <- parseSeed <$> get seedBuffer #text
-			levelMaybe <- parseLevel <$> get levelBuffer #text
-			case seedMaybe of
-				Nothing -> #addCssClass seedEntry "error"
-				Just{} -> #removeCssClass seedEntry "error"
-			case levelMaybe of
-				Nothing -> #addCssClass levelEntry "error"
-				Just{} -> #removeCssClass levelEntry "error"
-			for_ seedMaybe \seed -> for_ levelMaybe \level -> do
-				modifyIORef uiRef \ui -> fromMaybe ui (uiTryAdvance (GenerateLevel seed level) ui)
-				refresh
+		let generateLevel = do
+			    seedMaybe <- parseSeed <$> get seedBuffer #text
+			    levelMaybe <- parseLevel <$> get levelBuffer #text
+			    case seedMaybe of
+			    	Nothing -> #addCssClass seedEntry "error"
+			    	Just{} -> #removeCssClass seedEntry "error"
+			    case levelMaybe of
+			    	Nothing -> #addCssClass levelEntry "error"
+			    	Just{} -> #removeCssClass levelEntry "error"
+			    for_ seedMaybe \seed -> for_ levelMaybe \level -> do
+			    	modifyIORef uiRef \ui -> fromMaybe ui (uiTryAdvance (GenerateLevel seed level) ui)
+			    	refresh
+		on generateButton #clicked generateLevel
+		on seedEntry #activate generateLevel
+		on levelEntry #activate generateLevel
 
 		#append tools (vtvAIButton treeView)
 		mapM_ (#append tools . twTop) toolButtons
