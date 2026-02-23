@@ -1,14 +1,14 @@
 module Main where
 
 import GI.Cairo.Render.Connector (renderWithContext)
-import qualified GI.Cairo.Render as C
 import GI.Gtk hiding (Text)
 import Ms.Mendel hiding (get)
-import qualified Nurse.Sveta.Cairo as NC
 import Nurse.Sveta.GameBrowser
 
+import qualified GI.Cairo.Render as C
 import qualified Data.Map as M
 import qualified Data.Text as T
+import qualified Nurse.Sveta.Cairo as NC
 
 main :: IO ()
 main = do
