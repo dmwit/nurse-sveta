@@ -325,11 +325,7 @@ uiCurrentState :: UIModel -> GameState
 uiCurrentState = defOr . fmap snd . uiCurrentNode
 
 uiSeedLookahead :: UIModel -> Maybe Lookahead
-uiSeedLookahead ui = case length pills of
-	0 -> Nothing
-	n -> pills V.!? ((i + 1) `mod` n)
-	where
-	GameState { pillSequence = pills, pillIndex = i } = uiCurrentState ui
+uiSeedLookahead ui = pillSequence s V.!? pillIndex s where s = uiCurrentState ui
 
 uiActiveLookahead :: UIModel -> Maybe Lookahead
 uiActiveLookahead ui = do
