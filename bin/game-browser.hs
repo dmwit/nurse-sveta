@@ -139,6 +139,12 @@ main = do
 			    	Just{} -> #removeCssClass levelEntry "error"
 			    for_ seedMaybe \seed -> for_ levelMaybe \level -> do
 			    	modifyIORef uiRef \ui -> fromMaybe ui (uiTryAdvance (GenerateLevel seed level) ui)
+			    	let seed' = runST do
+			    	    	mrng <- mnewRNG seed
+			    	    	munsafeRandomLevel mrng level
+			    	    	mrng
+			    	set seedBuffer [#text := T.pack (printf "%04X" seed')]
+			    	set levelBuffer [#text := tshow (min 24 (level + 1))]
 			    	refresh
 		on generateButton #clicked generateLevel
 		on seedEntry #activate generateLevel
