@@ -136,7 +136,7 @@ cellRowsDefault :: Int
 cellRowsDefault = 5
 
 cellSizePx :: Num a => a
-cellSizePx = 30
+cellSizePx = 40
 
 -- the top row is hard to click because you often hit the Paned hitbox instead
 -- of the DrawingArea hitbox, so we leave a little space empty at the top
