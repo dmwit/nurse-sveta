@@ -135,7 +135,7 @@ buildGridFromMoveTree sel active0 t0 = rleaf (CellNode Nothing (sel == def), def
 cellRowsDefault :: Int
 cellRowsDefault = 5
 
-cellSizePx :: Int
+cellSizePx :: Num a => a
 cellSizePx = 30
 
 -- the top row is hard to click because you often hit the Paned hitbox instead
@@ -170,7 +170,7 @@ vtvSet :: MonadIO m => VariationTreeView -> MoveSelection -> [Int] -> MoveTree (
 vtvSet vtv sel active mt = do
 	let grid = buildGridFromMoveTree sel active mt
 	    w = renderingWidth grid * cellSizePx
-	    h = renderingHeight grid * cellSizePx + ceiling (panedOffset * fromIntegral cellSizePx)
+	    h = renderingHeight grid * cellSizePx + ceiling (panedOffset * cellSizePx)
 	liftIO $ writeIORef (vtvModel vtv) (renderingTree grid (0, 0))
 	#setSizeRequest (vtvCanvas vtv) (fromIntegral w) (fromIntegral h)
 	#queueDraw (vtvCanvas vtv)
@@ -180,8 +180,8 @@ vtvOnNodeClick :: MonadIO m => VariationTreeView -> (MoveTreeAddress -> IO ()) -
 vtvOnNodeClick vtv callback = do
 	click <- new GestureClick []
 	on click #pressed \_ nX nY -> do
-		let col = floor (nX / fromIntegral cellSizePx)
-		    row = floor (nY / fromIntegral cellSizePx - panedOffset)
+		let col = floor (nX / cellSizePx)
+		    row = floor (nY / cellSizePx - panedOffset)
 		nodeAddrs <- liftIO $ readIORef (vtvModel vtv)
 		for_ (M.lookup (col, row) nodeAddrs) (callback . snd)
 	#addController (vtvCanvas vtv) click
@@ -190,7 +190,7 @@ vtvRender :: Bool -> Map GridPos (GridCell (GameStateEdit, GameState), MoveTreeA
 vtvRender aiLol cells = do
 	C.setLineCap C.LineCapRound
 	C.setLineJoin C.LineJoinRound
-	join C.scale (fromIntegral cellSizePx)
+	join C.scale cellSizePx
 	C.translate 0 panedOffset
 
 	treePath aiLol edgeHighlights
