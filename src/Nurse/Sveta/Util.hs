@@ -130,6 +130,10 @@ infixr 1 ?
 True  ? a = Just a
 False ? _ = Nothing
 
+infixr 4 &>
+(&>) :: Functor f => f a -> b -> f b
+(&>) = flip (<$)
+
 enumerate :: (Traversable t, Num n) => t a -> t (n, a)
 enumerate t = evalState (traverse (\a -> state (\i -> ((i, a), i+1))) t) 0
 

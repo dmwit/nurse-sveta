@@ -206,20 +206,31 @@ vtvRender aiLol cells = do
 	treePath aiLol edges
 	strokeTree
 
-	for_ nodes \((x_, y_), mNodeContent) -> let [x, y] = map fromIntegral [x_, y_] in case mNodeContent of
-		Nothing -> fitText (x + 0.1) (y + 0.9) 0.8 (-0.8) "ε"
-		Just (GenerateLevel seed level, _) -> fitTexts $ tail [ignored
-			, TextRequest { trText = printf "%04X" seed, trX = x + 0.1, trY = y + 0.45, trW = 0.8, trH = -0.35 }
-			, TextRequest { trText = show level, trX = x + 0.1, trY = y + 0.9, trW = 0.8, trH = -0.35 }
-			]
-		-- TODO: location notation in the other half of the grid space
-		Just (Lock pill, _) -> let pc = content pill in do
-			C.save
-			C.scale 0.5 0.5
-			case orientation pc of
-				Horizontal -> lookahead_ (2*x) (2*y) (lookaheadFromPillContent pc)
-				Vertical -> southNorth (2*x) (2*y) (setColor (otherColor pc)) (setColor (bottomLeftColor pc))
-			C.restore
+	reqss <- for nodes \((x_, y_), mNodeContent) -> do
+		let [gridx, gridy] = map fromIntegral [x_, y_]
+		case mNodeContent of
+			Nothing -> [] <$ fitText (gridx + 0.1) (gridy + 0.9) 0.8 (-0.8) "ε" -- scaled double, so don't participate in TextRequest machinery
+			Just (GenerateLevel seed level, _) -> pure $ tail [ignored
+				, TextRequest (gridx + 0.1) (gridy + 0.45) 0.8 (-0.35) (printf "%04X" seed)
+				, TextRequest (gridx + 0.1) (gridy + 0.9) 0.8 (-0.35) (show level)
+				]
+			-- TODO: do the fancy location notation thing
+			Just (Lock pill, _) -> let pc = content pill in do
+				C.save
+				C.scale 0.5 0.5
+				let sx = show . x . bottomLeftPosition $ pill
+				    sy = show . y . bottomLeftPosition $ pill
+				reqs <- case orientation pc of
+					Horizontal -> lookahead_ (2*gridx) (2*gridy) (lookaheadFromPillContent pc) &> tail [ignored
+						, TextRequest (gridx + 0.1) (gridy + 0.9) 0.35 (-0.35) sx
+						, TextRequest (gridx + 0.55) (gridy + 0.9) 0.35 (-0.35) sy
+						]
+					Vertical -> southNorth (2*gridx) (2*gridy) (setColor (otherColor pc)) (setColor (bottomLeftColor pc)) &> tail [ignored
+						, TextRequest (gridx + 0.55) (gridy + 0.45) 0.35 (-0.35) sx
+						, TextRequest (gridx + 0.55) (gridy + 0.9) 0.35 (-0.35) sy
+						]
+				reqs <$ C.restore
+	fitTexts (concat reqss)
 	where
 	(nodes, nodeHighlights, edges, edgeHighlights) = M.foldMapWithKey inject cells where
 		inject pos (c, _) = case c of
