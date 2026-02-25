@@ -1,7 +1,7 @@
 module Nurse.Sveta.Cairo (
 	initMath, bottleSizeRecommendation,
 	bottleWithLookahead, bottle, bottleMaybeLookahead,
-	bottleOutline, bottleContent, lookahead, lookahead_, westEast,
+	bottleOutline, bottleContent, lookahead, lookahead_, westEast, southNorth,
 	pill, shape, cell, cairoColor, setColor, neutral, noBottle,
 	fitText, fitTexts, TextRequest(..),
 	-- * Heatmaps
@@ -115,6 +115,12 @@ westEast :: Double -> Double -> Render () -> Render () -> Render ()
 westEast x y westColor eastColor = noBottle do
 	shape x y westColor West
 	shape (x+1) y eastColor East
+
+-- | bottom left canvas coords, bottom color, top color
+southNorth :: Double -> Double -> Render () -> Render () -> Render ()
+southNorth x y southColor northColor = noBottle do
+	shape x y southColor South
+	shape x (y+1) northColor North
 
 pill :: Pill -> Render ()
 pill Pill
