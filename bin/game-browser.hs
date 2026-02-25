@@ -253,7 +253,7 @@ renderTool tool ui = NC.westEast 0 0
 	lk = toolLookahead tool ui
 	(lr, lg, lb) = NC.cairoColor (leftColor lk)
 	(rr, rg, rb) = NC.cairoColor (rightColor lk)
-	mix = lerp (toolIntensity tool) 0.8
+	mix = lerp (toolIntensity tool) 1
 
 dragToPill :: Lookahead -> (Int, Int) -> (Int, Int) -> Maybe Pill
 dragToPill (Lookahead c1 c2) (sx, sy) (ex, ey) = case (ex - sx, ey - sy) of
