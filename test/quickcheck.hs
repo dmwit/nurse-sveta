@@ -177,10 +177,10 @@ unitUiAdvanceSplitPreservesSiblingVariations =
 
 unitUiVisitAddressSiblingChild :: Property
 unitUiVisitAddressSiblingChild =
-	counterexample (show mres) $
-		fmap GB.uiActivePath mres === Just (Seq.fromList [1,0])
+	counterexample (show res) $
+		GB.uiActivePath res === [1,0]
 		.&&.
-		fmap GB.uiMainSequenceIndex mres === Just 0
+		GB.uiMainSequenceIndex res === 0
 	where
 	a = GenerateLevel 0x2222 0
 	b = GenerateLevel 0x3333 0
@@ -196,19 +196,18 @@ unitUiVisitAddressSiblingChild =
 		, GB.activeVariations = Just (GB.ActiveVariations 0 (IM.singleton 0 (GB.ActiveVariations 0 mempty)))
 		, GB.moveSelection = def
 		}
-	mres = GB.uiVisitAddress ui (GB.MoveTreeAddress (Seq.fromList [1,0]) 0)
+	res = GB.uiVisitAddress ui (GB.MoveTreeAddress (Seq.fromList [1,0]) 0)
 
 unitTreeLayout :: Property
 unitTreeLayout = conjoin $ zipWith3 mkProp trees layoutConstraints addressConstraints where
 	mkProp tree layoutConstraint addressConstraint =
 		counterexample (show (tree, layoutConstraint, addressConstraint)) $
-		let (actualLayout, actualAddresses, _, _, _, _) = buildGridFromMoveTree tree
-		in layoutConstraint `hasNodes` actualLayout && addressConstraint `hasAddrs` actualAddresses
-
+		let rendering = renderingTree (buildGridFromMoveTree def def tree) (0, 0)
+		in layoutConstraint `hasNodes` fmap fst rendering && addressConstraint `hasAddrs` fmap snd rendering
 	hasAddrs l t = M.fromList l == t
 	hasNodes l t = M.fromList l == M.mapMaybe fromCellNode t
 	fromCellNode = \case
-		CellNode x -> Just x
+		CellNode _ x -> Just x
 		_ -> Nothing
 
 	moveTree mainSeq vars = GB.MoveTree (Seq.fromList mainSeq) (Seq.fromList vars)
@@ -230,7 +229,8 @@ unitTreeLayout = conjoin $ zipWith3 mkProp trees layoutConstraints addressConstr
 		, [(2, 0), (4, 0), (6, 0), (8, 0), (6, 1), (8, 1), (10, 1)]
 		, [(2, 0), (4, 0), (2, 1), (4, 1), (6, 1)]
 		]
-	addressConstraints = tail [ignored
+	addEdgeAddresses = foldMap \entry@((x, y), addr) -> entry : [((x-1, y), addr) | x > 0]
+	addressConstraints = map addEdgeAddresses $ tail [ignored
 		, tail [ignored
 			, ((0, 0), address [] (-1)) -- epsilon
 			, ((2, 0), address [] 0) -- a
