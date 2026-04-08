@@ -127,28 +127,33 @@ instance PP GameState where
 			ppLookaheads = unwords . map pp . toList
 			n = pillIndex gs `mod` length (pillSequence gs)
 
-applyEdit :: GameState -> GameStateEdit -> GameState
+applyEdit :: GameState -> GameStateEdit -> Maybe GameState
 applyEdit s = \case
-	GenerateLevel seed level -> let (lks, b) = randomLevel seed level in GameState
+	GenerateLevel seed level -> let (lks, b) = randomLevel seed level in pure GameState
 		{ board = b
 		, pillSequence = lks
 		, pillIndex = 0
 		}
-	Lock p -> s
-		{ board = maybe (board s) snd (place (board s) p)
+	Lock p -> place (board s) p <&> \results -> s
+		{ board = snd results
 		, pillIndex = if nextIndex >= len then nextIndex - len else nextIndex
 		} where
 		nextIndex = pillIndex s + 1
 		len = V.length (pillSequence s)
 
 -- eventually we may want some sort of mildly intelligent cache, but for now let's just make all the states
-applyEdits :: MoveTree GameStateEdit -> MoveTree (GameStateEdit, GameState)
-applyEdits = go def where
-	go s mt = let (sNext, ss) = mapAccumL accumulate s (mainSequence mt) in MoveTree
-		{ mainSequence = ss
-		, variations = go sNext <$> variations mt
-		}
-	accumulate s e = let s' = applyEdit s e in (s', (e, s'))
+applyEdits :: MoveTree GameStateEdit -> Maybe (MoveTree (GameStateEdit, GameState))
+applyEdits = goTree def where
+	goTree s mt = do
+		(sNext, ss) <- goSeq s (mainSequence mt)
+		vs <- mapM (goTree sNext) (variations mt)
+		pure MoveTree
+			{ mainSequence = ss
+			, variations = vs
+			}
+	goSeq s0 = foldM
+		(\(s, ss) e -> applyEdit s e <&> \s' -> (s', ss Seq.:|> (e, s')))
+		(s0, def)
 
 data ActiveVariations = ActiveVariations
 	{ activeHere :: Int
@@ -333,13 +338,6 @@ uiActiveLookahead ui = do
 	(Lock pill, _) <- uiCurrentNode ui'
 	pure $ lookaheadFromPill pill
 
-uiIsLegalEdit :: UIModel -> GameStateEdit -> Bool
-uiIsLegalEdit ui = isLegalEdit (uiCurrentState ui)
-
-isLegalEdit :: GameState -> GameStateEdit -> Bool
-isLegalEdit _ GenerateLevel{} = True
-isLegalEdit gs (Lock pill) = isJust (place (board gs) pill)
-
 normalizeLarge :: HasCallStack => UIModel -> MoveSelection -> Maybe MoveSelection
 normalizeLarge ui sel0 = go (drop (variationDepth sel0) (defaultTrees ui)) sel0 where
 	go [] _ = Nothing
@@ -435,14 +433,12 @@ uiDeleteCurrent ui = do
 	    	}
 	normalizeSmall ui' (moveSelection ui') <&> setSelection ui'
 
-uiTryAdvance :: HasCallStack => GameStateEdit -> UIModel -> Maybe UIModel
-uiTryAdvance e ui = uiAdvance e ui <$ guard (uiIsLegalEdit ui e)
-
-uiAdvance :: HasCallStack => GameStateEdit -> UIModel -> UIModel
-uiAdvance e ui = fromMaybe uiError do
+uiAdvance :: GameStateEdit -> UIModel -> Maybe UIModel
+uiAdvance e ui = do
 	(focusedTree, rebuildTree) <- indexVariationsL (nodes ui) (uiFocusedPath ui)
 	let focusedState = defOr . fmap snd $ mainSequence focusedTree Seq.!? uiMainSequenceIndex ui
-	(focusedTree', action) <- splitAndInsertVariation (uiMainSequenceIndex ui + 1) (e, applyEdit focusedState e) focusedTree
+	s <- applyEdit focusedState e
+	(focusedTree', action) <- splitAndInsertVariation (uiMainSequenceIndex ui + 1) (e, s) focusedTree
 	let ui' = ui { nodes = rebuildTree focusedTree' }
 	uiForward case action of
 		AlreadyInMainSequence -> ui'
@@ -450,5 +446,8 @@ uiAdvance e ui = fromMaybe uiError do
 		Appended -> ui'
 		SplitAndInserted -> uiSplitVariation ui'
 		Inserted i -> uiExtendVariation i ui'
-	where
-	uiError = error $ "uiAdvance (" ++ show e ++ ") (" ++ show ui ++ ")"
+
+-- | returns the input if 'uiAdvance' would return 'Nothing'
+uiMaybeAdvance :: GameStateEdit -> UIModel -> UIModel
+uiMaybeAdvance e ui = fromMaybe ui (uiAdvance e ui)
+-- aren't you proud of me for not writing f e = fromMaybe <*> uiAdvance e?

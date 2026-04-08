@@ -46,9 +46,6 @@ main = do
 		, qc "(,) <-> PatternMetadata" \t -> pmToTuple (pmFromTuple t) === t
 		, qc "(,) <-> ConvolutionSize" \t -> csToTuple (csFromTuple t) === t
 		, qc "(,) <-> Replication" \t -> rToTuple (rFromTuple t :: Replication Int) === t
-		, qc "uiTryAdvance allows legal lock without lookahead match" unitUiTryAdvanceAllowsLegalLock
-		, qc "uiTryAdvance rejects illegal lock" unitUiTryAdvanceRejectsIllegalLock
-		, qc "uiTryAdvance legal equals uiAdvance" unitUiTryAdvanceMatchesAdvanceOnLegal
 		, qc "uiAdvance appends novel variation at end" unitUiAdvanceAppendsVariationAtEnd
 		, qc "uiAdvance edge-case activeVariations" unitUiAdvanceEdgeCaseActiveVariations
 		, qc "uiAdvance split preserves sibling variations" unitUiAdvanceSplitPreservesSiblingVariations
@@ -71,30 +68,14 @@ smallQC n nm prop = putStrLn nm >> quickCheckWithResult stdArgs { maxSize = n } 
 qc :: Testable prop => String -> prop -> IO QC.Result
 qc = smallQC 100
 
-unitUiTryAdvanceAllowsLegalLock :: Property
-unitUiTryAdvanceAllowsLegalLock =
-	isJust (GB.uiTryAdvance (Lock legalPill) (def :: GB.UIModel)) === True
-	where
-	legalPill = Pill
-		{ content = PillContent Horizontal Blue Red
-		, bottomLeftPosition = Position 0 0
-		}
-
-unitUiTryAdvanceRejectsIllegalLock :: Property
-unitUiTryAdvanceRejectsIllegalLock =
-	isNothing (GB.uiTryAdvance (Lock illegalPill) (def :: GB.UIModel)) === True
+unitUiAdvanceRejectsIllegalLock :: Property
+unitUiAdvanceRejectsIllegalLock =
+	isNothing (GB.uiAdvance (Lock illegalPill) (def :: GB.UIModel)) === True
 	where
 	illegalPill = Pill
 		{ content = PillContent Horizontal Blue Red
 		, bottomLeftPosition = Position (-1) 0
 		}
-
-unitUiTryAdvanceMatchesAdvanceOnLegal :: Property
-unitUiTryAdvanceMatchesAdvanceOnLegal =
-	GB.uiTryAdvance edit ui === Just (GB.uiAdvance edit ui)
-	where
-	ui = def :: GB.UIModel
-	edit = GenerateLevel 0x2222 0
 
 unitUiAdvanceAppendsVariationAtEnd :: Property
 unitUiAdvanceAppendsVariationAtEnd =
@@ -104,9 +85,9 @@ unitUiAdvanceAppendsVariationAtEnd =
 	e1 = GenerateLevel 0x2222 0
 	e2 = GenerateLevel 0x3333 0
 	e3 = GenerateLevel 0x4444 0
-	ui1 = GB.uiAdvance e1 (def :: GB.UIModel)
-	ui2 = GB.uiAdvance e2 (GB.setSelection ui1 def)
-	ui3 = GB.uiAdvance e3 (GB.setSelection ui2 def)
+	ui1 = GB.uiMaybeAdvance e1 (def :: GB.UIModel)
+	ui2 = GB.uiMaybeAdvance e2 (GB.setSelection ui1 def)
+	ui3 = GB.uiMaybeAdvance e3 (GB.setSelection ui2 def)
 
 	editAtPath is i ui = do
 		mt <- GB.indexVariations (GB.nodes ui) is
@@ -124,11 +105,8 @@ unitUiAdvanceEdgeCaseActiveVariations =
 
 	leaf e = GB.MoveTree (Seq.singleton e) Seq.empty
 	root ms vs = GB.MoveTree (Seq.fromList ms) (Seq.fromList (leaf <$> vs))
-	ui mt = (def :: GB.UIModel)
-		{ GB.nodes = GB.applyEdits mt
-		, GB.moveSelection = def
-		}
-	advance m = GB.activeVariations . GB.uiAdvance m
+	ui mt = def { GB.nodes = fromJust (GB.applyEdits mt) }
+	advance m = GB.activeVariations . GB.uiMaybeAdvance m
 
 	observed =
 		[ advance a (ui (root [] [a, b]))   -- AlreadyInVariation 0 (out of 2)
@@ -148,32 +126,26 @@ unitUiAdvanceEdgeCaseActiveVariations =
 		]
 
 unitUiAdvanceSplitPreservesSiblingVariations :: Property
-unitUiAdvanceSplitPreservesSiblingVariations =
-	counterexample (show (GB.nodes ui')) $
-		rootHeads === [b, z] .&&. splitNeighborHeads === [x, y]
+unitUiAdvanceSplitPreservesSiblingVariations = counterexample (show ui) $
+	fmap (fmap fst . GB.nodes) ui === Just expected
 	where
 	a = GenerateLevel 0x2222 0
 	b = GenerateLevel 0x3333 0
 	x = GenerateLevel 0x4444 0
 	y = GenerateLevel 0x5555 0
 	z = GenerateLevel 0x6666 0
-	leaf e = GB.MoveTree (Seq.singleton e) Seq.empty
-	root = GB.MoveTree (Seq.fromList [a, b]) (Seq.fromList [leaf x, leaf y])
-	ui = (def :: GB.UIModel)
-		{ GB.nodes = GB.applyEdits root
-		, GB.moveSelection = def { GB.mainSequenceIndex = 0, GB.variationDepth = 0 }
-		}
-	ui' = GB.uiAdvance z ui
-	rootHeads = branchHeads (GB.nodes ui')
-	splitNeighborHeads = case toList (GB.variations (GB.nodes ui')) of
-		v0:_ -> branchHeads v0
-		[] -> []
-
-	branchHeads mt = catMaybes do
-		v <- toList (GB.variations mt)
-		pure do
-			(e, _gs) <- GB.mainSequence v Seq.!? 0
-			pure e
+	leaf e = GB.moveTree [e] []
+	root = GB.moveTree [a, b] [leaf x, leaf y]
+	ui = do
+		ns <- GB.applyEdits root
+		GB.uiAdvance z def
+			{ GB.nodes = ns
+			, GB.moveSelection = def { GB.mainSequenceIndex = 0 }
+			}
+	expected = GB.moveTree [a] $ tail [ignored
+		, GB.moveTree [b] [leaf x, leaf y]
+		, leaf z
+		]
 
 unitUiVisitAddressSiblingChild :: Property
 unitUiVisitAddressSiblingChild =
@@ -191,8 +163,8 @@ unitUiVisitAddressSiblingChild =
 		[ GB.MoveTree (Seq.singleton b) (Seq.fromList [leaf x])
 		, GB.MoveTree (Seq.singleton b) (Seq.fromList [leaf y])
 		])
-	ui = (def :: GB.UIModel)
-		{ GB.nodes = GB.applyEdits root
+	Just ui = GB.applyEdits root <&> \ns -> def
+		{ GB.nodes = ns
 		, GB.activeVariations = Just (GB.ActiveVariations 0 (IM.singleton 0 (GB.ActiveVariations 0 mempty)))
 		, GB.moveSelection = def
 		}

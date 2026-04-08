@@ -119,7 +119,7 @@ main = do
 						lk <- toolLookahead tool <$> readIORef uiRef
 						let mpill = dragToPill lk (sx, sy) (ex, ey)
 						for_ mpill \pill -> do
-							modifyIORef uiRef \u -> fromMaybe u (uiTryAdvance (Lock pill) u)
+							modifyIORef uiRef (uiMaybeAdvance (Lock pill))
 							refresh
 			writeIORef dragStartRef Nothing
 			writeIORef previewPillRef Nothing
@@ -138,7 +138,7 @@ main = do
 			    	Nothing -> #addCssClass levelEntry "error"
 			    	Just{} -> #removeCssClass levelEntry "error"
 			    for_ seedMaybe \seed -> for_ levelMaybe \level -> do
-			    	modifyIORef uiRef \ui -> fromMaybe ui (uiTryAdvance (GenerateLevel seed level) ui)
+			    	modifyIORef uiRef (uiMaybeAdvance (GenerateLevel seed level))
 			    	let seed' = runST do
 			    	    	mrng <- mnewRNG seed
 			    	    	munsafeRandomLevel mrng level
