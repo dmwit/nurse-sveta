@@ -218,8 +218,8 @@ vtvRender aiLol cells = do
 			Just (Lock pill, _) -> let pc = content pill in do
 				C.save
 				C.scale 0.5 0.5
-				let sx = show . x . bottomLeftPosition $ pill
-				    sy = show . y . bottomLeftPosition $ pill
+				let sx = show . (1+) . x . bottomLeftPosition $ pill
+				    sy = show . (1+) . y . bottomLeftPosition $ pill
 				reqs <- case orientation pc of
 					Horizontal -> lookahead_ (2*gridx) (2*gridy) (lookaheadFromPillContent pc) &> tail [ignored
 						, TextRequest (gridx + 0.1) (gridy + 0.9) 0.35 (-0.35) sx
