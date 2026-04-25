@@ -215,11 +215,11 @@ vtvRender aiLol cells = do
 				, TextRequest (gridx + 0.1) (gridy + 0.9) 0.8 (-0.35) (show level)
 				]
 			-- TODO: do the fancy location notation thing
-			Just (Lock pill, _) -> let pc = content pill in do
+			Just (Lock lk mp, _) -> let pc = content (mpPill mp lk) in do
 				C.save
 				C.scale 0.5 0.5
-				let sx = show . (1+) . x . bottomLeftPosition $ pill
-				    sy = show . (1+) . y . bottomLeftPosition $ pill
+				let sx = show . (1+) . x . mpBottomLeft $ mp
+				    sy = show . (1+) . y . mpBottomLeft $ mp
 				reqs <- case orientation pc of
 					Horizontal -> lookahead_ (2*gridx) (2*gridy) (lookaheadFromPillContent pc) &> tail [ignored
 						, TextRequest (gridx + 0.1) (gridy + 0.9) 0.35 (-0.35) sx

@@ -30,7 +30,6 @@ main = do
 		tools <- new Box [#orientation := OrientationVertical]
 		uiRef <- newIORef (def :: UIModel)
 		toolRef <- newIORef initialTool
-		dragStartRef <- newIORef (Nothing :: Maybe (Double, Double, Position))
 		hoverCellRef <- newIORef (Nothing :: Maybe Position)
 		previewPillRef <- newIORef (Nothing :: Maybe Pill)
 
@@ -92,38 +91,25 @@ main = do
 			#queueDraw hoverLayer
 		#addController boardWidget motion
 
+		let dragToRotatedPill drag dx dy = #getStartPoint drag >>= \case
+		    	(True, x, y) -> do
+		    		#queueDraw hoverLayer
+		    		start <- psvPointToBoardCell boardView x y
+		    		end <- psvPointToBoardCell boardView (x + dx) (y + dy)
+		    		for (liftJ2 dragToMidPlacement start end) \mp -> do
+		    			lk <- liftA2 toolLookahead (readIORef toolRef) (readIORef uiRef)
+		    			pure (RotatedPill lk mp)
+		    	_ -> fail "trying to inspect a drag that isn't currently happening"
 		drag <- new GestureDrag []
-		on drag #dragBegin \sx sy -> do
-			mcell <- psvPointToBoardCell boardView sx sy
-			writeIORef dragStartRef (fmap (\cell -> (sx, sy, cell)) mcell)
-			writeIORef previewPillRef Nothing
-			#queueDraw hoverLayer
 		on drag #dragUpdate \dx dy -> do
-			ms <- readIORef dragStartRef
-			case ms of
-				Nothing -> pure ()
-				Just (sx0, sy0, Position sx sy) -> do
-					mend <- psvPointToBoardCell boardView (sx0 + dx) (sy0 + dy)
-					tool <- readIORef toolRef
-					lk <- toolLookahead tool <$> readIORef uiRef
-					writeIORef previewPillRef (mend >>= \(Position ex ey) -> dragToPill lk (sx, sy) (ex, ey))
-					#queueDraw hoverLayer
+			mrp <- dragToRotatedPill ?self dx dy
+			writeIORef previewPillRef (rpPill <$> mrp)
 		on drag #dragEnd \dx dy -> do
-			ms <- readIORef dragStartRef
-			case ms of
-				Nothing -> pure ()
-				Just (sx0, sy0, Position sx sy) -> do
-					mend <- psvPointToBoardCell boardView (sx0 + dx) (sy0 + dy)
-					for_ mend \(Position ex ey) -> do
-						tool <- readIORef toolRef
-						lk <- toolLookahead tool <$> readIORef uiRef
-						let mpill = dragToPill lk (sx, sy) (ex, ey)
-						for_ mpill \pill -> do
-							modifyIORef uiRef (uiMaybeAdvance (Lock pill))
-							refresh
-			writeIORef dragStartRef Nothing
+			mrp <- dragToRotatedPill ?self dx dy
+			for_ mrp \rp -> do
+				modifyIORef uiRef (uiMaybeAdvance (rpGameStateEdit rp))
+				refresh
 			writeIORef previewPillRef Nothing
-			#queueDraw hoverLayer
 		#addController boardWidget drag
 
 		seedBuffer <- get seedEntry #buffer
@@ -184,6 +170,17 @@ parseSeed = \t -> do
 
 parseLevel :: Text -> Maybe Int
 parseLevel t = tread t >>= ensure (\n -> 0 <= n && n <= 20)
+
+data RotatedPill = RotatedPill
+	{ rpLookahead :: Lookahead
+	, rpPlacement :: MidPlacement
+	} deriving (Eq, Ord, Read, Show)
+
+rpPill :: RotatedPill -> Pill
+rpPill rp = mpPill (rpPlacement rp) (rpLookahead rp)
+
+rpGameStateEdit :: RotatedPill -> GameStateEdit
+rpGameStateEdit rp = Lock (rpLookahead rp) (rpPlacement rp)
 
 data Tool
 	= Exact Lookahead
@@ -261,22 +258,13 @@ renderTool tool ui = NC.westEast 0 0
 	(rr, rg, rb) = NC.cairoColor (rightColor lk)
 	mix = lerp (toolIntensity tool) 1
 
-dragToPill :: Lookahead -> (Int, Int) -> (Int, Int) -> Maybe Pill
-dragToPill (Lookahead c1 c2) (sx, sy) (ex, ey) = case (ex - sx, ey - sy) of
-	(1, 0) -> pure (mk Horizontal (sx, sy) c1 c2)
-	(-1, 0) -> pure (mk Horizontal (ex, ey) c2 c1)
-	(0, 1) -> pure (mk Vertical (sx, sy) c1 c2)
-	(0, -1) -> pure (mk Vertical (ex, ey) c2 c1)
+dragToMidPlacement :: Position -> Position -> Maybe MidPlacement
+dragToMidPlacement start end = case (x end - x start, y end - y start) of
+	( 1,  0) -> pure (MidPlacement start 0)
+	( 0, -1) -> pure (MidPlacement end 1)
+	(-1,  0) -> pure (MidPlacement end 2)
+	( 0,  1) -> pure (MidPlacement start 3)
 	_ -> Nothing
-	where
-	mk orientation (x, y) bl oc = Pill
-		{ content = PillContent
-			{ orientation = orientation
-			, bottomLeftColor = bl
-			, otherColor = oc
-			}
-		, bottomLeftPosition = Position x y
-		}
 
 drawOverlay ui ww wh ctx mhover mpill = flip renderWithContext ctx do
 	case mpill of

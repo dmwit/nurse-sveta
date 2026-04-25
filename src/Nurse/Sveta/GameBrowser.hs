@@ -98,13 +98,13 @@ moveTree as children = MoveTree (Seq.fromList as) (Seq.fromList children)
 
 data GameStateEdit
 	= GenerateLevel Word16 Int
-	| Lock Pill
+	| Lock Lookahead MidPlacement
 	deriving (Eq, Ord, Read, Show)
 
 instance PP GameStateEdit where
 	pp = \case
 		GenerateLevel seed level -> printf "%d:%d" level seed
-		Lock p -> pp p
+		Lock lk mp -> printf "%s@%s" (pp lk) (pp mp)
 
 data GameState = GameState
 	{ board :: Board
@@ -134,7 +134,7 @@ applyEdit s = \case
 		, pillSequence = lks
 		, pillIndex = 0
 		}
-	Lock p -> place (board s) p <&> \results -> s
+	Lock lk mp -> place (board s) (mpPill mp lk) <&> \results -> s
 		{ board = snd results
 		, pillIndex = if nextIndex >= len then nextIndex - len else nextIndex
 		} where
@@ -335,8 +335,8 @@ uiSeedLookahead ui = pillSequence s V.!? pillIndex s where s = uiCurrentState ui
 uiActiveLookahead :: UIModel -> Maybe Lookahead
 uiActiveLookahead ui = do
 	ui' <- uiForward ui
-	(Lock pill, _) <- uiCurrentNode ui'
-	pure $ lookaheadFromPill pill
+	(Lock lk _, _) <- uiCurrentNode ui'
+	pure lk
 
 normalizeLarge :: HasCallStack => UIModel -> MoveSelection -> Maybe MoveSelection
 normalizeLarge ui sel0 = go (drop (variationDepth sel0) (defaultTrees ui)) sel0 where

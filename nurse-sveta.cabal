@@ -52,6 +52,7 @@ common shared
                         , FlexibleInstances
                         , GADTs
                         , GeneralizedNewtypeDeriving
+                        , ImplicitParams
                         , LambdaCase
                         , MagicHash
                         , MultiParamTypeClasses
