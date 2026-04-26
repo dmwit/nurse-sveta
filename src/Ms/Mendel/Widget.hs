@@ -259,9 +259,10 @@ fillHighlight = do
 treePath :: Bool -> [(GridPos, EdgeComponent)] -> C.Render ()
 treePath aiLol = traverse_ \((x_, y_), component) -> do
 	let [x, y] = fromIntegral <$> [x_, y_]
+	C.save
 	C.translate x y
 	edgePath aiLol component
-	C.translate (-x) (-y)
+	C.restore
 
 -- aiLol: The first version of edgePath was vibe coded. Below is an excerpt
 -- from the prompt I wrote describing how I wanted things drawn. The AI I was
