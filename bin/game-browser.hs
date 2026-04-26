@@ -169,7 +169,7 @@ parseSeed = \t -> do
 		++ zip ['A'..'F'] [10..]
 
 parseLevel :: Text -> Maybe Int
-parseLevel t = tread t >>= ensure (\n -> 0 <= n && n <= 20)
+parseLevel t = tread t >>= ensure (\n -> 0 <= n && n <= 24)
 
 data RotatedPill = RotatedPill
 	{ rpLookahead :: Lookahead
