@@ -18,18 +18,6 @@ import qualified GI.Cairo.Render as C
 
 -- * Variation tree
 
--- | Structure-only description of a move tree for layout.
-data TreeLayout = TreeLayout
-	{ tlMainLength :: Int
-	, tlVariations :: [TreeLayout]
-	} deriving (Eq, Ord, Read, Show)
-
-treeLayoutFromMoveTree :: MoveTree a -> TreeLayout
-treeLayoutFromMoveTree mt = TreeLayout
-	{ tlMainLength = length (mainSequence mt)
-	, tlVariations = map treeLayoutFromMoveTree (toList (variations mt))
-	}
-
 -- | Grid cell contents. Even columns: nodes or blank. Odd columns: edges or blank.
 data GridCell a
 	= CellNode (Maybe a) Bool -- ^ the Bool is whether this is the selected node
