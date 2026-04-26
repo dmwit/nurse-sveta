@@ -208,19 +208,10 @@ newPlayerStateView psm = do
 	dg <- newDrawingGrid (fromIntegral w) (fromIntegral h)
 	ref <- liftIO $ newIORef psm
 	dgSetRenderer dg $ liftIO (readIORef ref) >>= psmRender
-	psvUpdateHeightRequest dg psm
 	pure (PSV dg ref)
 	where
 	b = psmBoard psm
 	(w, h) = bottleSizeRecommendation b
-
-psvSetCanvasSize :: MonadIO m => PlayerStateView -> (Int, Int) -> m ()
-psvSetCanvasSize psv (w, h) = dgSetSize (psvCanvas psv) (fromIntegral w) (fromIntegral h)
-
-psvUpdateHeightRequest :: MonadIO m => DrawingGrid -> PlayerStateModel -> m ()
-psvUpdateHeightRequest dg psm = do
-	w <- dgWidget dg
-	set w [#heightRequest := fromIntegral (4 * DM.height (psmBoard psm))]
 
 psvWidget :: MonadIO m => PlayerStateView -> m Widget
 psvWidget = dgWidget . psvCanvas
@@ -231,8 +222,6 @@ psvGet = liftIO . readIORef . psvModel
 psvSet :: MonadIO m => PlayerStateView -> PlayerStateModel -> m ()
 psvSet psv psm = do
 	liftIO $ writeIORef (psvModel psv) psm
-	psvUpdateHeightRequest (psvCanvas psv) psm
-	psvSetCanvasSize psv (bottleSizeRecommendation (psmBoard psm))
 	#queueDraw psv
 
 psvPointToBoardCell :: PlayerStateView -> Double -> Double -> IO (Maybe Position)
