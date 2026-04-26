@@ -6,12 +6,13 @@ module Nurse.Sveta.Widget (
 	DrawingGrid, newDrawingGrid, dgSetRenderer, dgWidget,
 	dgSetSize, dgSetWidth, dgSetHeight, dgSetDensity,
 	dgGetSize, dgGetWidth, dgGetHeight, dgGetDensity,
+	dgPixelToGrid,
 
 	-- * Player state
 	PlayerStateModel(..),
 	psmBoardL, psmLookaheadL, psmOverlayL,
 	PlayerStateView, newPlayerStateView, psvWidget,
-	psvGet, psvSet, psvPointToBoardCell,
+	psvGet, psvSet, psvPixelToBoard,
 	psvModifyM, psvModifyM_, psvModify, psvModify_,
 
 	-- * Hyperparameters
@@ -72,6 +73,7 @@ import Dr.Mario.Model as DM
 import GI.Cairo.Render
 import GI.Cairo.Render.Connector
 import GI.GLib
+import GI.Graphene.Structs.Point
 import GI.Gtk as G
 import Nurse.Sveta.Cairo
 import Nurse.Sveta.STM
@@ -172,6 +174,24 @@ dgSetRenderer dg draw = drawingAreaSetDrawFunc (dgCanvas dg) . Just $ \_ ctx _ _
 dgWidget :: MonadIO m => DrawingGrid -> m Widget
 dgWidget = toWidget . dgFrame
 
+-- | GTK callbacks that report a widget position do so in pixel coordinates.
+-- Use this to translate that into grid coordinates.
+dgPixelToGrid :: (MonadIO m, MonadFail m) => DrawingGrid -> (Double, Double) -> m (Double, Double)
+dgPixelToGrid dg (xFrame, yFrame) = do
+	pFrame <- new Point [#x := realToFrac xFrame, #y := realToFrac yFrame]
+	-- let's flame out if translation fails
+	(True, pCanvas) <- #computePoint (dgFrame dg) (dgCanvas dg) pFrame
+
+	xCanvas <- realToFrac <$> G.get pCanvas #x
+	wCanvas <- fromIntegral <$> #getWidth (dgCanvas dg)
+	wGrid <- dgGetWidth dg
+
+	yCanvas <- realToFrac <$> G.get pCanvas #y
+	hCanvas <- fromIntegral <$> #getHeight (dgCanvas dg)
+	hGrid <- dgGetHeight dg
+
+	pure (xCanvas * wGrid / wCanvas, (hCanvas - yCanvas) * hGrid / hCanvas)
+
 instance (MonadIO m, a ~ m ()) => Overload.IsLabel "queueDraw" (DrawingGrid -> a) where fromLabel = #queueDraw . dgCanvas
 
 data PlayerStateModel = PSM
@@ -224,31 +244,15 @@ psvSet psv psm = do
 	liftIO $ writeIORef (psvModel psv) psm
 	#queueDraw psv
 
-psvPointToBoardCell :: PlayerStateView -> Double -> Double -> IO (Maybe Position)
-psvPointToBoardCell psv px py = do
-	psm <- psvGet psv
-	w <- psvWidget psv
-	ww <- fromIntegral <$> #getWidth w
-	wh <- fromIntegral <$> #getHeight w
-	let b = psmBoard psm
-	    (bw, bh) = bottleSizeRecommendation b
-	    aspect = fromIntegral bw / fromIntegral bh
-	    (drawW, drawH, offX, offY)
-	    	| ww / wh > aspect = (wh * aspect, wh, (ww - wh * aspect) / 2, 0)
-	    	| otherwise = (ww, ww / aspect, 0, (wh - ww / aspect) / 2)
-	    px' = px - offX
-	    py' = py - offY
-	    xRender = fromIntegral bw * px' / drawW
-	    yRender = fromIntegral bh * (1 - py' / drawH)
-	    x = floor xRender - 1
-	    y = floor yRender - 1
+psvPixelToBoard :: PlayerStateView -> Double -> Double -> IO (Maybe Position)
+psvPixelToBoard psv px py = do
+	b <- psmBoard <$> psvGet psv
+	(gx, gy) <- dgPixelToGrid (psvCanvas psv) (px, py)
+	let x = floor gx - 1
+	    y = floor gy - 1
 	pure do
-		guard (ww > 0 && wh > 0)
-		guard (drawW > 0 && drawH > 0)
-		guard (0 <= px' && px' < drawW)
-		guard (0 <= py' && py' < drawH)
 		guard (0 <= x && x < DM.width b)
-		guard (0 <= y && y < DM.height b)
+		guard (0 <= y && y <= DM.height b)
 		pure (Position x y)
 
 psvModifyM :: MonadIO m => PlayerStateView -> (PlayerStateModel -> m (PlayerStateModel, a)) -> m a

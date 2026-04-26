@@ -83,7 +83,7 @@ main = do
 
 		motion <- new EventControllerMotion []
 		on motion #motion \x y -> do
-			cell <- psvPointToBoardCell boardView x y
+			cell <- psvPixelToBoard boardView x y
 			writeIORef hoverCellRef cell
 			#queueDraw hoverLayer
 		on motion #leave do
@@ -94,8 +94,8 @@ main = do
 		let dragToRotatedPill drag dx dy = #getStartPoint drag >>= \case
 		    	(True, x, y) -> do
 		    		#queueDraw hoverLayer
-		    		start <- psvPointToBoardCell boardView x y
-		    		end <- psvPointToBoardCell boardView (x + dx) (y + dy)
+		    		start <- psvPixelToBoard boardView x y
+		    		end <- psvPixelToBoard boardView (x + dx) (y + dy)
 		    		for (liftJ2 dragToMidPlacement start end) \mp -> do
 		    			lk <- liftA2 toolLookahead (readIORef toolRef) (readIORef uiRef)
 		    			pure (RotatedPill lk mp)
