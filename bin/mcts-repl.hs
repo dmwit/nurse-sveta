@@ -172,7 +172,7 @@ listC = commandNR "list" "Lists the available moves and the index you can use to
 		len = length ms
 		ppMove i pill = printf "%2d: %s\t%s"
 			i
-			(ppPill pill)
+			(pp pill)
 			(if i `mod` 4 == 3 && i /= len then "\n" else "" :: String)
 
 descendC :: Command
@@ -219,7 +219,7 @@ sampleC = commandN "sample" sampleHelp [0, 1] \case
 				replLn $ ppAeson lk ++ " (" ++ show (toIndex lk) ++ ")"
 			Right t -> liftIO (f (context rs) t) >>= \case
 				Nothing -> replLn "Game's already over!"
-				Just pill -> replLn (ppPill pill ++ " " ++ ppIndex (findIndex (pill==) (moves t)))
+				Just pill -> replLn (pp pill ++ " " ++ ppIndex (findIndex (pill==) (moves t)))
 	ppIndex Nothing = "(??)"
 	ppIndex (Just n) = "(" ++ show n ++ ")"
 	sampleHelp = intercalate "\n" $ tail [ignored
