@@ -144,12 +144,10 @@ panedOffset :: Double
 panedOffset = 0.4
 
 -- | Variation tree view: Cairo-based widget for rendering move trees.
--- Fixed 30-pixel cells, scrollable. Structured for future interactivity.
 data VariationTreeView = VTV
 	{ vtvCanvas :: DrawingArea
 	, vtvAIButton :: CheckButton
 	, vtvModel :: IORef (Map GridPos (GridCell (GameStateEdit, GameState), MoveTreeAddress))
-	-- ^ (cells, nodeAddresses, minCol, minRow, colCount, rowCount)
 	}
 
 newVariationTreeView :: MonadIO m => m VariationTreeView
