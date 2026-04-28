@@ -52,8 +52,10 @@ main = do
 		    	vtvSet treeView (moveSelection ui) (uiActivePath ui) (nodes ui)
 		    	forM_ toolButtons \tw -> twRefresh tw ui
 		    	#queueDraw hoverLayer
-		vtvOnNodeClick treeView \addr ->
-			modifyIORef uiRef (flip uiVisitAddress addr) >> refresh
+		vtvOnNodeClick treeView \button addr -> case button of
+			1 {- left -} -> modifyIORef uiRef (flip uiVisitAddress addr) >> refresh
+			3 {- right -} -> modifyIORef uiRef (flip uiDelete addr) >> refresh
+			_ -> pure ()
 		on scrollAxisSwap #scroll \dx dy -> do
 			-- You would think that dx contains the horizontal scroll distance,
 			-- and dy contains the vertical scroll distance. But no, dx

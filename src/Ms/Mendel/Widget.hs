@@ -162,14 +162,15 @@ vtvSet vtv sel active mt = do
 	#queueDraw (vtvCanvas vtv)
 
 -- | Install a callback for node clicks. Called with the MoveTreeAddress of the clicked node.
-vtvOnNodeClick :: MonadIO m => VariationTreeView -> (MoveTreeAddress -> IO ()) -> m ()
+vtvOnNodeClick :: MonadIO m => VariationTreeView -> (Word32 -> MoveTreeAddress -> IO ()) -> m ()
 vtvOnNodeClick vtv callback = do
-	click <- new GestureClick []
+	click <- new GestureClick [#button := 0]
 	on click #pressed \_ nX nY -> do
 		let col = floor (nX / cellSizePx)
 		    row = floor (nY / cellSizePx - panedOffset)
 		nodeAddrs <- liftIO $ readIORef (vtvModel vtv)
-		for_ (M.lookup (col, row) nodeAddrs) (callback . snd)
+		button <- #getCurrentButton ?self
+		for_ (M.lookup (col, row) nodeAddrs) (callback button . snd)
 	#addController (vtvCanvas vtv) click
 
 vtvRender :: Bool -> Map GridPos (GridCell (GameStateEdit, GameState), MoveTreeAddress) -> C.Render ()

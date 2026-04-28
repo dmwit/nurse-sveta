@@ -22,13 +22,18 @@ indexVariations t = flip foldl' (Just t) \mt i -> do
 	t' <- mt
 	variations t' Seq.!? i
 
+-- TODO: how come deleting the second-to-last variation doesn't work right?
 indexVariationsL :: MoveTree m -> Seq Int -> Maybe (MoveTree m, MoveTree m -> MoveTree m)
 indexVariationsL = go id where
 	go rebuild mt = \case
 		Seq.Empty -> Just (mt, rebuild)
 		i Seq.:<| is -> do
 			(b, h Seq.:<| e) <- Just $ Seq.splitAt i (variations mt)
-			go (rebuild . \h' -> mt { variations = b <> Seq.singleton h' <> e }) h is
+			go (rebuild . \h' -> mt { variations = b <> replacementVariations h' <> e }) h is
+
+	replacementVariations h' = if length (mainSequence h') == 0
+		then variations h'
+		else Seq.singleton h'
 
 -- | Cut the main sequence at the given point, and make the rest of the
 -- sequence into a variation. 'Nothing' indicates an attempt to cut past the
@@ -250,6 +255,10 @@ instance Default MoveSelection where
 modifyMainSequenceIndex :: Int -> MoveSelection -> MoveSelection
 modifyMainSequenceIndex di sel = sel { mainSequenceIndex = mainSequenceIndex sel + di }
 
+-- | Lift a 'MoveSelection' up above the subtree indicated by a 'MoveTreeAddress'.
+msTruncate :: MoveSelection -> Maybe ActiveVariations -> MoveTreeAddress -> MoveSelection
+msTruncate _ _ _ = def -- TODO
+
 data UIModel = UIModel
 	{ nodes :: MoveTree (GameStateEdit, GameState)
 	, activeVariations :: Maybe ActiveVariations
@@ -417,21 +426,26 @@ uiVisitAddress ui addr = setSelection
 	(uiActivateVariation (mtaVariations addr) ui)
 	(toSelection addr)
 
-uiDeleteCurrent :: HasCallStack => UIModel -> Maybe UIModel
-uiDeleteCurrent ui = do
-	let i = uiMainSequenceIndex ui
+uiDelete :: HasCallStack => UIModel -> MoveTreeAddress -> UIModel
+-- if asked to delete a node that doesn't exist, returning the tree unchanged seems sensible, right?
+uiDelete ui mta = fromMaybe ui do
+	let i = mtaMainSequenceIndex mta
 	guard (i >= 0)
-	(focusedTree, rebuildTree) <- indexVariationsL (nodes ui) (uiFocusedPath ui)
+	(focusedTree, rebuildTree) <- indexVariationsL (nodes ui) (mtaVariations mta)
 	guard (i < length (mainSequence focusedTree))
-	let (b, _ Seq.:<| e) = Seq.splitAt i (mainSequence focusedTree)
-	    focusedTree' = focusedTree { mainSequence = b <> e }
+	let focusedTree' = focusedTree { mainSequence = Seq.take i (mainSequence focusedTree) }
 	    ui' = uiNormalizeActiveVariations ui
 	    	{ nodes = rebuildTree focusedTree'
-	    	, moveSelection = (moveSelection ui)
-	    		{ mainSequenceIndex = i - 1
-	    		}
+	    	, moveSelection = msTruncate (moveSelection ui) (activeVariations ui) mta
 	    	}
-	normalizeSmall ui' (moveSelection ui') <&> setSelection ui'
+	-- TODO: if deleting an entire variation, update the active variations that come after it
+	pure ui'
+
+uiDeleteCurrent :: HasCallStack => UIModel -> UIModel
+uiDeleteCurrent ui = uiDelete ui MoveTreeAddress
+	{ mtaMainSequenceIndex = uiMainSequenceIndex ui
+	, mtaVariations = uiFocusedPath ui
+	}
 
 uiAdvance :: GameStateEdit -> UIModel -> Maybe UIModel
 uiAdvance e ui = do
