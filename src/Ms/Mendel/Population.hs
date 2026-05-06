@@ -784,7 +784,7 @@ assertOnly ks km
 	| otherwise = fail $ "expected dictionary with only the keys " ++ pretty ks ++ "; extra keys were " ++ pretty (KM.keys leftovers)
 	where
 	leftovers = km `KM.difference` KM.fromList [(k, ()) | k <- ks]
-	pretty = printf "{%s}" . intercalate ", " . map show
+	pretty = ppSequence "{}" . map show
 
 -- encodePrintable and decodePrintable convert between unconstrained byte
 -- sequences and sequences of bytes that JSON can represent in one byte each:

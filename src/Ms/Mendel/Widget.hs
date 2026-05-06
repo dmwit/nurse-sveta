@@ -12,24 +12,35 @@ import Nurse.Sveta.GameBrowser
 import Nurse.Sveta.Util hiding (get)
 import Nurse.Sveta.Widget
 
+import qualified Data.IntMap as IM
 import qualified Data.Map.Strict as M
 import qualified Data.Sequence as Seq
 import qualified GI.Cairo.Render as C
 
--- * Variation tree
-
--- | Grid cell contents. Even columns: nodes or blank. Odd columns: edges or blank.
 data GridCell a
 	= CellNode (Maybe a) Bool -- ^ the Bool is whether this is the selected node
 	| CellEdge [EdgeComponent] (Maybe EdgeComponent) -- ^ edges always shown in [], active path in Maybe
 	deriving (Eq, Ord, Read, Show)
 
+instance PP a => PP (GridCell a) where pp = pp1
+instance PP1 GridCell where
+	liftPP1 ppA = \case
+		CellNode ma selected -> maybe "root" ppA ma ++ ['!' | selected]
+		CellEdge es mhi -> concatMap pp es ++ maybe "" (('/':) . pp) mhi
+
 data EdgeComponent = LR | UD | LD | UR
 	deriving (Eq, Ord, Read, Show)
 
+instance PP EdgeComponent where
+	pp = \case
+		LR -> "─"
+		UD -> "│"
+		LD -> "╮"
+		UR -> "╰"
+
 data Rendering a = Rendering
 	{ renderingWidth, renderingHeight :: Int
-	, renderingTree :: GridPos -> Map GridPos a
+	, renderingTree :: Position -> Map Position a
 	} deriving Functor
 
 instance Default (Rendering a) where def = rempty 0 0
@@ -43,11 +54,12 @@ combineRenderings :: Bool -> Bool -> Rendering a -> Rendering b -> Rendering (Th
 combineRenderings overlapW overlapH as bs = Rendering
 	{ renderingWidth = combineMetric overlapW (renderingWidth as) (renderingWidth bs)
 	, renderingHeight = combineMetric overlapH (renderingHeight as) (renderingHeight bs)
-	, renderingTree = \(xa, ya) -> let
-		xb = offset overlapW xa (renderingWidth as)
-		yb = offset overlapH ya (renderingHeight as)
-		ta = renderingTree as (xa, ya)
-		tb = renderingTree bs (xb, yb)
+	, renderingTree = \posA -> let
+		ta = renderingTree as posA
+		tb = renderingTree bs Position
+			{ x = offset overlapW (x posA) (renderingWidth as)
+			, y = offset overlapH (y posA) (renderingHeight as)
+			}
 		in M.unions [M.intersectionWith These ta tb, This <$> ta, That <$> tb]
 	}
 	where
@@ -82,43 +94,37 @@ rleaf = Rendering 1 1 . flip M.singleton
 rempty :: Int -> Int -> Rendering a
 rempty w h = Rendering w h def
 
--- | Grid position (col, row). Even cols = nodes, odd = edges.
-type GridPos = (Int, Int)
+type UICell = (GridCell UILabel, Variation)
 
-buildGridFromMoveTree :: MoveSelection -> [Int] -> MoveTree a -> Rendering (GridCell a, MoveTreeAddress)
-buildGridFromMoveTree sel active0 t0 = rleaf (CellNode Nothing (sel == def), def) `hcat` case length (mainSequence t0) of
-	0 -> goVariations def (Just active0) (variations t0)
-	_ -> rleaf (CellEdge [LR] (Just LR), MoveTreeAddress def 0) `hcat` goTree def (Just active0) t0
+renderModel :: UIModel -> Rendering UICell
+renderModel ui = rleaf (CellNode Nothing (selectionDepth ui == 0), []) `hcat` renderForest [] (activeRoot ui) (selectionDepth ui) (nodes ui)
+
+renderForest :: [Int] -> Maybe Int -> Int -> UIForest -> Rendering UICell
+renderForest revParentVar active selDepth ts = case IM.toAscList treeRenderings of
+	[] -> def
+	(i, r) : irs -> go LR LD i r irs
 	where
-	goVariations varPath active vs = vcats . toList $ Seq.mapWithIndex (goVariation varPath active (length vs)) vs
-	goVariation varPath active n i v
-		| i == 0 = (edge [LR, LD] firstVariationHi `vcat` verticalBar) `hcat` child
-		| i == n - 1 = edge [UR] laterVariationHi `hcat` child
-		| otherwise = (edge [UD, UR] laterVariationHi `vcat` verticalBar) `hcat` child
-		where
-		varPath' = varPath Seq.:|> i
-		active' = case active of
-			Just (firstActive : restActive) | firstActive == i -> Just restActive
-			_ -> Nothing
-		(verticalBarHi, firstVariationHi, laterVariationHi) = case active of
-			Just (a:_) -> case compare a i of
-				LT -> (Nothing, Nothing, Nothing)
-				EQ -> (Nothing, Just LR, Just UR)
-				GT -> (Just UD, Just LD, Just UD)
-			_ -> (Nothing, Nothing, Nothing)
-		child = goTree varPath' active' v
-		edge e hi = rleaf (CellEdge e hi, MoveTreeAddress varPath' 0)
-		verticalBar = vrep (renderingHeight child - 1) (edge [UD] verticalBarHi)
-	goTree varPath active t = mainSeq `hcat` goVariations varPath active (variations t) where
-		ns = mainSequence t
-		mainSeq = hcats . toList $ Seq.mapWithIndex (goNode varPath active (length ns)) ns
-	goNode varPath active n i node
-		| i == 0 = cellNode
-		| otherwise = cell (CellEdge [LR] (LR <$ active)) `hcat` cellNode
-		where
-		cell c = rleaf (c, MoveTreeAddress varPath i)
-		cellNode = cell (CellNode (Just node) isSelected)
-		isSelected = i == mainSequenceIndex sel && isJust active && length varPath == variationDepth sel
+	go toR toD i r = \case
+		[] -> edge i [toR] toD toR `hcat` r
+		(i', r') : irs -> (verticalBar `hcat` r) `vcat` go UR UD i' r' irs where
+			verticalBar = vcat
+				(edge i [toR, toD] toD toR)
+				(vrep (renderingHeight r - 1) (edge i' [UD] UD UD))
+
+	treeRenderings = IM.mapWithKey (\i -> renderTree (i:revParentVar) (active == Just i) (selDepth - 1)) ts
+	edge i always toD toR = rleaf (CellEdge always hi, reverse (i:revParentVar)) where
+		hi = case compare (Just i) active of
+			LT -> Just toD
+			EQ -> Just toR
+			GT -> Nothing
+
+renderTree :: [Int] -> Bool -> Int -> UITree -> Rendering UICell
+renderTree revVar active selDepth t = hcat
+	(rleaf (CellNode (Just (tLabel t)) (active && selDepth == 0), reverse revVar))
+	(renderForest revVar (guard active >> activeChild (tLabel t)) selDepth (tChildren t))
+
+renderingForMath :: Rendering a -> Rendering a
+renderingForMath r = r { renderingTree = M.mapKeys (\pos -> pos { y = renderingHeight r - y pos - 1 }) . renderingTree r }
 
 cellRowsDefault :: Int
 cellRowsDefault = 5
@@ -133,59 +139,63 @@ panedOffset = 0.4
 
 -- | Variation tree view: Cairo-based widget for rendering move trees.
 data VariationTreeView = VTV
-	{ vtvCanvas :: DrawingArea
+	{ vtvCanvas :: DrawingGrid
 	, vtvAIButton :: CheckButton
-	, vtvModel :: IORef (Map GridPos (GridCell (GameStateEdit, GameState), MoveTreeAddress))
+	, vtvModel :: IORef (Map Position UICell)
 	}
 
 newVariationTreeView :: MonadIO m => m VariationTreeView
 newVariationTreeView = do
-	da <- new DrawingArea []
-	ai <- new CheckButton []
+	dg <- newDrawingGrid 1 (1 + panedOffset)
+	ai <- liftIO $ new CheckButton []
 	ref <- liftIO $ newIORef def
-	drawingAreaSetDrawFunc da . Just $ \_ ctx _ _ -> do
-		aiLol <- liftIO $ get ai #active
-		model <- liftIO $ readIORef ref
-		renderWithContext (vtvRender aiLol model) ctx
-	pure (VTV da ai ref)
+	let vtv = VTV dg ai ref
+
+	dgSetAlignment dg 0 1
+	dgSetDensity dg (Just cellSizePx)
+	dgSetRenderer dg (vtvRender vtv)
+	
+	pure vtv
 
 vtvWidget :: MonadIO m => VariationTreeView -> m Widget
-vtvWidget = toWidget . vtvCanvas
+vtvWidget = dgWidget . vtvCanvas
 
-vtvSet :: MonadIO m => VariationTreeView -> MoveSelection -> [Int] -> MoveTree (GameStateEdit, GameState) -> m ()
-vtvSet vtv sel active mt = do
-	let grid = buildGridFromMoveTree sel active mt
-	    w = renderingWidth grid * cellSizePx
-	    h = renderingHeight grid * cellSizePx + ceiling (panedOffset * cellSizePx)
-	liftIO $ writeIORef (vtvModel vtv) (renderingTree grid (0, 0))
-	#setSizeRequest (vtvCanvas vtv) (fromIntegral w) (fromIntegral h)
-	#queueDraw (vtvCanvas vtv)
+vtvSet :: MonadIO m => VariationTreeView -> UIModel -> m ()
+vtvSet vtv ui = do
+	liftIO $ writeIORef (vtvModel vtv) (renderingTree r def)
+	dgSetSize (vtvCanvas vtv) (fromIntegral (renderingWidth r)) (fromIntegral (renderingHeight r) + panedOffset)
+	where
+	r = renderingForMath (renderModel ui)
 
--- | Install a callback for node clicks. Called with the MoveTreeAddress of the clicked node.
-vtvOnNodeClick :: MonadIO m => VariationTreeView -> (Word32 -> MoveTreeAddress -> IO ()) -> m ()
-vtvOnNodeClick vtv callback = do
+vtvOnNodeClick :: MonadIO m => VariationTreeView -> (Word32 -> Variation -> IO ()) -> m ()
+vtvOnNodeClick VTV { vtvCanvas = dg, vtvModel = ref } callback = do
 	click <- new GestureClick [#button := 0]
-	on click #pressed \_ nX nY -> do
-		let col = floor (nX / cellSizePx)
-		    row = floor (nY / cellSizePx - panedOffset)
-		nodeAddrs <- liftIO $ readIORef (vtvModel vtv)
+	on click #pressed \_ xPixel yPixel -> do
+		(xGrid, yGrid) <- dgPixelToGrid dg (xPixel, yPixel)
+		let pos = Position (floor xGrid) (floor yGrid)
+		model <- liftIO $ readIORef ref
 		button <- #getCurrentButton ?self
-		for_ (M.lookup (col, row) nodeAddrs) (callback button . snd)
-	#addController (vtvCanvas vtv) click
+		for_ (M.lookup pos model) (callback button . snd)
+	w <- dgWidget dg
+	#addController w click
 
-vtvRender :: Bool -> Map GridPos (GridCell (GameStateEdit, GameState), MoveTreeAddress) -> C.Render ()
-vtvRender aiLol cells = do
+vtvRender :: VariationTreeView -> C.Render ()
+vtvRender vtv = do
+	aiLol <- liftIO $ get (vtvAIButton vtv) #active
+	model <- liftIO $ readIORef (vtvModel vtv)
 	C.setLineCap C.LineCapRound
 	C.setLineJoin C.LineJoinRound
-	join C.scale cellSizePx
-	C.translate 0 panedOffset
+
+	let (nodes, nodeHighlights, edges, edgeHighlights) = M.foldMapWithKey inject model
+	    inject pos (c, _) = case c of
+	    	CellNode medit highlighted -> ([(pos, medit)], [pos | highlighted], [], [])
+	    	CellEdge es ehs -> ([], [], sequence (pos, es), sequence (pos, toList ehs))
+	    act `at` pos = C.save >> translatePosition pos >> act >> C.restore
 
 	treePath aiLol edgeHighlights
 	strokeHighlight
 
-	for_ nodeHighlights \(x_, y_) ->
-		let [x, y] = [fromIntegral coord + 0.5 | coord <- [x_, y_]]
-		in C.arc x y 0.5 0 (2*pi)
+	mapM_ (C.arc 0.5 0.5 0.5 0 (2*pi) `at`) nodeHighlights
 	fillHighlight
 
 	-- we want to make the entire edge path before stroking so that we don't
@@ -193,90 +203,75 @@ vtvRender aiLol cells = do
 	treePath aiLol edges
 	strokeTree
 
-	reqss <- for nodes \((x_, y_), mNodeContent) -> do
-		let [gridx, gridy] = map fromIntegral [x_, y_]
-		case mNodeContent of
-			Nothing -> [] <$ fitText (gridx + 0.1) (gridy + 0.9) 0.8 (-0.8) "ε" -- scaled double, so don't participate in TextRequest machinery
-			Just (GenerateLevel seed level, _) -> pure $ tail [ignored
-				, TextRequest (gridx + 0.1) (gridy + 0.45) 0.8 (-0.35) (printf "%04X" seed)
-				, TextRequest (gridx + 0.1) (gridy + 0.9) 0.8 (-0.35) (show level)
+	reqss <- for nodes \(pos, mNodeContent) -> do
+		let (gridx, gridy) = fromPosition pos
+		case parentEdge <$> mNodeContent of
+			Nothing -> [] <$ fitText (gridx + 0.1) (gridy + 0.1) 0.8 0.8 "ε" -- scaled double, so don't participate in TextRequest machinery
+			Just (GenerateLevel seed level) -> pure $ tail [ignored
+				, TextRequest (gridx + 0.1) (gridy + 0.55) 0.8 0.35 (printf "%04X" seed)
+				, TextRequest (gridx + 0.1) (gridy + 0.1) 0.8 0.35 (show level)
 				]
 			-- TODO: do the fancy location notation thing
-			Just (Lock lk mp, _) -> let pc = content (mpPill mp lk) in do
+			Just (Lock lk mp) -> let pc = content (mpPill mp lk) in do
 				C.save
 				C.scale 0.5 0.5
 				let sx = show . (1+) . x . mpBottomLeft $ mp
 				    sy = show . (1+) . y . mpBottomLeft $ mp
 				reqs <- case orientation pc of
-					Horizontal -> lookahead_ (2*gridx) (2*gridy) (lookaheadFromPillContent pc) &> tail [ignored
-						, TextRequest (gridx + 0.1) (gridy + 0.9) 0.35 (-0.35) sx
-						, TextRequest (gridx + 0.55) (gridy + 0.9) 0.35 (-0.35) sy
+					Horizontal -> lookahead_ (2*gridx) (2*gridy + 1) (lookaheadFromPillContent pc) &> tail [ignored
+						, TextRequest (gridx + 0.1) (gridy + 0.1) 0.35 0.35 sx
+						, TextRequest (gridx + 0.55) (gridy + 0.1) 0.35 0.35 sy
 						]
 					Vertical -> southNorth (2*gridx) (2*gridy) (setColor (otherColor pc)) (setColor (bottomLeftColor pc)) &> tail [ignored
-						, TextRequest (gridx + 0.55) (gridy + 0.45) 0.35 (-0.35) sx
-						, TextRequest (gridx + 0.55) (gridy + 0.9) 0.35 (-0.35) sy
+						, TextRequest (gridx + 0.55) (gridy + 0.55) 0.35 0.35 sx
+						, TextRequest (gridx + 0.55) (gridy + 0.1) 0.35 0.35 sy
 						]
 				reqs <$ C.restore
 	fitTexts (concat reqss)
-	where
-	(nodes, nodeHighlights, edges, edgeHighlights) = M.foldMapWithKey inject cells where
-		inject pos (c, _) = case c of
-			CellNode medit highlighted -> ([(pos, medit)], [pos | highlighted], [], [])
-			CellEdge es ehs -> ([], [], sequence (pos, es), sequence (pos, toList ehs))
 
-strokeHighlight :: Render ()
-strokeHighlight = do
-	C.setSourceRGBA 0.5 0.75 1 0.4
-	for_ [1..4] \i -> do
-		C.setLineWidth (lerp (i/5) 0.32 0.08)
-		C.strokePreserve
-	C.newPath
+setHighlightSource, strokeHighlight, strokeTree, fillHighlight :: Render ()
+setHighlightSource = C.setSourceRGBA 0.5 0.75 1 0.4
+strokeHighlight = setHighlightSource >> C.setLineWidth 0.3 >> C.stroke
+strokeTree = C.setSourceRGB 0 0 0 >> C.setLineWidth 0.08 >> C.stroke
+fillHighlight = setHighlightSource >> C.fill
 
-strokeTree :: Render ()
-strokeTree = do
-	C.setSourceRGB 0 0 0
-	C.setLineWidth 0.08
-	C.stroke
-
-fillHighlight :: Render ()
-fillHighlight = do
-	C.setSourceRGBA 0.5 0.75 1 0.4
-	C.fill
-
-treePath :: Bool -> [(GridPos, EdgeComponent)] -> C.Render ()
-treePath aiLol = traverse_ \((x_, y_), component) -> do
-	let [x, y] = fromIntegral <$> [x_, y_]
+treePath :: Bool -> [(Position, EdgeComponent)] -> C.Render ()
+treePath aiLol = traverse_ \(pos, component) -> do
 	C.save
-	C.translate x y
+	translatePosition pos
 	edgePath aiLol component
 	C.restore
 
--- aiLol: The first version of edgePath was vibe coded. Below is an excerpt
--- from the prompt I wrote describing how I wanted things drawn. The AI I was
--- using sort of did what I said... but definitely didn't do what I meant. I
--- mean I would bet it basically understood what I meant and just got the
--- arguments to the arc functions a bit wrong, and I don't blame it, there's
--- like eight coordinate transforms going on and I would struggle to get it
--- right the first time, too. But it does look just hilarious, and I decided I
--- liked it enough to keep it around.
+fromPosition :: Position -> (Double, Double)
+fromPosition pos = (fromIntegral (x pos), fromIntegral (y pos))
+
+translatePosition :: Position -> C.Render ()
+translatePosition = uncurry C.translate . fromPosition
+
+-- aiLol: The first version of edgePath was written by an AI. Below is an
+-- excerpt from the prompt I wrote describing how I wanted things drawn. The AI
+-- I was using sort of did what I said... but definitely didn't do what I
+-- meant. I mean I would bet it basically understood what I meant and just got
+-- the arguments to the arc functions a bit wrong, and I don't blame it, at the
+-- time there were like eight coordinate transforms going on and I would
+-- struggle to get it right the first time, too. But it does look just
+-- hilarious, and I decided I liked it enough to keep it around.
 --
 -- * No variations: line left to right
 -- * Connecting the end of a main sequence to the first variation: line left to right and arc left to bottom
 -- * Middle variations: line top to bottom and arc top to right
 -- * Connecting variations: line top to bottom
 -- * Final variation: arc top to right
-
--- | Draw edge in 1x1 cell. Screen coords (y down): left (0, 0.5), right (1, 0.5), top (0.5, 0), bottom (0.5, 1).
 edgePath :: Bool -> EdgeComponent -> C.Render ()
 edgePath aiLol = \case
 	LR -> C.moveTo 0 0.5 >> C.lineTo 1 0.5
 	UD -> C.moveTo 0.5 0 >> C.lineTo 0.5 1
-	LD -> C.moveTo 0 0.5 >> if aiLol
-		then C.arcNegative 0.5 0.5 0.5 pi (pi/2)
-		else C.arc 0 1 0.5 (3*pi/2) 0
-	UR -> if aiLol
-		then C.moveTo 0.5 0 >> C.arcNegative 0.5 0.5 0.5 (3*pi/2) 0
-		else C.moveTo 1 0.5 >> C.arc 1 0 0.5 (pi/2) pi
+	LD -> C.moveTo 0.5 0 >> if aiLol
+		then C.arcNegative 0.5 0.5 0.5 (-pi/2) pi
+		else C.arc 0 0 0.5 0 (pi/2)
+	UR -> C.moveTo 0.5 1 >> if aiLol
+		then C.arc 0.5 0.5 0.5 (pi/2) 0
+		else C.arc 1 1 0.5 pi (3*pi/2)
 
 data instance Pattern Gtk = PatternGtk
 	{ pgCanvas :: DrawingGrid

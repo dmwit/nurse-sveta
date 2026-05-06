@@ -18,14 +18,16 @@ main = do
 	on app #activate do
 		paned <- new Paned [#orientation := OrientationVertical]
 		topRow <- new Box [#orientation := OrientationHorizontal]
-		boardView <- newPlayerStateView (uiCurrentPSM def)
+		boardView <- newPlayerStateView (selectedPSM def)
 		boardWidget <- psvWidget boardView
 		boardOverlay <- new Overlay [#child := boardWidget, #heightRequest := 500, #widthRequest := 250]
 		hoverLayer <- new DrawingArea [#hexpand := True, #vexpand := True, #canTarget := False]
 		#addOverlay boardOverlay hoverLayer
 		treeView <- newVariationTreeView
 		treeWidget <- vtvWidget treeView
-		treeScroll <- new ScrolledWindow [#child := treeWidget, #hexpand := True, #heightRequest := fromIntegral (cellSizePx * cellRowsDefault)]
+		springContainer <- new Box [#orientation := OrientationVertical]
+		spring <- new Box []
+		treeScroll <- new ScrolledWindow [#child := springContainer, #hexpand := True, #heightRequest := fromIntegral (cellSizePx * cellRowsDefault)]
 		scrollAxisSwap <- new EventControllerScroll [#flags := [EventControllerScrollFlagsBothAxes]]
 		tools <- new Box [#orientation := OrientationVertical]
 		uiRef <- newIORef (def :: UIModel)
@@ -48,13 +50,14 @@ main = do
 
 		let refresh = do
 		    	ui <- readIORef uiRef
-		    	psvSet boardView (uiCurrentPSM ui)
-		    	vtvSet treeView (moveSelection ui) (uiActivePath ui) (nodes ui)
+		    	psvSet boardView (selectedPSM ui)
+		    	vtvSet treeView ui
 		    	forM_ toolButtons \tw -> twRefresh tw ui
 		    	#queueDraw hoverLayer
+		    modifyUIRef f = modifyIORef uiRef (fromMaybe <*> f) >> refresh
 		vtvOnNodeClick treeView \button addr -> case button of
-			1 {- left -} -> modifyIORef uiRef (flip uiVisitAddress addr) >> refresh
-			3 {- right -} -> modifyIORef uiRef (flip uiDelete addr) >> refresh
+			1 {- left -} -> modifyUIRef (selectVariation addr)
+			3 {- right -} -> modifyUIRef (deleteVariation addr)
 			_ -> pure ()
 		on scrollAxisSwap #scroll \dx dy -> do
 			-- You would think that dx contains the horizontal scroll distance,
@@ -108,10 +111,8 @@ main = do
 			writeIORef previewPillRef (rpPill <$> mrp)
 		on drag #dragEnd \dx dy -> do
 			mrp <- dragToRotatedPill ?self dx dy
-			for_ mrp \rp -> do
-				modifyIORef uiRef (uiMaybeAdvance (rpGameStateEdit rp))
-				refresh
 			writeIORef previewPillRef Nothing
+			mapM_ (modifyUIRef . advance . rpGameStateEdit) mrp
 		#addController boardWidget drag
 
 		seedBuffer <- get seedEntry #buffer
@@ -126,14 +127,13 @@ main = do
 			    	Nothing -> #addCssClass levelEntry "error"
 			    	Just{} -> #removeCssClass levelEntry "error"
 			    for_ seedMaybe \seed -> for_ levelMaybe \level -> do
-			    	modifyIORef uiRef (uiMaybeAdvance (GenerateLevel seed level))
+			    	modifyUIRef . advance $ GenerateLevel seed level
 			    	let seed' = runST do
 			    	    	mrng <- mnewRNG seed
 			    	    	munsafeRandomLevel mrng level
 			    	    	mrng
 			    	set seedBuffer [#text := T.pack (printf "%04X" seed')]
 			    	set levelBuffer [#text := tshow (min 24 (level + 1))]
-			    	refresh
 		on generateButton #clicked generateLevel
 		on seedEntry #activate generateLevel
 		on levelEntry #activate generateLevel
@@ -143,6 +143,17 @@ main = do
 		#append tools seedEntry
 		#append tools levelEntry
 		#append tools generateButton
+
+		-- If the pane given to the tree view is larger than the rendering of
+		-- the tree, then the tree widget will expand to fill the space and the
+		-- rendering will be larger. That means the size of the rendering
+		-- changes over time, which looks bad. To avoid that, instead of
+		-- directly having the tree widget, we put a vertical box with the
+		-- widget and a spring; the spring then expands to consume any leftover
+		-- vertical space, and the tree widget is given no more than its
+		-- requested size.
+		#append springContainer treeWidget
+		#append springContainer spring
 
 		#append topRow boardOverlay
 		#append topRow tools
@@ -219,15 +230,11 @@ toolWidget tool aiLolAct = do
 			wseed <- imageNewFromFile seedSvg
 			set wseed [#pixelSize := toolDensity]
 			#append container wseed
-			pure \ui -> dgSetRenderer dg (renderTool tool ui) >> #queueDraw dg
+			pure \ui -> dgSetRenderer dg (renderTool tool ui)
 		ActiveLookahead -> do
 			dg' <- newDrawingGrid 1 1
 			dgSetDensity dg' (Just toolDensity)
 			dgSetRenderer dg' do
-				-- sigh
-				C.translate 0 1
-				C.scale 1 (-1)
-
 				aiLol <- liftIO aiLolAct
 				C.translate 0.1 0.1
 				C.scale 0.8 0.8
@@ -237,13 +244,13 @@ toolWidget tool aiLolAct = do
 				edgePath aiLol UR
 				strokeTree
 			#append container =<< dgWidget dg'
-			pure \ui -> dgSetRenderer dg (renderTool tool ui) >> #queueDraw dg >> #queueDraw dg'
+			pure \ui -> dgSetRenderer dg (renderTool tool ui) >> #queueDraw dg'
 
 toolLookahead :: Tool -> UIModel -> Lookahead
 toolLookahead tool ui = fromMaybe (Lookahead Blue Blue) case tool of
 	Exact lk -> Just lk
-	SeedLookahead -> uiSeedLookahead ui
-	ActiveLookahead -> uiActiveLookahead ui <|> uiSeedLookahead ui
+	SeedLookahead -> seedLookahead ui
+	ActiveLookahead -> activeLookahead ui <|> seedLookahead ui
 
 toolIntensity :: Tool -> Float
 toolIntensity = \case
@@ -311,6 +318,6 @@ drawOverlay ui ww wh ctx mhover mpill = flip renderWithContext ctx do
 				    offY = (wh' - drawH) / 2
 				in (0, offY, ww', drawH)
 
-	b = board (uiCurrentState ui)
+	b = psmBoard (selectedPSM ui)
 	bw = width b + 2
 	bh = height b + 4

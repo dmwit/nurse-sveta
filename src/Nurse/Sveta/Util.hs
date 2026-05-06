@@ -7,6 +7,8 @@ module Nurse.Sveta.Util
 	, module Control.Monad.Fix
 	, module Control.Monad.IO.Class
 	, module Control.Monad.ST
+	, module Control.Monad.Trans.Class
+	, module Control.Monad.Trans.Maybe
 	, module Data.Aeson
 	, module Data.Aeson.Types
 	, module Data.Bifunctor
@@ -64,6 +66,8 @@ import Control.Monad
 import Control.Monad.Fix
 import Control.Monad.IO.Class
 import Control.Monad.ST
+import Control.Monad.Trans.Class
+import Control.Monad.Trans.Maybe
 import Control.Monad.State
 import Data.Aeson
 import Data.Aeson.KeyMap (KeyMap)

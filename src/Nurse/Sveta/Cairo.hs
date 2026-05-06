@@ -476,26 +476,21 @@ eFromRequests trs = do
 eFromRequest :: TextRequest -> Render Extents
 eFromRequest = eFromRequests . pure
 
-eScaling :: Extents -> (Double, Double)
-eScaling e = (signum xScaling * sharedScaling, signum yScaling * sharedScaling) where
-	sharedScaling = min (abs xScaling) (abs yScaling)
-	xScaling = minimumAbs [trW tr / textExtentsWidth ext | (tr, ext) <- eTexts e]
-	yScaling = minimumAbs [trH tr / h | (tr, _) <- eTexts e]
-	minimumAbs = minimumBy (comparing abs) . ((1/0):)
-	h = fontExtentsAscent (eFont e) + fontExtentsDescent (eFont e)
-
 eCenter :: Extents -> Render ()
 eCenter e = do
-	setFontMatrix (Matrix sx 0 0 (-sy) 0 0)
+	setFontMatrix (Matrix s 0 0 (-s) 0 0)
 	setSourceRGB 0 0 0
 	for_ (eTexts e) $ \(tr, te) -> do
 		moveTo
-			(trX tr - sx * textExtentsXbearing te + (trW tr - sx * textExtentsWidth te) / 2)
+			(trX tr - s * textExtentsXbearing te + (trW tr - s * textExtentsWidth te) / 2)
 			(trY tr + (trH tr + dh) / 2)
 		showText (trText tr)
 	where
-	(sx, sy) = eScaling e
-	dh = sy * (fontExtentsDescent (eFont e) - fontExtentsAscent (eFont e))
+	s = minimum $ (1/0) : do
+		(tr, ext) <- eTexts e
+		[trW tr / textExtentsWidth ext, trH tr / h]
+	h = fontExtentsAscent (eFont e) + fontExtentsDescent (eFont e)
+	dh = s * (fontExtentsDescent (eFont e) - fontExtentsAscent (eFont e))
 
 fitText :: Double -> Double -> Double -> Double -> String -> Render ()
 fitText x y w h s = eFromRequest TextRequest { trX = x, trY = y, trW = w, trH = h, trText = s } >>= eCenter

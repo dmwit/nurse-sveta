@@ -4,7 +4,7 @@
 module Nurse.Sveta.Widget (
 	-- * Raw drawing grid
 	DrawingGrid, newDrawingGrid, dgSetRenderer, dgWidget,
-	dgSetSize, dgSetWidth, dgSetHeight, dgSetDensity,
+	dgSetSize, dgSetWidth, dgSetHeight, dgSetDensity, dgSetAlignment,
 	dgGetSize, dgGetWidth, dgGetHeight, dgGetDensity,
 	dgPixelToGrid,
 
@@ -137,6 +137,13 @@ dgSetHeight dg h = do
 	(w, _) <- liftIO $ readIORef (dgSize dg)
 	dgSetSize dg w h
 
+-- | @0 0@ is bottom-left aligned; @1 1@ is top-right aligned.
+dgSetAlignment :: MonadIO m => DrawingGrid -> Float -> Float -> m ()
+dgSetAlignment dg xalign yalign = liftIO do
+	set (dgFrame dg) [#xalign := xalign, #yalign := 1 - yalign]
+	#queueDraw dg
+
+-- | Units are pixels per grid space.
 dgSetDensity :: MonadIO m => DrawingGrid -> Maybe Double -> m ()
 dgSetDensity dg density = do
 	liftIO $ writeIORef (dgDensity dg) density
@@ -164,7 +171,7 @@ dgGetDensity :: MonadIO m => DrawingGrid -> IO (Maybe Double)
 dgGetDensity = liftIO . readIORef . dgDensity
 
 dgSetRenderer :: MonadIO m => DrawingGrid -> Render () -> m ()
-dgSetRenderer dg draw = drawingAreaSetDrawFunc (dgCanvas dg) . Just $ \_ ctx _ _ -> flip renderWithContext ctx $ do
+dgSetRenderer dg draw = #setDrawFunc (dgCanvas dg) . Just $ \_ ctx _ _ -> flip renderWithContext ctx $ do
 	wCanvas <- #getWidth (dgCanvas dg)
 	hCanvas <- #getHeight (dgCanvas dg)
 	(wGrid, hGrid) <- dgGetSize dg

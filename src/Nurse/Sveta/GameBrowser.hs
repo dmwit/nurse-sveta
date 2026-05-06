@@ -3,103 +3,53 @@ module Nurse.Sveta.GameBrowser where
 import Nurse.Sveta.Util
 import Nurse.Sveta.Widget
 
+import qualified Control.Monad.State as State
 import qualified Data.IntMap as IM
 import qualified Data.Sequence as Seq
 import qualified Data.Vector as V
 
-data MoveTree m = MoveTree
-	{ mainSequence :: Seq m
-	, variations :: Seq (MoveTree m)
-	} deriving (Eq, Ord, Read, Show, Functor)
+type IMForest a = IntMap (IMTree a)
+data IMTree a = IMTree
+	{ tLabel :: a
+	-- If we were to use a list or sequence, then paths constructed from a list
+	-- of indices would need to be updated when we deleted a node. So instead,
+	-- we use an IntMap as a model for the list. The keys are arbitrary, except
+	-- that we consider smaller keys to come earlier in the sequence. Deleting
+	-- a node from the sequence then just means deleting the relevant key/value
+	-- pair, which leaves all the other keys unchanged (and therefore paths
+	-- that mention them need not be updated).
+	--
+	-- This is only notionally a list, though. Concretely we allow the keys to
+	-- leak out of the interface, e.g. the Eq interface considers them. Since
+	-- we want to work with paths that are keys, there's not really much
+	-- choice except to expose them.
+	, tChildren :: IMForest a
+	} deriving (Eq, Ord, Read, Show, Functor, Foldable, Traversable)
 
-instance Default (MoveTree m) where def = MoveTree def def
+instance PP a => PP (IMTree a) where pp = pp1
+instance PP1 IMTree where
+	liftPP1 ppElem t = if null (tChildren t)
+		then ppElem (tLabel t)
+		else printf "%s => %s"
+			(ppElem (tLabel t))
+			(liftPP1Forest ppElem (tChildren t))
 
-indexVariations_ :: HasCallStack => MoveTree m -> Seq Int -> MoveTree m
-indexVariations_ t is = fromJust $ indexVariations t is
+instance Default a => Default (IMTree a) where def = IMTree def def
 
-indexVariations :: MoveTree m -> Seq Int -> Maybe (MoveTree m)
-indexVariations t = flip foldl' (Just t) \mt i -> do
-	t' <- mt
-	variations t' Seq.!? i
+ppForest :: PP a => IMForest a -> String
+ppForest = liftPP1Forest pp
 
--- TODO: how come deleting the second-to-last variation doesn't work right?
-indexVariationsL :: MoveTree m -> Seq Int -> Maybe (MoveTree m, MoveTree m -> MoveTree m)
-indexVariationsL = go id where
-	go rebuild mt = \case
-		Seq.Empty -> Just (mt, rebuild)
-		i Seq.:<| is -> do
-			(b, h Seq.:<| e) <- Just $ Seq.splitAt i (variations mt)
-			go (rebuild . \h' -> mt { variations = b <> replacementVariations h' <> e }) h is
+liftPP1Forest :: (a -> String) -> IMForest a -> String
+liftPP1Forest ppElem = liftPP1 (liftPP1 ppElem) . IM.elems
 
-	replacementVariations h' = if length (mainSequence h') == 0
-		then variations h'
-		else Seq.singleton h'
-
--- | Cut the main sequence at the given point, and make the rest of the
--- sequence into a variation. 'Nothing' indicates an attempt to cut past the
--- end of the main sequence.
-splitMainSequence :: Int -> MoveTree m -> Maybe (MoveTree m)
-splitMainSequence n mt = case compare n (length ms) of
-	LT -> Just MoveTree
-		{ mainSequence = b
-		, variations = Seq.singleton MoveTree
-			{ mainSequence = e
-			, variations = variations mt
-			}
-		}
-	EQ -> Just mt
-	GT -> Nothing
-	where
-	ms = mainSequence mt
-	(b, e) = Seq.splitAt n ms
-
--- | Add a variation, if it doesn't already exist. Returns the index you can
--- find the given variation at after the addition.
-insertVariation :: (Eq m, Show m, HasCallStack) => m -> MoveTree m -> (MoveTree m, Int)
-insertVariation m mt = len `seq` flip (,) len case e of
-	_ Seq.:<| _ -> mt
-	_ -> mt
-		{ variations = variations mt Seq.:|> MoveTree
-			{ mainSequence = Seq.singleton m
-			, variations = def
-			}
-		}
-	where
-	(b, e) = Seq.breakl match (variations mt)
-	len = length b
-	match mt' = case mainSequence mt' of
-		m' Seq.:<| _ -> m == m'
-		_ -> error $ "insertVariation (" ++ show m ++ ") (" ++ show mt ++ ")"
-
-data InsertionResult
-	= AlreadyInMainSequence -- ^ The move was already at the requested spot in the main sequence.
-	| AlreadyInVariation Int -- ^ The move was already at the requested spot, and can be found in the variation given in the 'Int'.
-	| Appended -- ^ A new move has been added at the end of the current main sequence.
-	| SplitAndInserted -- ^ A new level of variations has been added to the tree, and your newly inserted element is in variation @1@.
-	| Inserted Int -- ^ A new variation has been added at the current level of the tree, and your newly inserted element is in the variation given in the 'Int'.
-	deriving (Eq, Ord, Read, Show)
-
--- | If the tree doesn't have the given move at the given index already, cut
--- the main sequence at that point and add the move as a variation. 'Nothing'
--- indicates that we must choose a variation before we get to the given index.
-splitAndInsertVariation :: (Eq m, Show m, HasCallStack) => Int -> m -> MoveTree m -> Maybe (MoveTree m, InsertionResult)
-splitAndInsertVariation n m mt = splitMainSequence n mt <&> \mt' -> case insertVariation m mt' of
-	result@(mt'', i)
-		| 0 == length (variations mt') -> (mt { mainSequence = mainSequence mt Seq.:|> m }, Appended)
-		| i == length (variations mt') -> (,) mt'' if n == length (mainSequence mt)
-			then Inserted i
-			else SplitAndInserted
-		| otherwise -> (,) mt if n == length (mainSequence mt)
-			then AlreadyInVariation i
-			else AlreadyInMainSequence
-
-instance PP1 MoveTree where
-	liftPP1 ppElem mt = printf "moveTree %s %s"
-		(liftPP1 ppElem (mainSequence mt))
-		(liftPP1 (liftPP1 ppElem) (variations mt))
-
-moveTree :: [a] -> [MoveTree a] -> MoveTree a
-moveTree as children = MoveTree (Seq.fromList as) (Seq.fromList children)
+-- | Add a variation, unless there's already one that matches according to some
+-- summarization. Returns the index of a match (which is the newly inserted
+-- element if nothing in the input matches).
+fInsertOn :: Eq b => (a -> b) -> a -> IMForest a -> (Int, IMForest a)
+fInsertOn f a ts = case IM.toAscList (IM.filter (\t' -> f a == f (tLabel t')) ts) of
+	(k, _):_ -> (k, ts)
+	_ -> (k, IM.insert k (IMTree a def) ts) where
+		k = maybe 0 ((1+) . fst) (IM.lookupMax ts)
 
 data GameStateEdit
 	= GenerateLevel Word16 Int
@@ -108,7 +58,7 @@ data GameStateEdit
 
 instance PP GameStateEdit where
 	pp = \case
-		GenerateLevel seed level -> printf "%d:%d" level seed
+		GenerateLevel seed level -> printf "%2d:%04X" level seed
 		Lock lk mp -> printf "%s@%s" (pp lk) (pp mp)
 
 data GameState = GameState
@@ -146,322 +96,201 @@ applyEdit s = \case
 		nextIndex = pillIndex s + 1
 		len = V.length (pillSequence s)
 
--- eventually we may want some sort of mildly intelligent cache, but for now let's just make all the states
-applyEdits :: MoveTree GameStateEdit -> Maybe (MoveTree (GameStateEdit, GameState))
-applyEdits = goTree def where
-	goTree s mt = do
-		(sNext, ss) <- goSeq s (mainSequence mt)
-		vs <- mapM (goTree sNext) (variations mt)
-		pure MoveTree
-			{ mainSequence = ss
-			, variations = vs
-			}
-	goSeq s0 = foldM
-		(\(s, ss) e -> applyEdit s e <&> \s' -> (s', ss Seq.:|> (e, s')))
-		(s0, def)
-
-data ActiveVariations = ActiveVariations
-	{ activeHere :: Int
-	, activeChildren :: IntMap ActiveVariations
+data UILabel = UILabel
+	{ parentEdge :: GameStateEdit
+	, stateCache :: GameState
+	, activeChild :: Maybe Int
 	} deriving (Eq, Ord, Read, Show)
 
--- | Prefers the left/first argument.
-instance Semigroup ActiveVariations where
-	ActiveVariations i itree <> ActiveVariations _i' itree' = ActiveVariations i (IM.unionWith (<>) itree itree')
+instance PP UILabel where
+	pp lbl = printf "{ δ = %s, child = %s }"
+		(pp (parentEdge lbl))
+		(maybe "ε" pp (activeChild lbl))
 
-instance PP ActiveVariations where
-	pp av = printf "%s@%d"
-		(liftPP1 ppChild . IM.toList . activeChildren $ av)
-		(activeHere av)
-		where
-		ppChild (i, av') = printf "%d↦%s" i (pp av')
-
-ppActiveVariations :: Maybe ActiveVariations -> String
-ppActiveVariations = maybe "ε" pp
-
-singletonVariations :: Int -> ActiveVariations
-singletonVariations i = ActiveVariations
-	{ activeHere = i
-	, activeChildren = def
-	}
-
-fromVariations :: Seq Int -> Maybe ActiveVariations
-fromVariations = \case
-	Seq.Empty -> Nothing
-	is Seq.:|> i -> Just $ foldr (\i' -> ActiveVariations i' . IM.singleton i') (singletonVariations i) is
-
-activeChild :: ActiveVariations -> Maybe ActiveVariations
-activeChild av = activeChildren av IM.!? activeHere av
-
-activateVariation :: Seq Int -> Maybe ActiveVariations -> Maybe ActiveVariations
-activateVariation is = (fromVariations is <>)
-
-atDepth :: Int -> (ActiveVariations -> ActiveVariations) -> Maybe ActiveVariations -> Maybe ActiveVariations
-atDepth d0 f = Just . maybeOn0 d0 where
-	maybeOn0 d = go d . fromMaybe (singletonVariations 0)
-	go 0 av = f av
-	go d av = av
-		{ activeChildren = IM.insert
-			(activeHere av)
-			(maybeOn0 (d-1) (activeChild av))
-			(activeChildren av)
-		}
-
-extendVariationAtDepth :: Int -> Int -> Maybe ActiveVariations -> Maybe ActiveVariations
-extendVariationAtDepth d i = atDepth d (singletonVariations i <>)
-
-splitVariationAtDepth :: Int -> Maybe ActiveVariations -> Maybe ActiveVariations
-splitVariationAtDepth d = Just . go d where
-	go 0 Nothing = singletonVariations 1
-	go 0 (Just av) = ActiveVariations
-		{ activeHere = 1
-		, activeChildren = IM.singleton 0 av
-		}
-	go n Nothing = ActiveVariations
-		{ activeHere = 0
-		, activeChildren = IM.singleton 0 (go (n-1) Nothing)
-		}
-	go n (Just av) = av
-		{ activeChildren = IM.insert i (go (n-1) child) (activeChildren av)
-		}
-		where
-		i = activeHere av
-		child = activeChildren av IM.!? i
-
-ensureDepth :: Int -> Maybe ActiveVariations -> Maybe ActiveVariations
-ensureDepth n = (<> fromVariations (Seq.replicate n 0))
-
-activePath :: Maybe ActiveVariations -> [Int]
-activePath = foldMap \av -> activeHere av : activePath (activeChild av)
-
--- | *Always* returns a sequence of the supplied length
-activePathOfDepth :: Maybe ActiveVariations -> Int -> Seq Int
-activePathOfDepth mav n = prefix <> Seq.replicate (n - length prefix) 0 where
-	path = activePath mav
-	prefix = Seq.fromList (take n path)
-
--- ^ The 'Default' instance gives a canonical "one before the beginning" node.
-data MoveSelection = MoveSelection
-	{ mainSequenceIndex :: Int
-	, variationDepth :: Int
-	} deriving (Eq, Ord, Read, Show)
-
-instance Default MoveSelection where
-	def = MoveSelection
-		{ mainSequenceIndex = -1
-		, variationDepth = 0
-		}
-
-modifyMainSequenceIndex :: Int -> MoveSelection -> MoveSelection
-modifyMainSequenceIndex di sel = sel { mainSequenceIndex = mainSequenceIndex sel + di }
-
--- | Lift a 'MoveSelection' up above the subtree indicated by a 'MoveTreeAddress'.
-msTruncate :: MoveSelection -> Maybe ActiveVariations -> MoveTreeAddress -> MoveSelection
-msTruncate _ _ _ = def -- TODO
-
+-- | I want to just store a 'UITree' with an empty game state, say, 'def', as
+-- the root state. Unfortunately, there's no good thing to put in the
+-- 'GameStateEdit' at the root. So instead, there is a phantom root node with
+-- that state implicitly, and we store the children and active variation that
+-- are usually in the 'UITree' directly in the 'UIModel' instead. The
+-- 'selectionDepth' is with reference to the phantom tree, so depth 0 means the
+-- implicit root.
 data UIModel = UIModel
-	{ nodes :: MoveTree (GameStateEdit, GameState)
-	, activeVariations :: Maybe ActiveVariations
-	, moveSelection :: MoveSelection
+	{ nodes :: UIForest
+	, activeRoot :: Maybe Int
+	, selectionDepth :: Int
 	} deriving (Eq, Ord, Read, Show)
 
 instance Default UIModel where def = UIModel def def def
-instance PP UIModel where pp = ppUIModel pp
+instance PP UIModel where
+	pp ui = printf
+		"ui { depth = %d, root = %s, nodes = %s }"
+		(selectionDepth ui)
+		(maybe "ε" pp (activeRoot ui))
+		(ppForest (nodes ui))
 
-ppUIModel :: ((GameStateEdit, GameState) -> String) -> UIModel -> String
-ppUIModel ppElement ui = printf "ui { nodes = %s, active = %s, depth = %d, move = %d }"
-	(liftPP1 ppElement (nodes ui))
-	(ppActiveVariations (activeVariations ui))
-	(variationDepth (moveSelection ui))
-	(mainSequenceIndex (moveSelection ui))
+type UITree = IMTree UILabel
+type UIForest = IMForest UILabel
+type Variation = [Int]
 
-uiVariationDepth :: UIModel -> Int
-uiVariationDepth = variationDepth . moveSelection
+descendL :: Monad m => (UIModel -> MaybeT m Int) -> UIModel -> MaybeT m (GameState, UIModel, UIModel -> UIModel)
+descendL choose = go def where
+	go s ui = lift (runMaybeT (choose ui)) >>= \case
+		Nothing -> pure (s, ui, id)
+		Just i -> do
+			t <- MaybeT . pure $ nodes ui IM.!? i
+			(s', ui', rebuild) <- go (stateCache (tLabel t)) UIModel
+				{ nodes = tChildren t
+				, activeRoot = activeChild (tLabel t)
+				, selectionDepth = selectionDepth ui - 1
+				}
+			pure (s', ui', \ui'' -> let
+				rebuilt = rebuild ui''
+				t' = IMTree
+					{ tLabel = (tLabel t) { activeChild = activeRoot rebuilt }
+					, tChildren = nodes rebuilt
+					}
+				in ui
+					{ nodes = IM.insert i t' (nodes ui)
+					, selectionDepth = selectionDepth rebuilt + 1
+					})
 
-uiMainSequenceIndex :: UIModel -> Int
-uiMainSequenceIndex = mainSequenceIndex . moveSelection
+variationL :: Variation -> UIModel -> Maybe (GameState, UIModel, UIModel -> UIModel)
+variationL var = flip State.evalState var . runMaybeT . descendL \_ui -> do
+	i:is <- State.get
+	i <$ State.put is
 
-uiCurrentPSM :: UIModel -> PlayerStateModel
-uiCurrentPSM ui = PSM
+-- | If you get a 'Just', its 'selectionDepth' is guaranteed to be 0.
+selectedUIL :: UIModel -> Maybe (GameState, UIModel, UIModel -> UIModel)
+selectedUIL = join . runMaybeT . descendL \ui -> do
+	guard (selectionDepth ui > 0)
+	(MaybeT . pure . activeRoot) ui
+
+selectedPSM :: UIModel -> PlayerStateModel
+selectedPSM ui = PSM
 	{ psmBoard = board gs
-	, psmLookahead = lookahead
+	, psmLookahead = pillSequence gs V.!? pillIndex gs
 	, psmOverlay = []
 	} where
-	gs = uiCurrentState ui
-	lookahead = (pillSequence gs V.!?) (pillIndex gs)
+	gs = defOr (frst <$> selectedUIL ui)
 
--- | doesn't check if the move selection is valid for the current active variations and nodes
-setSelection :: UIModel -> MoveSelection -> UIModel
-setSelection ui sel = ui { moveSelection = sel }
-
-activeTrees :: UIModel -> [MoveTree (GameStateEdit, GameState)]
-activeTrees ui = go (nodes ui) (activePath (activeVariations ui)) where
-	go mt is = mt : case is of
-		[] -> []
-		h:t -> go (variations mt `seqIndex` h) t
-
--- | like 'activeTrees', but also returns 0-variations past the end of the activity
-defaultTrees :: UIModel -> [MoveTree (GameStateEdit, GameState)]
-defaultTrees ui = go (nodes ui) (activePath (activeVariations ui)) where
-	go mt is = mt : case (is, variations mt) of
-		([], Seq.Empty) -> []
-		([], mt' Seq.:<| _) -> go mt' []
-		(i:is, _) -> go (variations mt `seqIndex` i) is
-
-uiModifyVariation :: (Maybe ActiveVariations -> Maybe ActiveVariations) -> UIModel -> UIModel
-uiModifyVariation f ui = ui { activeVariations = f (activeVariations ui) }
-
-uiEnsureDepth :: UIModel -> UIModel
-uiEnsureDepth ui = uiModifyVariation (ensureDepth (uiVariationDepth ui)) ui
-
-uiFocusedPath :: UIModel -> Seq Int
-uiFocusedPath ui = activePathOfDepth (activeVariations ui) (uiVariationDepth ui)
-
-uiActivePath :: UIModel -> [Int]
-uiActivePath = activePath . activeVariations
-
-uiActivateVariation :: Seq Int -> UIModel -> UIModel
-uiActivateVariation = uiModifyVariation . activateVariation
-
-uiExtendVariation :: Int -> UIModel -> UIModel
-uiExtendVariation i ui = uiModifyVariation (extendVariationAtDepth (uiVariationDepth ui) i) ui
-
-uiSplitVariation :: UIModel -> UIModel
-uiSplitVariation ui = uiModifyVariation (splitVariationAtDepth (uiVariationDepth ui)) ui
-
-uiFocusedTree :: HasCallStack => UIModel -> MoveTree (GameStateEdit, GameState)
-uiFocusedTree ui = indexVariations_ (nodes ui) (uiFocusedPath ui)
-
-uiCurrentNode :: UIModel -> Maybe (GameStateEdit, GameState)
-uiCurrentNode ui = mainSequence (uiFocusedTree ui) Seq.!? uiMainSequenceIndex ui
-
-uiCurrentState :: UIModel -> GameState
-uiCurrentState = defOr . fmap snd . uiCurrentNode
-
-uiSeedLookahead :: UIModel -> Maybe Lookahead
-uiSeedLookahead ui = pillSequence s V.!? pillIndex s where s = uiCurrentState ui
-
-uiActiveLookahead :: UIModel -> Maybe Lookahead
-uiActiveLookahead ui = do
-	ui' <- uiForward ui
-	(Lock lk _, _) <- uiCurrentNode ui'
-	pure lk
-
-normalizeLarge :: HasCallStack => UIModel -> MoveSelection -> Maybe MoveSelection
-normalizeLarge ui sel0 = go (drop (variationDepth sel0) (defaultTrees ui)) sel0 where
-	go [] _ = Nothing
-	go (mt:mts) sel@(MoveSelection { mainSequenceIndex = i, variationDepth = d })
-		| i < len = Just sel
-		| otherwise = go mts MoveSelection { mainSequenceIndex = i - len, variationDepth = d + 1 }
-		where len = length (mainSequence mt)
-
-normalizeSmall :: HasCallStack => UIModel -> MoveSelection -> Maybe MoveSelection
-normalizeSmall ui sel0 = go ns0 sel0 where
-	ns0_ = take (variationDepth sel0) (activeTrees ui)
-	ns0 | length ns0_ == variationDepth sel0 = reverse ns0_
-	    | otherwise = error $ "normalizeSmall (" ++ show ui ++ ") (" ++ show sel0 ++ ")"
-
-	go ns sel@(MoveSelection { mainSequenceIndex = i, variationDepth = d }) = case compare d 0 of
-		LT -> Nothing
-		EQ -> sel <$ guard (i >= -1)
-		GT | i < 0 -> case ns of
-			[] -> error $ "normalizeSmall (" ++ show ui ++ ") (" ++ show sel0 ++ ")"
-			n:nt -> go nt MoveSelection { mainSequenceIndex = length (variations n) + i, variationDepth = d - 1 }
-		_ -> Just sel
-
-uiModifySequenceIndex :: Int -> UIModel -> Maybe UIModel
-uiModifySequenceIndex di ui = id
-	. fmap (normalizeActive . setSelection ui)
-	. normalizeSelection ui
-	. modifyMainSequenceIndex di
-	$ moveSelection ui
-	where
-	(normalizeSelection, normalizeActive) = case compare di 0 of
-		LT -> (normalizeSmall, id)
-		EQ -> (const Just, id)
-		GT -> (normalizeLarge, uiEnsureDepth)
-
-uiForward :: UIModel -> Maybe UIModel
-uiForward = uiModifySequenceIndex 1
-
-uiBackward :: UIModel -> Maybe UIModel
-uiBackward = uiModifySequenceIndex (-1)
-
-normalizeActiveVariations :: MoveTree m -> Maybe ActiveVariations -> Maybe ActiveVariations
-normalizeActiveVariations mt (Just av)
-	| varCount <= 0 = Nothing
-	| otherwise = Just ActiveVariations
-		{ activeHere = i
-		, activeChildren = IM.fromList do
-			ix <- [0..varCount-1]
-			let child_ = normalizeActiveVariations (seqIndex vars ix) (activeChildren av IM.!? ix)
-			maybe [] (\child -> [(ix, child)]) child_
+activeVariation :: HasCallStack => UIModel -> Variation
+activeVariation = unfoldr \ui -> do
+	i <- activeRoot ui
+	t <- nodes ui IM.!? i
+	pure $ (,) i UIModel
+		{ nodes = tChildren t
+		, activeRoot = activeChild (tLabel t)
+		, selectionDepth = error "activeVariation is not supposed to read the selection depth, but it did"
 		}
-	where
-	vars = variations mt
-	varCount = length vars
-	i = min (varCount-1) (max 0 (activeHere av))
-normalizeActiveVariations _ Nothing = Nothing
 
-uiNormalizeActiveVariations :: UIModel -> UIModel
-uiNormalizeActiveVariations ui = ui
-	{ activeVariations = normalizeActiveVariations (nodes ui) (activeVariations ui)
-	}
+activateVariation :: Variation -> UIModel -> Maybe UIModel
+activateVariation [] ui = Just ui
+activateVariation (i:is) ui = do
+	t <- nodes ui IM.!? i
+	t' <- tActivateVariation is t
+	pure ui
+		{ nodes = IM.insert i t' (nodes ui)
+		, activeRoot = Just i
+		}
 
-data MoveTreeAddress = MoveTreeAddress
-	{ mtaVariations :: Seq Int
-	, mtaMainSequenceIndex :: Int
-	} deriving (Eq, Ord, Read, Show)
+tActivateVariation :: Variation -> UITree -> Maybe UITree
+tActivateVariation [] t = Just t
+tActivateVariation (i:is) t = do
+	t' <- tChildren t IM.!? i
+	t'' <- tActivateVariation is t'
+	pure t
+		{ tChildren = IM.insert i t'' (tChildren t)
+		, tLabel = (tLabel t) { activeChild = Just i }
+		}
 
-instance Default MoveTreeAddress where def = MoveTreeAddress def (-1)
+selectVariation :: Variation -> UIModel -> Maybe UIModel
+selectVariation is ui = activateVariation is ui { selectionDepth = length is }
 
-toSelection :: MoveTreeAddress -> MoveSelection
-toSelection mta = MoveSelection
-	{ variationDepth = length (mtaVariations mta)
-	, mainSequenceIndex = mtaMainSequenceIndex mta
-	}
+unSnoc :: [a] -> Maybe (a, [a])
+unSnoc [] = Nothing
+unSnoc (x:xs) = Just (go x xs) where
+	go x = \case
+		[] -> (x, [])
+		x':xs' -> (x:) <$> go x' xs'
 
-uiVisitAddress :: UIModel -> MoveTreeAddress -> UIModel
-uiVisitAddress ui addr = setSelection
-	(uiActivateVariation (mtaVariations addr) ui)
-	(toSelection addr)
+deleteVariation :: Variation -> UIModel -> Maybe UIModel
+deleteVariation is ui = do
+	(i, is') <- unSnoc is
+	(_, ui', rebuild) <- variationL is' ui
+	let nodes' = IM.delete i (nodes ui')
+	    active' = case IM.toList nodes' of
+	    	[(i', _)] -> Just i'
+	    	_ -> activeRoot ui' >>= ensure (i /=)
+	pure . truncateSelectionDepth . rebuild $ ui'
+		{ nodes = IM.delete i (nodes ui')
+		, activeRoot = active'
+		}
 
-uiDelete :: HasCallStack => UIModel -> MoveTreeAddress -> UIModel
--- if asked to delete a node that doesn't exist, returning the tree unchanged seems sensible, right?
-uiDelete ui mta = fromMaybe ui do
-	let i = mtaMainSequenceIndex mta
-	guard (i >= 0)
-	(focusedTree, rebuildTree) <- indexVariationsL (nodes ui) (mtaVariations mta)
-	guard (i < length (mainSequence focusedTree))
-	let focusedTree' = focusedTree { mainSequence = Seq.take i (mainSequence focusedTree) }
-	    ui' = uiNormalizeActiveVariations ui
-	    	{ nodes = rebuildTree focusedTree'
-	    	, moveSelection = msTruncate (moveSelection ui) (activeVariations ui) mta
+truncateSelectionDepth :: UIModel -> UIModel
+truncateSelectionDepth ui = setSelectionDepth ui (min (length (activeVariation ui)) (selectionDepth ui))
+
+-- | Does not do any sanity checking, just directly sets the depth.
+setSelectionDepth :: UIModel -> Int -> UIModel
+setSelectionDepth ui d = ui { selectionDepth = d }
+
+forward :: UIModel -> Maybe UIModel
+forward ui = setSelectionDepth ui <$> ensure (< length (activeVariation ui)) (selectionDepth ui + 1)
+
+backward :: UIModel -> Maybe UIModel
+backward ui = setSelectionDepth ui <$> ensure (>= 0) (selectionDepth ui - 1)
+
+advance :: GameStateEdit -> UIModel -> Maybe UIModel
+advance e ui = do
+	(s, ui', rebuild) <- selectedUIL ui
+	s' <- applyEdit s e
+	let lbl = UILabel
+	    	{ parentEdge = e
+	    	, stateCache = s'
+	    	, activeChild = Nothing
 	    	}
-	-- TODO: if deleting an entire variation, update the active variations that come after it
-	pure ui'
+	    -- Any pill placement can be modified to have the same effect by
+	    -- mirroring the lookahead and rotating clockwise two additional times.
+	    -- This leads to some oddities in the UI. Should those really lead to
+	    -- different variations in the tree viewer? Options include:
+	    --
+	    -- 1. Keep them as separate variations. Then there are two possible
+	    --    next game states that are the same but are considered different,
+	    --    which seems odd.
+	    -- 2. Merge the variations. Then there's a question of what
+	    --    activeLookahead should do. It looks at the lookahead that
+	    --    leads to the next node in the active variation. If the user
+	    --    has arrived at that node via two different lookaheads in the
+	    --    past, it has to pick one.
+	    --
+	    -- We opt for (2), which is encoded in the definition of nodes', with
+	    -- the stance that the active lookahead is the one the user used most
+	    -- recently, which is encoded in the definition of nodes''.
+	    (i, nodes') = fInsertOn normalizedEdit lbl (nodes ui')
+	    nodes'' = IM.adjust (\t -> t { tLabel = (tLabel t) { parentEdge = e } }) i nodes'
+	pure $ rebuild UIModel
+		{ nodes = nodes''
+		, activeRoot = Just i
+		, selectionDepth = 1
+		}
 
-uiDeleteCurrent :: HasCallStack => UIModel -> UIModel
-uiDeleteCurrent ui = uiDelete ui MoveTreeAddress
-	{ mtaMainSequenceIndex = uiMainSequenceIndex ui
-	, mtaVariations = uiFocusedPath ui
-	}
+-- | Returns 'parentEdge', but all lookaheads have had their colors put in a
+-- standard order.
+normalizedEdit :: UILabel -> GameStateEdit
+normalizedEdit lbl = case parentEdge lbl of
+	e@GenerateLevel{} -> e
+	Lock lk mp -> Lock (Lookahead lo hi) mp where
+		[lo, hi] = sort [leftColor lk, rightColor lk]
 
-uiAdvance :: GameStateEdit -> UIModel -> Maybe UIModel
-uiAdvance e ui = do
-	(focusedTree, rebuildTree) <- indexVariationsL (nodes ui) (uiFocusedPath ui)
-	let focusedState = defOr . fmap snd $ mainSequence focusedTree Seq.!? uiMainSequenceIndex ui
-	s <- applyEdit focusedState e
-	(focusedTree', action) <- splitAndInsertVariation (uiMainSequenceIndex ui + 1) (e, s) focusedTree
-	let ui' = ui { nodes = rebuildTree focusedTree' }
-	uiForward case action of
-		AlreadyInMainSequence -> ui'
-		AlreadyInVariation i -> uiExtendVariation i ui'
-		Appended -> ui'
-		SplitAndInserted -> uiSplitVariation ui'
-		Inserted i -> uiExtendVariation i ui'
+activeLookahead :: UIModel -> Maybe Lookahead
+activeLookahead ui = do
+	(_, ui', _) <- selectedUIL ui
+	i <- activeRoot ui'
+	t <- nodes ui' IM.!? i
+	case parentEdge (tLabel t) of
+		Lock lk _ -> Just lk
+		_ -> Nothing
 
--- | returns the input if 'uiAdvance' would return 'Nothing'
-uiMaybeAdvance :: GameStateEdit -> UIModel -> UIModel
-uiMaybeAdvance e ui = fromMaybe ui (uiAdvance e ui)
--- aren't you proud of me for not writing f e = fromMaybe <*> uiAdvance e?
+seedLookahead :: UIModel -> Maybe Lookahead
+seedLookahead ui = do
+	(s, _, _) <- selectedUIL ui
+	pillSequence s V.!? pillIndex s
